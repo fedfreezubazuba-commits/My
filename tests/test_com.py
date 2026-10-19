@@ -17,6 +17,7 @@ class FakeQueries(list):
 
     def Add(self, name, formula):
         q = types.SimpleNamespace(Name=name, Formula=formula)
+        q.Delete = lambda: self.remove(q)
         self.append(q)
         return q
 
@@ -47,8 +48,13 @@ class FakeListObjects(list):
         return next(lo for lo in self if lo.Name == name)
 
     def Add(self, *args, **kw):
-        mode = self.ws.wb.xl.table_mode
-        if mode == "never" or (mode == "keywords_only" and args):
+        xl = self.ws.wb.xl
+        mode = xl.table_mode
+        source = str(kw.get("Source", args[1] if len(args) > 1 else ""))
+        bad = (mode == "never" or (mode == "keywords_only" and args)
+               or (mode == "ascii_only" and "Location=Hub" not in source)
+               or (mode == "visible_only" and not xl.Visible))
+        if bad:
             raise COMError((-2147352567, "Ошибка.", (0, None, None, None, 0, -2147024809), None))
         lo = FakeLO(self.ws)
         self.append(lo)
@@ -83,6 +89,7 @@ class FakeSheets(list):
 class FakeWB:
     def __init__(self, xl):
         self.xl = xl
+        self.Application = xl
         self.Queries = FakeQueries()
         self.Worksheets = FakeSheets()
         self.Worksheets.wb = self
@@ -103,6 +110,8 @@ class FakeXL:
         self.fail_refresh = fail_refresh
         self.books = []
         self.Version = "16.0"
+        self.Visible = False
+        self.WindowState = 0
         self.Workbooks = types.SimpleNamespace(Open=self._open, Add=self._open)
 
     def _open(self, *a, **k):
@@ -197,7 +206,37 @@ def test_diagnose_reports_each_way(fake_excel, tmp_path):
     fake_excel["xl"] = FakeXL("keywords_only")
     lines = com_connect.diagnose(tmp_path / "т.csv", log=lambda m: None)
     text = "\n".join(lines)
-    assert "(по порядку)»: ошибка" in text and "(по именам)»: таблица создана" in text
+    assert "(по порядку)»: ошибка" in text and "(по именам)»: РАБОТАЕТ" not in text  # ListRows нет у подделки
+    assert "ИТОГ" in lines[-1]
+
+
+@pytest.mark.parametrize("mode,expect", [("ascii_only", {"ascii": True, "visible": False}),
+                                         ("visible_only", {"ascii": False, "visible": True})])
+def test_connect_tries_ascii_names_and_visible_excel(fake_excel, tmp_path, mode, expect):
+    """Ошибка «неверный аргумент» у пользователя: пробуем латинские имена запросов и видимый Excel."""
+    from hub.excel import com_connect
+    xl = fake_excel["xl"] = FakeXL(mode)
+    r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=lambda m: None)
+    assert not r["partial"]
+    assert {k: r["way"][k] for k in expect} == expect
+    wb = xl.books[0]
+    names = [q.Name for q in wb.Queries]
+    assert names == (["Hub_Packet", "Hub", "Hub_Series"] if expect["ascii"] else ["Хаб_Посылка", "Хаб", "Хаб_Ряды"])
+    if expect["ascii"]:
+        assert "Hub_Packet" in next(q.Formula for q in wb.Queries if q.Name == "Hub")
+    hub = next(ws for ws in wb.Worksheets if ws.Name == "Хаб")
+    assert [lo.Name for lo in hub.ListObjects] == ["Хаб", "Хаб_Ряды"]      # таблицы — всегда по-русски
+    assert xl.Visible is False                                             # Excel снова спрятан
+
+
+def test_connect_starts_with_remembered_way(fake_excel, tmp_path):
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL("ascii_only")
+    steps = []
+    r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=steps.append,
+                                  prefer={"visible": False, "ascii": True, "way": "ListObjects.Add (по именам)"})
+    assert r["way"]["way"] == "ListObjects.Add (по именам)"
+    assert not any("не сработал" in s for s in steps)
 
 
 def test_col_letter():

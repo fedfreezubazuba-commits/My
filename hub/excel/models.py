@@ -70,7 +70,10 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
                  "(ячейка BH1). Сохраните модель.")
     if use_com:
         try:
-            r = com_connect().connect_model(model_path, ppath, paths.model_backups, log=log)
+            prefer = cfg.settings().get("excel_way") or None
+            r = com_connect().connect_model(model_path, ppath, paths.model_backups, log=log, prefer=prefer)
+            if r.get("way"):
+                cfg.update_settings(excel_way=r["way"])     # в следующий раз начнём с того, что сработало
             if r.get("partial"):
                 result.update(ok=True, method="com_partial", backup=r["backup"],
                               message=f"Модель «{name}» почти подключена: запросы Хаб и Хаб_Ряды добавлены, но Excel "

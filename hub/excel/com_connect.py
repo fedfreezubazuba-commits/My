@@ -81,8 +81,14 @@ def _excel(log):
     return xl
 
 
-def _add_queries(wb, packet_path, log):
-    for name, code in mcode.queries(packet_path):
+def _add_queries(wb, packet_path, log, ascii_names=False):
+    """Добавить (или обновить) три запроса хаба. Запросы другого набора имён удаляются."""
+    other = set(mcode.query_names(not ascii_names).values()) - set(mcode.query_names(ascii_names).values())
+    for q in list(wb.Queries):
+        if q.Name in other:
+            log(f"Удаляю запрос {q.Name} (другой набор имён)")
+            q.Delete()
+    for name, code in mcode.queries(packet_path, ascii_names):
         existing = None
         for q in wb.Queries:
             if q.Name == name:
@@ -111,9 +117,10 @@ def _sheet(wb, log):
     return ws
 
 
-def _conn_string(query_name):
+def _conn_string(query_name, quoted=False):
+    loc = f'"{query_name}"' if quoted else query_name
     return (f"OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;"
-            f"Location={query_name};Extended Properties=\"\"")
+            f"Location={loc};Extended Properties=\"\"")
 
 
 def _missing():
@@ -125,13 +132,23 @@ def _missing():
 
 
 # Способы загрузить запрос в таблицу листа. Разные версии Excel и pywin32 по-разному принимают
-# аргументы ListObjects.Add, поэтому пробуем по очереди и запоминаем в журнале, какой сработал.
+# аргументы ListObjects.Add, поэтому пробуем по очереди и запоминаем, какой сработал.
 def _way_positional(ws, query_name, cell):
     return ws.ListObjects.Add(XL_SRC_EXTERNAL, _conn_string(query_name), _missing(), XL_YES, ws.Range(cell))
 
 
 def _way_keywords(ws, query_name, cell):
     return ws.ListObjects.Add(SourceType=XL_SRC_EXTERNAL, Source=_conn_string(query_name),
+                              Destination=ws.Range(cell))
+
+
+def _way_array(ws, query_name, cell):
+    return ws.ListObjects.Add(SourceType=XL_SRC_EXTERNAL, Source=[_conn_string(query_name)],
+                              Destination=ws.Range(cell))
+
+
+def _way_quoted(ws, query_name, cell):
+    return ws.ListObjects.Add(SourceType=XL_SRC_EXTERNAL, Source=_conn_string(query_name, quoted=True),
                               Destination=ws.Range(cell))
 
 
@@ -150,7 +167,33 @@ def _way_connection(ws, query_name, cell):
 
 TABLE_WAYS = [("ListObjects.Add (по порядку)", _way_positional),
               ("ListObjects.Add (по именам)", _way_keywords),
+              ("ListObjects.Add (подключение списком)", _way_array),
+              ("ListObjects.Add (имя в кавычках)", _way_quoted),
               ("Connections.Add2 + ListObjects.Add", _way_connection)]
+WAYS = dict(TABLE_WAYS)
+
+# варианты окружения: (Excel виден, латинские имена запросов)
+VARIANTS = [(False, False), (False, True), (True, False), (True, True)]
+XL_MINIMIZED = -4140
+
+
+def variant_title(visible, ascii_names):
+    return (("видимый Excel" if visible else "Excel в фоне") + ", " +
+            ("латинские имена запросов" if ascii_names else "русские имена запросов"))
+
+
+def _set_visible(wb, visible, log):
+    try:
+        xl = wb.Application
+        xl.Visible = bool(visible)
+        if visible:
+            xl.WindowState = XL_MINIMIZED
+            try:
+                wb.Activate()          # как при записи макроса: книга активна
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        log(f"  не удалось переключить видимость Excel: {e!r}")
 
 
 class StepError(HubError):
@@ -162,24 +205,7 @@ class StepError(HubError):
         self.exc = exc
 
 
-def _load_table(ws, query_name, cell, log):
-    for lo in ws.ListObjects:
-        if lo.Name == query_name:
-            log(f"Таблица {query_name} уже есть — обновляю")
-            lo.QueryTable.Refresh(False)
-            return lo
-    log(f"Загружаю запрос {query_name} в таблицу на листе «Хаб» ({cell})")
-    lo, errors = None, []
-    for title, way in TABLE_WAYS:
-        try:
-            lo = way(ws, query_name, cell)
-            log(f"  способ «{title}» сработал")
-            break
-        except Exception as e:  # noqa: BLE001
-            errors.append(f"{title}: {e!r}")
-            log(f"  способ «{title}» не сработал: {e!r}")
-    if lo is None:
-        raise StepError(f"создать таблицу {query_name}", "; ".join(errors))
+def _finish_table(lo, query_name, table_name, log):
     qt = lo.QueryTable
     for prop, value in (("CommandType", XL_CMD_SQL), ("CommandText", [f"SELECT * FROM [{query_name}]"]),
                         ("BackgroundQuery", False), ("RefreshOnFileOpen", True), ("PreserveColumnInfo", True),
@@ -189,20 +215,91 @@ def _load_table(ws, query_name, cell, log):
         except Exception as e:  # noqa: BLE001
             log(f"  свойство {prop}: {e!r}")
     try:
-        lo.Name = query_name
+        lo.Name = table_name
     except Exception as e:  # noqa: BLE001
-        log(f"  имя таблицы {query_name}: {e!r}")
+        log(f"  имя таблицы {table_name}: {e!r}")
     try:
         qt.Refresh(False)
     except Exception as e:  # noqa: BLE001
-        raise StepError(f"обновить таблицу {query_name} (Power Query)", e)
+        raise StepError(f"обновить таблицу {table_name} (Power Query)", e)
     try:
         qt.WorkbookConnection.Name = f"Запрос — {query_name}"
         qt.WorkbookConnection.OLEDBConnection.RefreshOnFileOpen = True
         qt.WorkbookConnection.OLEDBConnection.BackgroundQuery = False
     except Exception as e:  # noqa: BLE001
-        log(f"  настройка подключения {query_name}: {e!r}")
+        log(f"  настройка подключения {table_name}: {e!r}")
     return lo
+
+
+def _existing_table(ws, table_name):
+    for lo in ws.ListObjects:
+        if lo.Name == table_name:
+            return lo
+    return None
+
+
+def _try_ways(ws, query_name, cell, log, ways):
+    errors = []
+    for title in ways:
+        try:
+            lo = WAYS[title](ws, query_name, cell)
+            log(f"  способ «{title}» сработал")
+            return lo, title, errors
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{title}: {e!r}")
+            log(f"  способ «{title}» не сработал: {e!r}")
+    return None, None, errors
+
+
+def _load_tables(wb, ws, packet_path, log, prefer=None):
+    """Вывести запросы Хаб и Хаб_Ряды таблицами на лист. Перебирает окружения и способы;
+    возвращает {'visible', 'ascii', 'way'} того, что сработало (чтобы в следующий раз начать с него)."""
+    hub_lo = _existing_table(ws, "Хаб")
+    if hub_lo is not None and _existing_table(ws, "Хаб_Ряды") is not None:
+        log("Таблицы Хаб и Хаб_Ряды уже есть — обновляю")
+        for name in ("Хаб", "Хаб_Ряды"):
+            try:
+                _existing_table(ws, name).QueryTable.Refresh(False)
+            except Exception as e:  # noqa: BLE001
+                raise StepError(f"обновить таблицу {name} (Power Query)", e)
+        return dict(prefer or {})
+    variants = list(VARIANTS)
+    ways = [t for t, _ in TABLE_WAYS]
+    if prefer:
+        pv = (bool(prefer.get("visible")), bool(prefer.get("ascii")))
+        if pv in variants:
+            variants.remove(pv)
+            variants.insert(0, pv)
+        if prefer.get("way") in ways:
+            ways.remove(prefer["way"])
+            ways.insert(0, prefer["way"])
+    all_errors = []
+    try:
+        for visible, ascii_names in variants:
+            log(f"Пробую: {variant_title(visible, ascii_names)}")
+            _set_visible(wb, visible, log)
+            _add_queries(wb, packet_path, log, ascii_names)
+            names = mcode.query_names(ascii_names)
+            lo, way, errors = _try_ways(ws, names["Хаб"], "A1", log, ways)
+            all_errors += errors
+            if lo is None:
+                continue
+            _finish_table(lo, names["Хаб"], "Хаб", log)
+            try:
+                used = lo.Range.Columns.Count
+            except Exception:  # noqa: BLE001
+                used = 10
+            cell = f"{col_letter(max(used + 3, 60))}1"
+            lo2, _w, errors = _try_ways(ws, names["Хаб_Ряды"], cell, log, [way] + [w for w in ways if w != way])
+            if lo2 is None:
+                raise StepError("создать таблицу Хаб_Ряды", "; ".join(errors))
+            _finish_table(lo2, names["Хаб_Ряды"], "Хаб_Ряды", log)
+            return {"visible": visible, "ascii": ascii_names, "way": way}
+    finally:
+        _set_visible(wb, False, log)
+    # ничего не сработало: оставляем запросы с русскими именами — по ним написана инструкция
+    _add_queries(wb, packet_path, log, False)
+    raise StepError("создать таблицу Хаб", "; ".join(all_errors[-5:]))
 
 
 def col_letter(n: int) -> str:
@@ -223,24 +320,18 @@ def _step(name, fn, *args, log):
         raise StepError(name, e)
 
 
-def _fill(wb, packet_path, log):
+def _fill(wb, packet_path, log, prefer=None):
     _step("Добавляю запросы Power Query", _add_queries, wb, packet_path, log, log=log)
     ws = _step("Готовлю лист «Хаб»", _sheet, wb, log, log=log)
-    _load_table(ws, "Хаб", "A1", log)
-    try:
-        used = ws.ListObjects("Хаб").Range.Columns.Count
-    except Exception:  # noqa: BLE001
-        used = 10
-    # справочник ставим правее с запасом, чтобы новые ряды Хаба не упёрлись в него
-    _load_table(ws, "Хаб_Ряды", f"{col_letter(max(used + 3, 60))}1", log)
-    return ws
+    return ws, _load_tables(wb, ws, packet_path, log, prefer)
 
 
-def connect_model(model_path, packet_path, backups_dir, log=print) -> dict:
-    """Подключить модель. Возвращает {'backup', 'steps', 'partial'}.
+def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None) -> dict:
+    """Подключить модель. Возвращает {'backup', 'steps', 'partial', 'way'}.
 
     partial=True — запросы добавлены и модель сохранена, но таблицы на лист загрузить не удалось:
-    пользователю остаётся «Загрузить в…» (2 действия, инструкция в сообщении)."""
+    пользователю остаётся «Загрузить в…» (2 действия, инструкция в сообщении).
+    way — какой способ сработал (сохраняется в настройках, чтобы в следующий раз начать с него)."""
     model_path = Path(model_path)
     steps = []
 
@@ -258,11 +349,11 @@ def connect_model(model_path, packet_path, backups_dir, log=print) -> dict:
     say(f"Резервная копия: {copy}")
     xl = _excel(say)
     wb = None
-    partial = False
+    partial, way = False, None
     try:
         wb = _step(f"Открываю модель {model_path.name}", lambda: xl.Workbooks.Open(str(model_path), 0, False), log=say)
         try:
-            _fill(wb, packet_path, say)
+            _ws, way = _fill(wb, packet_path, say, prefer)
         except StepError as e:
             if not e.step.startswith(("создать таблицу", "обновить таблицу")):
                 raise
@@ -292,12 +383,12 @@ def connect_model(model_path, packet_path, backups_dir, log=print) -> dict:
             xl.Quit()
         except Exception:  # noqa: BLE001
             pass
-    return {"backup": str(copy), "steps": steps, "partial": partial}
+    return {"backup": str(copy), "steps": steps, "partial": partial, "way": way}
 
 
 def diagnose(packet_path, log=print) -> list[str]:
-    """«Проверить связь с Excel»: все шаги подключения на новой пустой книге (модель не трогается).
-    Возвращает подробный журнал — его можно отправить Claude."""
+    """«Проверить связь с Excel»: все варианты подключения на новой пустой книге (модель не трогается).
+    Возвращает подробный журнал — его можно отправить Claude. Последняя строка — итог."""
     out = []
 
     def say(msg):
@@ -306,8 +397,13 @@ def diagnose(packet_path, log=print) -> list[str]:
 
     try:
         import sys
-        import win32com
-        say(f"Python {sys.version.split()[0]}, pywin32 {getattr(win32com, '__version__', '?')}")
+        import win32com  # noqa: F401
+        try:
+            from importlib.metadata import version
+            pw = version("pywin32")
+        except Exception:  # noqa: BLE001
+            pw = "?"
+        say(f"Python {sys.version.split()[0]}, pywin32 {pw}")
     except ImportError:
         say("pywin32 не установлен")
         return out
@@ -317,32 +413,52 @@ def diagnose(packet_path, log=print) -> list[str]:
         say(str(e))
         return out
     wb = None
+    worked = []
     try:
         say(f"Excel {xl.Version}, сборка {getattr(xl, 'Build', '?')}")
         wb = xl.Workbooks.Add()
-        try:
-            _add_queries(wb, packet_path, say)
-            say("Запросы добавлены: " + ", ".join(q.Name for q in wb.Queries))
-        except Exception as e:  # noqa: BLE001
-            say(f"Не удалось добавить запросы: {e!r}")
-            return out
         ws = wb.Worksheets(1)
-        for i, (title, way) in enumerate(TABLE_WAYS):
-            cell = f"{col_letter(1 + i * 20)}1"
+        col = 1
+        for visible, ascii_names in VARIANTS:
+            say(f"--- {variant_title(visible, ascii_names)}")
+            _set_visible(wb, visible, say)
             try:
-                lo = way(ws, "Хаб", cell)
-                say(f"Способ «{title}»: таблица создана")
+                _add_queries(wb, packet_path, lambda m: None, ascii_names)
+                names = mcode.query_names(ascii_names)
+                say("Запросы добавлены: " + ", ".join(q.Name for q in wb.Queries))
+            except Exception as e:  # noqa: BLE001
+                say(f"Не удалось добавить запросы: {e!r}")
+                continue
+            for title, way in TABLE_WAYS:
+                cell = f"{col_letter(col)}1"
+                col += 6
                 try:
-                    lo.QueryTable.Refresh(False)
-                    say(f"  обновление: строк {lo.ListRows.Count}, столбцов {lo.ListColumns.Count}")
+                    lo = way(ws, names["Хаб"], cell)
+                    try:
+                        lo.QueryTable.Refresh(False)
+                        say(f"Способ «{title}»: РАБОТАЕТ (строк {lo.ListRows.Count}, столбцов {lo.ListColumns.Count})")
+                        worked.append(f"{variant_title(visible, ascii_names)} / {title}")
+                    except Exception as e:  # noqa: BLE001
+                        say(f"Способ «{title}»: таблица создана, но обновление не удалось: {e!r}")
+                    try:
+                        lo.Delete()
+                    except Exception:  # noqa: BLE001
+                        pass
                 except Exception as e:  # noqa: BLE001
-                    say(f"  обновление не удалось: {e!r}")
+                    say(f"Способ «{title}»: ошибка {e!r}")
+            # старый способ без «умной таблицы» — показывает, работает ли подключение к запросу вообще
+            cell = f"{col_letter(col)}1"
+            col += 6
+            try:
+                qt = ws.QueryTables.Add(_conn_string(names["Хаб"]), ws.Range(cell), f"SELECT * FROM [{names['Хаб']}]")
+                qt.Refresh(False)
+                say("Проверка QueryTables.Add (без таблицы): подключение к запросу работает")
                 try:
-                    lo.Delete()
+                    qt.Delete()
                 except Exception:  # noqa: BLE001
                     pass
             except Exception as e:  # noqa: BLE001
-                say(f"Способ «{title}»: ошибка {e!r}")
+                say(f"Проверка QueryTables.Add (без таблицы): ошибка {e!r}")
     finally:
         if wb is not None:
             try:
@@ -353,6 +469,7 @@ def diagnose(packet_path, log=print) -> list[str]:
             xl.Quit()
         except Exception:  # noqa: BLE001
             pass
+    say("ИТОГ: " + ("работает — " + "; ".join(worked) if worked else "ни один способ не сработал"))
     return out
 
 

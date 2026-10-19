@@ -93,7 +93,12 @@ legacy/            исходные навигаторы пользовател�
   Дозагрузка: runner передаёт `ctx.last_period` и `ctx.full_reload` (полная раз в 30 дней, отметка
   `meta full:<id>`); при дозагрузке `FetchResult.partial = True` — проверки «исчезли ряды» и «резко
   меньше строк» не применяются. `Source.timeout()` — свой тайм-аут источника.
-- **Подключение модели (COM)**: `com_connect.TABLE_WAYS` — несколько способов `ListObjects.Add`;
+- **Подключение модели (COM)**: у пользователя (Excel 16, сборка 19127, pywin32, Python 3.13) все три
+  первых способа `ListObjects.Add` дали E_INVALIDARG (-2147024809), а `Queries.Add` работает. Поэтому
+  `_load_tables` перебирает окружения `VARIANTS` (Excel в фоне / видимый свёрнутый × русские / латинские
+  имена запросов `mcode.ASCII_NAMES`) и способы `TABLE_WAYS`; сработавшее запоминается в
+  `settings.excel_way`. Таблицы на листе всегда называются Хаб и Хаб_Ряды.
+  `com_connect.TABLE_WAYS` — несколько способов `ListObjects.Add`;
   ошибка называет шаг (`StepError`); если запросы добавились, а таблицы нет — модель сохраняется
   «почти подключённой» (`partial`). `com_connect.diagnose` — кнопка «Проверить связь с Excel».
   Тесты на поддельном Excel — `tests/test_com.py`.

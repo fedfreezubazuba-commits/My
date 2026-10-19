@@ -21,9 +21,26 @@ def render(template_file: str, packet_path) -> str:
     return text.replace("{{PACKET_PATH}}", m_string(str(packet_path)))
 
 
-def queries(packet_path) -> list[tuple[str, str]]:
+# Запасные латинские имена запросов: в некоторых сборках Excel подключение к запросу с русским
+# именем отвергается («неверный аргумент»). Таблицы на листе всё равно называются Хаб и Хаб_Ряды.
+ASCII_NAMES = {"Хаб_Посылка": "Hub_Packet", "Хаб": "Hub", "Хаб_Ряды": "Hub_Series"}
+
+
+def query_names(ascii_names=False) -> dict:
+    """{русское имя: имя запроса в книге}."""
+    return dict(ASCII_NAMES) if ascii_names else {k: k for k in ASCII_NAMES}
+
+
+def queries(packet_path, ascii_names=False) -> list[tuple[str, str]]:
     """[(имя запроса, M-код)] для подключения модели."""
-    return [(name, render(f, packet_path)) for name, f in QUERIES]
+    names = query_names(ascii_names)
+    out = []
+    for name, f in QUERIES:
+        code = render(f, packet_path)
+        if ascii_names:
+            code = code.replace("Хаб_Посылка", names["Хаб_Посылка"])
+        out.append((names[name], code))
+    return out
 
 
 def strip_comments_and_strings(code: str) -> str:
