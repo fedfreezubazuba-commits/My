@@ -10,6 +10,7 @@ from ..core.base_fmt import fmt, fmt_date
 from ..core.periods import PERIODICITY_RU
 from ..excel import exports, formulas
 from . import widgets as W
+from .schedule_box import ScheduleBox
 from .tab_overview import review_quarantine, send_claude
 
 COLS = ("name", "source", "volume", "last_period", "last_value", "updated", "attempt", "status", "expected", "models")
@@ -116,7 +117,8 @@ class JobsTab(ttk.Frame):
             self.tree.insert("", "end", iid=job["id"], tags=(ST.color(status),), values=(
                 job["name"], src_title, volume(app.store, job["id"], st), st.get("last_label") or "—", val,
                 fmt_date(st.get("last_change") or st.get("last_success")), fmt_date(st.get("last_attempt")),
-                W.status_text(status), fmt_date((st.get("expected_next") or "")[:10]) if job["source"] in ("cbr", "fedstat") else "",
+                W.status_text(status), fmt_date((st.get("expected_next") or "")[:10])
+                if job["source"] in ("cbr", "fedstat") or job.get("release_dates") or st.get("release_next") else "",
                 mods))
         for iid in sel:
             if self.tree.exists(iid):
@@ -281,6 +283,12 @@ class HistoryWindow(tk.Toplevel):
         st = app.store.state(job_id)
         info = (f"Расписание: {S.human(job.get('schedule'))}.  Статус: {ST.word(ST.effective(job, st))}. "
                 f"{st.get('message') or ''}")
+        if st.get("release_next") or st.get("release_note"):
+            info += ("\nИсточник о сроках: " + (f"следующее обновление {S.fmt_moment(st['release_next'])}. "
+                                                 if st.get("release_next") else "") + (st.get("release_note") or ""))
+        if job.get("release_dates"):
+            info += "\nГрафик выхода: " + ", ".join(S.fmt_moment(d) for d in job["release_dates"][:6]) + \
+                ("…" if len(job["release_dates"]) > 6 else "")
         ttk.Label(self, text=info, padding=10, wraplength=960, justify="left").pack(fill="x")
         if st.get("warnings"):
             ttk.Label(self, text="Замечания: " + st["warnings"], padding=(10, 0), style="yellow.TLabel",
@@ -332,10 +340,15 @@ class EditWindow(tk.Toplevel):
         ttk.Label(f, text="Название").grid(row=0, column=0, sticky="w")
         self.name = tk.StringVar(value=self.job["name"])
         ttk.Entry(f, textvariable=self.name, width=60).grid(row=0, column=1, sticky="we", pady=3)
-        ttk.Label(f, text="Как часто проверять").grid(row=1, column=0, sticky="w")
-        self.sched = tk.StringVar(value=self.job.get("schedule", "auto"))
-        ttk.Combobox(f, textvariable=self.sched, values=[k for k, _ in S.CHOICES], width=20).grid(row=1, column=1, sticky="w", pady=3)
-        ttk.Label(f, text="auto, daily, weekly:Wed, monthly:15, every:6h", style="Hint.TLabel").grid(row=2, column=1, sticky="w")
+        ttk.Label(f, text="Как часто проверять").grid(row=1, column=0, sticky="nw", pady=3)
+        st = app.store.state(job_id)
+        hint = ""
+        if st.get("release_next") or st.get("release_note"):
+            hint = "источник сообщает: " + "; ".join(x for x in (
+                ("следующее обновление " + S.fmt_moment(st["release_next"])) if st.get("release_next") else "",
+                st.get("release_note") or "") if x)
+        self.sched_box = ScheduleBox(f, self.job.get("schedule", "auto"), self.job.get("release_dates"), hint)
+        self.sched_box.grid(row=1, column=1, sticky="we", pady=3)
         ttk.Label(f, text="Порог скачка, %").grid(row=3, column=0, sticky="w")
         self.jump = tk.StringVar(value=str((self.job.get("checks") or {}).get("max_jump_pct") or ""))
         ttk.Entry(f, textvariable=self.jump, width=10).grid(row=3, column=1, sticky="w", pady=3)
@@ -359,7 +372,7 @@ class EditWindow(tk.Toplevel):
 
     def save(self):
         try:
-            S.parse(self.sched.get())
+            schedule, release = self.sched_box.get()
         except ValueError as e:
             messagebox.showwarning("Расписание", str(e), parent=self)
             return
@@ -374,7 +387,7 @@ class EditWindow(tk.Toplevel):
         else:
             checks.pop("max_jump_pct", None)
         self.app.cfg.update_job(self.job["id"], name=self.name.get().strip() or self.job["name"],
-                                schedule=self.sched.get().strip(), checks=checks)
+                                schedule=schedule, release_dates=release, checks=checks)
         models = self.app.cfg.models()
         for m in models:
             if m["name"] in self.mvars:

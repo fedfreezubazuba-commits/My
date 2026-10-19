@@ -32,15 +32,79 @@ def test_labels_and_rank():
 
 
 def test_schedule_parse_and_slots():
-    assert S.parse("weekly:Wed") == ("weekly", 2)
-    assert S.parse("weekly:ср") == ("weekly", 2)
-    assert S.parse("monthly:15") == ("monthly", 15)
-    assert S.parse("every:6h") == ("every", 6)
-    with pytest.raises(ValueError):
-        S.parse("иногда")
+    assert S.parse("weekly:Wed") == ("weekly", (2,), None)
+    assert S.parse("weekly:ср") == ("weekly", (2,), None)
+    assert S.parse("weekly:Mon,ср@10:30") == ("weekly", (0, 2), (10, 30))
+    assert S.parse("monthly:15") == ("monthly", 15, None)
+    assert S.parse("daily@9:05") == ("daily", None, (9, 5))
+    assert S.parse("workday:5@10:00") == ("workday", 5, (10, 0))
+    assert S.parse("every:6h") == ("every", 6, None)
+    for bad in ("иногда", "weekly:", "daily@25:00", "auto@10:00", "every:6h@10:00"):
+        with pytest.raises(ValueError):
+            S.parse(bad)
+    assert S.make("weekly", [2, 4], (10, 30)) == "weekly:Wed,Fri@10:30"
+    assert S.human("weekly:Wed,Fri@10:30") == "по дням: ср, пт в 10:30"
+    assert S.human("weekly:Wed@10:30") == "раз в неделю, в среду в 10:30"
     now = dt.datetime(2026, 10, 19, 10, 0)    # понедельник
-    assert S.last_slot("weekly", 2, now) == dt.datetime(2026, 10, 14, 6)
+    assert S.last_slot("weekly", (2,), now) == dt.datetime(2026, 10, 14, 6)
+    assert S.last_slot("weekly", (0, 2), now, (10, 30)) == dt.datetime(2026, 10, 14, 10, 30)
+    assert S.last_slot("weekly", (0, 2), now, (9, 0)) == dt.datetime(2026, 10, 19, 9, 0)
     assert S.last_slot("monthly", 31, dt.datetime(2026, 3, 1, 5)) == dt.datetime(2026, 2, 28, 6)
+    # 1-й рабочий день января 2026 — 12-е (каникулы до 11-го)
+    assert S.last_slot("workday", 1, dt.datetime(2026, 1, 20), (10, 0)) == dt.datetime(2026, 1, 12, 10, 0)
+    assert S.next_slot("weekly:Wed@10:30", now) == dt.datetime(2026, 10, 21, 10, 30)
+    assert S.next_slot("auto", now) is None
+
+
+def test_workdays():
+    from hub.core import workdays as WD
+    assert not WD.is_workday(dt.date(2026, 3, 9))        # 8 марта в воскресенье → 9-е выходной
+    assert not WD.is_workday(dt.date(2026, 11, 4))
+    assert WD.is_workday(dt.date(2025, 11, 1))           # рабочая суббота
+    assert WD.nth_workday(2026, 5, 1) == dt.date(2026, 5, 4)
+    assert WD.add_workdays(dt.date(2026, 9, 30), 25) == dt.date(2026, 11, 5)
+    assert not WD.is_workday(dt.date(2027, 5, 10))       # общее правило: 9 мая 2027 — воскресенье
+
+
+def test_workdays_user_file(tmp_path):
+    from hub.core import workdays as WD
+    f = tmp_path / "Праздники.txt"
+    f.write_text("2027-11-06 рабочий\n2027-11-05 выходной\nпросто текст\n", encoding="utf-8")
+    assert WD.is_workday(dt.date(2027, 11, 6), f)
+    assert not WD.is_workday(dt.date(2027, 11, 5), f)
+
+
+def test_release_text_parsing():
+    today = dt.date(2026, 10, 19)
+    text = """Календарь публикаций
+    Индекс потребительских цен   21.10.2026 19:00
+    Оборот розничной торговли    2026-11-18
+    Инфляция: 25 ноября; 23 декабря в 19:00
+    Итоги 2025 года — 20 марта
+    повтор 21.10.2026"""
+    got = S.parse_release_text(text, today)
+    assert got == ["2026-10-21T19:00", "2026-11-18", "2026-11-25", "2026-12-23T19:00", "2027-03-20"]
+    assert S.fmt_moment("2026-10-21T19:00") == "21.10.2026 19:00"
+    assert S.parse_release_text(S.fmt_moment("2026-10-21T19:00"), today) == ["2026-10-21T19:00"]
+
+
+def test_release_dates_trigger_checks():
+    job = {"schedule": "auto", "enabled": True, "release_dates": ["2026-10-21T19:00"]}
+    st = {"last_attempt": "2026-10-21T18:00:00", "expected_next": "2026-12-01T06:00:00"}
+    at = dt.datetime(2026, 10, 21, 19, 5)
+    assert not S.is_due(job, st, at - dt.timedelta(minutes=10), periodicity=P.MONTH)
+    assert S.is_due(job, st, at, periodicity=P.MONTH)
+    # проверили в 19:05, данных нет → снова через 2 часа, но не после 23:00
+    st = {**st, "last_attempt": "2026-10-21T19:05:00"}
+    assert not S.is_due(job, st, dt.datetime(2026, 10, 21, 20, 0), periodicity=P.MONTH)
+    assert S.is_due(job, st, dt.datetime(2026, 10, 21, 21, 10), periodicity=P.MONTH)
+    st2 = {**st, "last_change": "2026-10-21T19:05:00"}
+    assert not S.is_due(job, st2, dt.datetime(2026, 10, 21, 21, 10), periodicity=P.MONTH)
+    # дата, которую сообщил источник, работает так же
+    job2 = {"schedule": "weekly:Mon", "enabled": True}
+    st3 = {"last_attempt": "2026-10-19T07:00:00", "release_next": "2026-10-20"}
+    assert not S.is_due(job2, st3, dt.datetime(2026, 10, 20, 8, 0))
+    assert S.is_due(job2, st3, dt.datetime(2026, 10, 20, 9, 0))
 
 
 def test_is_due():
@@ -101,7 +165,7 @@ def test_task_xml_is_valid():
     root = ET.fromstring(xml.replace('encoding="UTF-16"', ""))
     ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
     assert root.find("t:Settings/t:StartWhenAvailable", ns).text == "true"
-    assert root.find("t:Triggers/t:TimeTrigger/t:Repetition/t:Interval", ns).text == "PT1H"
+    assert root.find("t:Triggers/t:TimeTrigger/t:Repetition/t:Interval", ns).text == "PT15M"
     assert root.find("t:Triggers/t:LogonTrigger", ns) is not None
     assert root.find("t:Actions/t:Exec/t:Arguments", ns).text == "-m hub update --scheduled"
 

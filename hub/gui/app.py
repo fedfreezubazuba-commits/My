@@ -37,6 +37,16 @@ class HubApp:
             root.after(300, self.first_run)
         else:
             root.after(200, self.refresh_all)
+        threading.Thread(target=self._upgrade_task, daemon=True).start()
+
+    @staticmethod
+    def _upgrade_task():
+        """Задача планировщика от прежней версии (раз в час) → каждые 15 минут."""
+        try:
+            from ..core import winsched
+            winsched.upgrade()
+        except Exception:  # noqa: BLE001
+            pass
 
     # --- сервисы -------------------------------------------------------------
     def open_paths(self):

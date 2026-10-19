@@ -44,7 +44,7 @@ class SettingsTab(ttk.Frame):
         row("Язык формул", lf)
 
         self.auto = tk.BooleanVar()
-        self.auto_chk = ttk.Checkbutton(g, text="Обновлять в фоне каждый час и при входе в Windows",
+        self.auto_chk = ttk.Checkbutton(g, text=f"Обновлять в фоне ({winsched.EVERY_TEXT}) и при входе в Windows",
                                         variable=self.auto, command=self.toggle_auto)
         row("Автообновление", self.auto_chk)
 

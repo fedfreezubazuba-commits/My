@@ -1,10 +1,11 @@
 """
 Планировщик заданий Windows (раздел 10 ТЗ): задача «Хаб данных — обновление» запускает
-`pythonw -m hub update --scheduled` каждый час и при входе в систему, с режимом
+`pythonw -m hub update --scheduled` каждые 15 минут и при входе в систему, с режимом
 «запускать как можно скорее после пропущенного запуска» (StartWhenAvailable).
 
 Задача создаётся из XML через schtasks — так доступны все нужные настройки.
 XML собирается обычным кодом и проверяется тестами на любой системе.
+Частый запуск дешёвый: если по расписанию ничего не пора проверять, проход сразу заканчивается.
 """
 import datetime as dt
 import getpass
@@ -17,6 +18,8 @@ from xml.sax.saxutils import escape
 from .paths import IS_WINDOWS, PROJECT
 
 TASK_NAME = "Хаб данных — обновление"
+INTERVAL = "PT15M"     # точность расписания «в среду в 10:30» — до 15 минут
+EVERY_TEXT = "каждые 15 минут"
 
 
 def pythonw() -> Path:
@@ -35,7 +38,7 @@ def task_xml(command: str, args: str, workdir: str, user: str | None = None, sta
   </RegistrationInfo>
   <Triggers>
     <TimeTrigger>
-      <Repetition><Interval>PT1H</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <Repetition><Interval>{INTERVAL}</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
       <StartBoundary>{start}</StartBoundary>
       <Enabled>true</Enabled>
     </TimeTrigger>
@@ -105,7 +108,17 @@ def enable() -> tuple[bool, str]:
         Path(path).unlink(missing_ok=True)
     if r.returncode != 0:
         return False, f"Не удалось создать задачу планировщика: {(r.stderr or r.stdout).strip()}"
-    return True, "Автообновление включено: каждый час и при входе в Windows"
+    return True, f"Автообновление включено: {EVERY_TEXT} и при входе в Windows"
+
+
+def upgrade() -> bool:
+    """Задача, созданная прежней версией (раз в час), пересоздаётся с новым интервалом."""
+    if not IS_WINDOWS:
+        return False
+    r = _run(["schtasks", "/Query", "/TN", TASK_NAME, "/XML"])
+    if r.returncode != 0 or f"<Interval>{INTERVAL}</Interval>" in (r.stdout or ""):
+        return False
+    return enable()[0]
 
 
 def disable() -> tuple[bool, str]:

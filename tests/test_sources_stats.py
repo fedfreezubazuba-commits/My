@@ -128,3 +128,29 @@ def test_fedstat_series_have_separate_dims(fakes):
     s = next(s for s in res.series if s.code.endswith("643_11_M"))
     assert s.dims[0][0] == "Показатель"
     assert ("Классификатор объектов административно-территориального деления (ОКАТО)", "Российская Федерация") in s.dims
+
+
+def test_fedstat_release_from_page():
+    from hub.core import periods as P
+    from hub.sources.fedstat import release_from_page
+    today = dt.date(2026, 10, 19)
+    rule = ("<table><tr><td>Срок предоставления информации</td>"
+            "<td>ежемесячно, на 25-й рабочий день после отчетного периода</td></tr></table>")
+    # последние данные за август → следующие за сентябрь: 25 рабочих дней после 30.09 (4 ноября — праздник)
+    assert release_from_page(rule, dt.date(2026, 8, 31), P.MONTH, today)[0] == "2026-11-05"
+    exact = "<div>Дата очередного обновления: 20.11.2026</div>" + rule
+    d, note = release_from_page(exact, dt.date(2026, 8, 31), P.MONTH, today)
+    assert d == "2026-11-20" and "25-й рабочий день" in note
+    day = "<td>Срок размещения</td><td>20 числа месяца, следующего за отчетным</td>"
+    assert release_from_page(day, dt.date(2026, 8, 31), P.MONTH, today)[0] == "2026-10-20"
+    assert release_from_page("<p>ничего о сроках</p>", dt.date(2026, 8, 31), P.MONTH, today) == (None, "")
+    old = "<div>Дата очередного обновления: 20.11.2020</div>"
+    assert release_from_page(old, dt.date(2026, 8, 31), P.MONTH, today) == (None, "")
+
+
+def test_fedstat_fetch_reads_release_from_same_page(fakes):
+    fakes["fedstat"].page += "<div>Дата очередного обновления: 20.11.2099</div>".encode("utf-8")
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883"]}, "years_from": 2023},
+                               Context(clients=fakes))
+    assert res.next_release == "2099-11-20"
+    assert len([u for u, d in fakes["fedstat"].calls if d is None]) == 1     # лишних запросов нет

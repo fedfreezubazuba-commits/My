@@ -50,7 +50,7 @@ class OverviewTab(ttk.Frame):
             self.auto_info.configure(text="Автообновление работает через планировщик Windows (здесь не Windows).")
         else:
             last = store.meta_get("runner_heartbeat")
-            self.auto_info.configure(text=("Автообновление включено: каждый час и при входе в Windows. "
+            self.auto_info.configure(text=(f"Автообновление включено: {winsched.EVERY_TEXT} и при входе в Windows. "
                                            if enabled else "Автообновление выключено — данные обновляются только по кнопке. ")
                                      + (f"Последнее обновление: {fmt_date(last)}." if last else ""))
         bad = len(probs) + (1 if stale and enabled else 0)

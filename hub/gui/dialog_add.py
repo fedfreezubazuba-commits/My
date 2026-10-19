@@ -11,8 +11,8 @@ from tkinter import messagebox, ttk
 
 from .. import sources
 from ..core import errors as E
-from ..core import schedule as S
 from . import widgets as W
+from .schedule_box import ScheduleBox
 
 BIG_JOB = 12      # больше рядов — в модель отдаём не весь показатель, а выбранную выжимку
 
@@ -53,16 +53,12 @@ class AddDialog(tk.Toplevel):
 
         ttk.Label(body, text="3. Как часто проверять", style="Title.TLabel").pack(anchor="w")
         default = schedule or self.src.default_schedule(params)
-        self.choices = list(S.CHOICES)
-        if default not in dict(self.choices):
-            self.choices.append((default, S.human(default)))
-        self.sched = tk.StringVar(value=dict(self.choices)[default])
-        ttk.Combobox(body, textvariable=self.sched, values=[t for _, t in self.choices], state="readonly",
-                     width=45).pack(anchor="w", pady=(2, 6))
-        hint = note or ("На сайте видно только текущее значение — хаб будет сохранять его каждый день "
-                        "и сам построит историю." if self.src.snapshot else
-                        "Хаб сам поймёт, когда выходят новые данные, и будет проверять чаще в эти дни.")
-        ttk.Label(body, text=hint, style="Hint.TLabel", wraplength=560, justify="left").pack(anchor="w", pady=(0, 6))
+        self.sched_box = ScheduleBox(body, default)
+        self.sched_box.pack(fill="x", pady=(2, 6))
+        hint = note or ("На сайте видно только текущее значение — хаб будет сохранять его при каждой проверке "
+                        "и сам построит историю." if self.src.snapshot else "")
+        if hint:
+            ttk.Label(body, text=hint, style="Hint.TLabel", wraplength=560, justify="left").pack(anchor="w", pady=(0, 6))
 
         more = W.Collapsible(body, "Дополнительно")
         more.pack(fill="x", pady=(4, 6))
@@ -72,11 +68,6 @@ class AddDialog(tk.Toplevel):
         r.pack(fill="x", pady=2)
         ttk.Label(r, text="Отложить данные на проверку, если значение изменилось больше чем на, %:").pack(side="left")
         ttk.Entry(r, textvariable=self.jump, width=8).pack(side="left", padx=6)
-        r = ttk.Frame(more.body)
-        r.pack(fill="x", pady=2)
-        ttk.Label(r, text="Своё расписание (daily, weekly:Wed, monthly:15, every:6h):").pack(side="left")
-        self.custom = tk.StringVar()
-        ttk.Entry(r, textvariable=self.custom, width=16).pack(side="left", padx=6)
         r = ttk.Frame(more.body)
         r.pack(fill="x", pady=2)
         ttk.Label(r, text="Метки через запятую:").pack(side="left")
@@ -98,21 +89,13 @@ class AddDialog(tk.Toplevel):
         W.center(self, app.root)
         self.grab_set()
 
-    def _schedule(self):
-        custom = self.custom.get().strip()
-        if custom:
-            S.parse(custom)
-            return custom
-        text = self.sched.get()
-        return next(k for k, t in self.choices if t == text)
-
     def add(self):
         name = self.name.get().strip()
         if not name:
             messagebox.showwarning("Название", "Введите название показателя.", parent=self)
             return
         try:
-            schedule = self._schedule()
+            schedule, release = self.sched_box.get()
         except ValueError as e:
             messagebox.showwarning("Расписание", str(e), parent=self)
             return
@@ -127,7 +110,8 @@ class AddDialog(tk.Toplevel):
         else:
             checks.pop("max_jump_pct", None)
         tags = [t.strip() for t in self.tags.get().split(",") if t.strip()]
-        job = self.app.cfg.add_job(self.source, name, self.params, schedule=schedule, checks=checks, tags=tags)
+        job = self.app.cfg.add_job(self.source, name, self.params, schedule=schedule, checks=checks, tags=tags,
+                                   extra={"release_dates": release} if release else None)
         for m, v in self.model_vars.items():
             if v.get():
                 self.app.cfg.subscribe(m, job_id=job["id"])

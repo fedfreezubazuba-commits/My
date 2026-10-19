@@ -22,7 +22,9 @@ hub/
     config.py      jobs.yaml / models.yaml / settings.yaml / trash.yaml в рабочей папке
     store.py       SQLite: series, observations (state current|old|quarantine|rejected), runs, job_state,
                    subscriptions (постоянный порядок столбцов), model_state, quarantine, meta
-    schedule.py    auto | daily | weekly:Wed | monthly:15 | every:6h; ожидаемая дата и «Задерживается»
+    schedule.py    auto | daily@09:30 | weekly:Mon,Wed@10:30 | monthly:15 | workday:5@10:00 | every:6h;
+                   график выхода (release_dates, release_next); ожидаемая дата и «Задерживается»
+    workdays.py    производственный календарь РФ (+ «Праздники.txt» в рабочей папке)
     checks.py      проверки перед записью (раздел 12 ТЗ)
     errors.py      категории ошибок + человеческие тексты и действия
     periods.py     даты/периоды/подписи (2025-01, 2025-Q1…), разбор чисел и дат с сайтов
@@ -119,6 +121,15 @@ legacy/            исходные навигаторы пользовател�
   отмечено не всё. `packet.model_plan` → (коды, окна дат); `build` отдаёт в посылку только период окна.
   Окно «Данные для модели» — `gui/dialog_select.py`. Подписка «на весь показатель» (`jobs`) осталась,
   но для показателей больше `dialog_add.BIG_JOB` рядов диалог добавления предлагает выборку.
+
+- **Расписание и график выхода (0.5)**: строка `schedule` (см. `schedule.py`, время после «@»);
+  `job.release_dates` — даты из вставленного календаря публикаций (`parse_release_text`),
+  `job_state.release_next/release_note` — срок, который сообщил источник (`FetchResult.next_release`;
+  ЕМИСС — `fedstat.release_from_page` по уже скачанной странице показателя, формат живой страницы ещё
+  не проверен). В момент выхода — проверка, затем каждые 2 ч до 23:00, пока нет `last_change`.
+  `expected_next` берёт ближайшую дату графика. Задача планировщика — каждые 15 мин (`winsched.INTERVAL`,
+  старая задача пересоздаётся при запуске окна — `winsched.upgrade`); пустой проход по расписанию
+  выходит сразу, посылки пересобираются не чаще раза в час (`meta packets_built`).
 
 ## Категории ошибок
 

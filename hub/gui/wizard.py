@@ -57,7 +57,7 @@ class FirstRunWizard(tk.Toplevel):
         elif self.step == 2:
             ttk.Label(b, text="Шаг 3 из 3. Автообновление", style="Title.TLabel").pack(anchor="w")
             ttk.Label(b, wraplength=620, justify="left", text=(
-                "Хаб может сам обновлять данные в фоне — каждый час и при входе в Windows, даже когда это окно "
+                "Хаб может сам обновлять данные в фоне — по расписанию каждого показателя, даже когда это окно "
                 "закрыто. Выключить можно в любой момент на «Обзоре».")).pack(anchor="w", pady=8)
             ttk.Checkbutton(b, text="Включить автообновление", variable=self.auto).pack(anchor="w")
         else:

@@ -214,3 +214,24 @@ def test_selection_windows_merge():
     assert packet._merge_window(("2022-01-01", ""), ("2020-01-01", "2021-12-31")) == ("2020-01-01", "")
     assert packet._merge_window(("2022-01-01", ""), None) is None
     assert packet.in_window("2023-05-31", ("2022-01-01", "")) and not packet.in_window("2021-05-31", ("2022-01-01", ""))
+
+
+def test_release_date_from_source_sets_expected(runner, fakes):
+    fakes["fedstat"].page += "<div>Дата очередного обновления: 20.11.2099</div>".encode("utf-8")
+    _, fs = add_jobs(runner)
+    runner.run(job_ids=[fs["id"]])
+    st = runner.store.state(fs["id"])
+    assert st["release_next"] == "2099-11-20"
+    assert st["expected_next"].startswith("2099-11-20T09:00")
+
+
+def test_scheduled_empty_pass_is_cheap(runner, monkeypatch):
+    cbr, _ = add_jobs(runner)
+    runner.run(force=True)
+    calls = []
+    monkeypatch.setattr(packet, "rebuild", lambda *a, **k: calls.append(1) or {})
+    rep = runner.run(scheduled=True)                 # всё только что проверено
+    assert not rep.outcomes and not calls
+    runner.store.meta_set("packets_built", "2000-01-01T00:00:00")
+    runner.run(scheduled=True)
+    assert calls == [1]                               # раз в час посылки всё же пересобираются

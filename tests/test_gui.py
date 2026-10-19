@@ -204,3 +204,40 @@ def test_selection_dialog_extract(app, fakes):
     app.models.refresh()
     groups = app.models.series.get_children()
     assert len(groups) == 1 and "Выборка" in app.models.series.item(groups[0], "text")
+
+
+def test_schedule_box_weekly_time_and_release(app):
+    from hub.gui.dialog_add import AddDialog
+    from hub.gui.schedule_box import MODES, ReleaseDialog
+    from hub.gui.tab_jobs import EditWindow
+    d = AddDialog(app, "cbr", {"category": 18, "indicators": [37], "m1": [2]}, "Ставки")
+    box = d.sched_box
+    assert box.get() == ("auto", [])
+    box.combo.set(dict(MODES)["weekly"])
+    box._mode_changed()
+    box.days[0].set(False)
+    box.days[2].set(True)
+    box.time.set("10:30")
+    pump(app, 0.2)
+    assert box.get()[0] == "weekly:Wed@10:30"
+    assert "среду в 10:30" in box.info.cget("text") and "Ближайшая проверка" in box.info.cget("text")
+    box.time.set("25:00")
+    pump(app, 0.1)
+    assert "Непонятное время" in box.info.cget("text")
+    box.time.set("10:30")
+    rd = ReleaseDialog(box, [], box._set_release)
+    rd.text.insert("1.0", "ИПЦ 21.10.2099 19:00\nВВП 18 ноября 2099")
+    rd.save()
+    assert box.get()[1] == ["2099-10-21T19:00", "2099-11-18"]
+    d.add()
+    assert pump(app, 10, until=lambda: "Получено" in d.result.cget("text"))
+    job = app.cfg.job(d.job["id"])
+    assert job["schedule"] == "weekly:Wed@10:30" and job["release_dates"] == ["2099-10-21T19:00", "2099-11-18"]
+    d.destroy()
+    w = EditWindow(app, job["id"])
+    assert w.sched_box.get() == ("weekly:Wed@10:30", ["2099-10-21T19:00", "2099-11-18"])
+    w.sched_box.combo.set(dict(MODES)["workday"])
+    w.sched_box._mode_changed()
+    w.sched_box.work_n.set("5")
+    w.save()
+    assert app.cfg.job(job["id"])["schedule"] == "workday:5@10:30"

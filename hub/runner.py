@@ -1,5 +1,5 @@
 """
-Фоновое обновление (раздел 10 ТЗ). Вызывается планировщиком Windows каждый час и при входе
+Фоновое обновление (раздел 10 ТЗ). Вызывается планировщиком Windows каждые 15 минут и при входе
 в систему, а также кнопками «Обновить сейчас» / «Обновить всё сейчас».
 
   1. блокировка — два прохода не идут одновременно;
@@ -281,6 +281,8 @@ class Runner:
 
         res = payload
         out.warnings = list(res.warnings)
+        if res.next_release or res.release_note:     # срок следующего обновления, который сообщил источник
+            self.store.set_state(job["id"], release_next=res.next_release, release_note=res.release_note or None)
         out.raw_path = self._save_raw(job, res)
         initial = not self.store.series_of_job(job["id"]) or initial_hint
         codes = {s.key: self.store.peek_code(job["id"], s.key) or s.code for s in res.series}
@@ -367,8 +369,11 @@ class Runner:
             else:
                 jobs = self.due_jobs()
             self.log.info("Проход: %d показателей (force=%s, scheduled=%s)", len(jobs), force, scheduled)
+            if not jobs and scheduled and not self._rebuild_overdue():
+                return report        # по расписанию ничего не пора проверять — частый запуск ничего не стоит
             self._run_jobs(jobs, report, progress, cheap=not (force or job_ids))
             report.packets = packet.rebuild(self.cfg, self.store, self.paths, log=self.log)
+            self.store.meta_set("packets_built", now_iso())
             from .excel.models import models_with_new_data
             report.models_new = models_with_new_data(self.cfg, self.store)
             if settings.get("per_job_files"):
@@ -387,6 +392,14 @@ class Runner:
                 from .core import notify
                 notify.after_run(self, report)
         return report
+
+    def _rebuild_overdue(self) -> bool:
+        """Посылки пересобираются и в пустом проходе, но не чаще раза в час."""
+        last = self.store.meta_get("packets_built")
+        try:
+            return not last or dt.datetime.now() - dt.datetime.fromisoformat(last) >= dt.timedelta(hours=1)
+        except ValueError:
+            return True
 
     def _purge_raw(self, days):
         """Сырые ответы старше N дней удаляются (последний ответ показателя сохраняется всегда)."""

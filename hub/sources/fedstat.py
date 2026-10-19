@@ -23,7 +23,7 @@ import xml.etree.ElementTree as ET
 from ..core import periods as P
 from ..core.errors import HubError, StructureError, classify, human_message
 from .base import FetchResult, Obs, SeriesInfo, Source
-from .fedstat_api import BASE, Fedstat
+from .fedstat_api import BACKSLASH_U, BASE, Fedstat
 
 NS = {"m": "http://www.SDMX.org/resources/SDMXML/schemas/v1_0/message",
       "s": "http://www.SDMX.org/resources/SDMXML/schemas/v1_0/structure",
@@ -142,6 +142,58 @@ def _num(v):
         raise StructureError(f"ЕМИСС вернул не число: {v!r}")
 
 
+# --- срок следующего обновления (паспорт на странице показателя) --------------------------------
+# Формат страницы fedstat.ru из облака проверить нельзя, поэтому разбор терпимый: ищем фразы вида
+# «Дата очередного обновления: 20.11.2026» и «Срок предоставления: ежемесячно, на 25-й рабочий день
+# после отчетного периода». Не нашлось — ничего страшного, хаб оценит срок по истории.
+NEXT_RE = re.compile(
+    r"(?:очередн\w*|следующ\w*|ближайш\w*|планов\w*|планируем\w*|предполагаем\w*|ожидаем\w*)\s+"
+    r"(?:дат\w*\s+)?(?:обновлени\w*|публикаци\w*|актуализаци\w*|размещени\w*|предоставлени\w*)"
+    r"[^0-9]{0,40}?(\d{1,2}\.\d{1,2}\.\d{4}|\d{4}-\d{2}-\d{2})", re.I)
+NOTE_RE = re.compile(
+    r"((?:срок\w*|периодичност\w*)\s+(?:предоставлени\w*|размещени\w*|публикаци\w*|обновлени\w*|"
+    r"актуализаци\w*|распространени\w*)[^\n:]{0,60}):?\s*\n?\s*([^\n;]{3,160})", re.I)
+WORKDAY_RE = re.compile(r"(\d{1,3})\s*-?\s*(?:й|го|ый|ой)?\s+рабоч\w*\s+д", re.I)
+DAYNUM_RE = re.compile(r"(\d{1,2})\s*-?\s*(?:го\s+)?числ", re.I)
+
+
+def page_text(html) -> str:
+    """Текст страницы: каждая ячейка/блок — с новой строки (подпись и значение различимы)."""
+    import html as H
+    t = html.decode("utf-8", "replace") if isinstance(html, bytes) else str(html or "")
+    t = re.sub(BACKSLASH_U, lambda m: chr(int(m.group(1), 16)), t)
+    t = H.unescape(re.sub(r"<[^>]+>", "\n", t))
+    t = re.sub(r"[ \t\r\f\v\xa0]+", " ", t)
+    return re.sub(r"\s*\n\s*", "\n", t)
+
+
+def release_from_page(html, last_end: dt.date | None, periodicity, today: dt.date):
+    """→ (дата следующего обновления «ГГГГ-ММ-ДД» или None, текст о сроках или "")."""
+    from ..core import workdays
+    text = page_text(html)
+    note = ""
+    m = NOTE_RE.search(text)
+    if m:
+        note = (" ".join(m.group(1).split()) + ": " + " ".join(m.group(2).split()))[:200]
+    for m in NEXT_RE.finditer(text):
+        d = P.parse_date(m.group(1))
+        if d and d >= today - dt.timedelta(days=3):
+            return d.isoformat(), note
+    if not note or not last_end or periodicity not in P.ORDER:
+        return None, note
+    # «на 25-й рабочий день после отчётного периода» / «20 числа месяца, следующего за отчётным»
+    nxt = P.next_period_end(periodicity, last_end)
+    low = note.lower()
+    m = WORKDAY_RE.search(low)
+    if m and "после" in low:
+        return workdays.add_workdays(nxt, int(m.group(1))).isoformat(), note
+    m = DAYNUM_RE.search(low)
+    if m and 1 <= int(m.group(1)) <= 31:
+        y, mo = (nxt.year + 1, 1) if nxt.month == 12 else (nxt.year, nxt.month + 1)
+        return dt.date(y, mo, min(int(m.group(1)), P.month_end(y, mo).day)).isoformat(), note
+    return None, note
+
+
 class FedstatSource(Source):
     kind = "fedstat"
     title = "ЕМИСС (Росстат)"
@@ -200,7 +252,19 @@ class FedstatSource(Source):
     def fetch(self, params, ctx) -> FetchResult:
         fs = self.client(ctx)
         ind_id = str(params["id"])
-        info = fs.indicator(ind_id)
+        page = {}
+        orig_get = fs._get
+
+        def remember_page(url, *a, **k):     # запросы те же; страницу запоминаем ради сроков обновления
+            ct, body = orig_get(url, *a, **k)
+            if "/indicator/" in url and "downloadData" not in url:
+                page["html"] = body
+            return ct, body
+        fs._get = remember_page
+        try:
+            info = fs.indicator(ind_id)
+        finally:
+            fs._get = orig_get
         # download() снова читает страницу показателя — отдаём ему уже прочитанную
         orig = fs.indicator
         fs.indicator = lambda _id: info
@@ -226,7 +290,24 @@ class FedstatSource(Source):
         for xml in parts:
             series += sdmx_series(xml)
         self._to_result(series, info, ind_id, res)
+        if page.get("html"):
+            try:
+                self._release(page["html"], res, ctx)
+            except Exception:  # noqa: BLE001 — срок обновления не обязателен
+                pass
         return res
+
+    @staticmethod
+    def _release(html, res, ctx):
+        dated = [o for o in res.obs if o.value is not None]
+        if not dated:
+            return
+        per_of = {s.key: s.periodicity for s in res.series}
+        best = min((per_of.get(o.key) for o in dated if per_of.get(o.key) in P.ORDER),
+                   key=lambda p: P.typical_days(p), default=None)
+        last = max((o.period_end for o in dated if per_of.get(o.key) == best), default=None)
+        today = (getattr(ctx, "now", None) or dt.datetime.now()).date() if ctx else dt.date.today()
+        res.next_release, res.release_note = release_from_page(html, last, best, today)
 
     def _download_in_parts(self, fs, ind_id, info, select, years, params, ctx):
         """Большие показатели — частями по годам. Размер части подбирается сам: при сбое части она
