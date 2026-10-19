@@ -270,6 +270,30 @@ class Store:
                 pass
         return out
 
+    def window_stats(self, codes, a="", b=""):
+        """{код: (число значений, последнее значение, подпись последнего периода)} в периоде [a; b]."""
+        out = {}
+        codes = list(codes)
+        for i in range(0, len(codes), 400):
+            part = codes[i:i + 400]
+            marks = ",".join("?" * len(part))
+            cond, args = "", list(part)
+            if a:
+                cond += " AND period_end>=?"
+                args.append(a)
+            if b:
+                cond += " AND period_end<=?"
+                args.append(b)
+            for r in self.q(f"SELECT code, COUNT(*) n, MAX(period_end) last FROM observations WHERE state='current'"
+                            f" AND code IN ({marks}){cond} GROUP BY code", args):
+                out[r["code"]] = [r["n"], None, r["last"]]
+        for code, v in out.items():
+            r = self.q1("SELECT value, period_label FROM observations WHERE code=? AND state='current' AND period_end=?",
+                        (code, v[2]))
+            if r:
+                v[1], v[2] = r["value"], r["period_label"]
+        return {k: tuple(v) for k, v in out.items()}
+
     def changed_since(self, codes, since_iso):
         if not codes:
             return []

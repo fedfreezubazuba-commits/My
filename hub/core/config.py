@@ -194,6 +194,7 @@ class Config:
             m.setdefault("jobs", [])
             m.setdefault("series", [])
             m.setdefault("exclude", [])
+            m.setdefault("selections", [])
             m.setdefault("active", True)
         return models
 
@@ -253,6 +254,44 @@ class Config:
             if code not in m["exclude"]:
                 m["exclude"].append(code)
             self.save_models(models)
+
+    # --- выборки: какие ряды показателя и за какой период получает модель ---------
+    def save_selection(self, model_name, sel: dict) -> dict:
+        """Добавить или заменить выборку (по sel["id"]). Поля: job, name, filters {поле: [значения]},
+        from / to (ГГГГ-ММ-ДД или пусто)."""
+        with _lock:
+            models = self.models()
+            m = next((x for x in models if x["name"] == model_name), None)
+            if not m:
+                raise KeyError(model_name)
+            if not sel.get("id"):
+                used = {s.get("id") for s in m["selections"]}
+                n = 1
+                while f"s{n}" in used:
+                    n += 1
+                sel["id"] = f"s{n}"
+            m["selections"] = [s for s in m["selections"] if s.get("id") != sel["id"]] + [sel]
+            # выборка заменяет подписку «на весь показатель» (иначе в модель уйдёт всё)
+            if sel.get("job") in m["jobs"]:
+                m["jobs"].remove(sel["job"])
+            self.save_models(models)
+            return sel
+
+    def remove_selection(self, model_name, sel_id):
+        with _lock:
+            models = self.models()
+            m = next((x for x in models if x["name"] == model_name), None)
+            if m:
+                m["selections"] = [s for s in m["selections"] if s.get("id") != sel_id]
+                self.save_models(models)
+
+    def unsubscribe_job(self, model_name, job_id):
+        with _lock:
+            models = self.models()
+            m = next((x for x in models if x["name"] == model_name), None)
+            if m and job_id in m["jobs"]:
+                m["jobs"].remove(job_id)
+                self.save_models(models)
 
     def models_of_job(self, job_id) -> list[str]:
         return [m["name"] for m in self.models() if m.get("active", True) and job_id in m["jobs"]]

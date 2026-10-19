@@ -14,6 +14,8 @@ from ..core import errors as E
 from ..core import schedule as S
 from . import widgets as W
 
+BIG_JOB = 12      # больше рядов — в модель отдаём не весь показатель, а выбранную выжимку
+
 
 class AddDialog(tk.Toplevel):
     def __init__(self, app, source, params, name, note="", checks=None, schedule=None, on_added=None):
@@ -145,9 +147,20 @@ class AddDialog(tk.Toplevel):
 
     def _loaded(self, rep):
         o = rep.outcomes[0] if rep.outcomes else None
+        self.need_selection = []
         if o and o.status in ("updated", "unchanged", "waiting", "delayed"):
             text = "✔ Получено: " + (o.summary or o.message)
-            if rep.models_new:
+            n = len(self.app.store.series_of_job(self.job["id"]))
+            ticked = [m for m, v in self.model_vars.items() if v.get()]
+            if ticked and n > BIG_JOB:
+                # большой показатель целиком в модель не отдаём — пользователь выберет выжимку
+                for m in ticked:
+                    self.app.cfg.unsubscribe_job(m, self.job["id"])
+                self.need_selection = ticked
+                self.app.models._rebuild()
+                text += (f"\n\nПоказатель большой: {n} рядов. Хаб хранит его целиком, а в модель отдаёт выжимку — "
+                         f"нажмите «Выбрать данные для модели» и отметьте нужное (товар, регион, период…).")
+            elif rep.models_new:
                 text += "\nВ моделях " + ", ".join(n for n, _ in rep.models_new) + " появятся новые столбцы после «Данные → Обновить всё»."
             self.result.configure(text=text, style="green.TLabel")
         elif o:
@@ -155,6 +168,10 @@ class AddDialog(tk.Toplevel):
             self.result.configure(text=f"Показатель добавлен, но загрузить данные не удалось: {o.message}.\n{what}. "
                                        f"Хаб попробует снова сам; статус виден на «Обзоре».", style="red.TLabel")
         self._finish()
+
+    def _select_for(self, model):
+        from .dialog_select import SelectionDialog
+        SelectionDialog(self.app, model, job_id=self.job["id"], on_done=self.app.models._rebuild)
 
     def _failed(self, exc):
         self.result.configure(text="Показатель добавлен, но пробная загрузка не удалась: " + E.human_message(exc),
@@ -165,6 +182,9 @@ class AddDialog(tk.Toplevel):
         for w in self.bar.winfo_children():
             w.destroy()
         ttk.Button(self.bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
+        for m in getattr(self, "need_selection", []):
+            ttk.Button(self.bar, text=f"Выбрать данные для модели «{m}»",
+                       command=lambda m=m: self._select_for(m)).pack(side="left", padx=(0, 8))
         ttk.Button(self.bar, text="Открыть «Мои показатели»",
                    command=lambda: (self.destroy(), self.app.show(self.app.jobs), self.app.jobs.select(self.job["id"]))
                    ).pack(side="right", padx=8)

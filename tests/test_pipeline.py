@@ -183,3 +183,34 @@ def test_lock_prevents_parallel_runs(runner):
     with Lock(runner.paths.lock):
         with pytest.raises(Busy):
             runner.run(force=True)
+
+
+def test_selection_gives_model_only_an_extract(runner):
+    """Выжимка: из большого показателя модель получает только выбранные ряды и только с 2024 года."""
+    fs = runner.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883", "1558900"]}})
+    runner.run(force=True)
+    assert len(runner.store.series_of_job(fs["id"])) == 4        # 2 региона × (месячные + годовые)
+    runner.cfg.add_model("М", "x.xlsx")
+    runner.cfg.subscribe("М", job_id=fs["id"])
+    region = "Классификатор объектов административно-территориального деления (ОКАТО)"
+    sel = runner.cfg.save_selection("М", {"job": fs["id"], "name": "Зарплата РФ, месячная, с 2024",
+                                          "filters": {region: ["Российская Федерация"], "Периодичность": ["месячная"]},
+                                          "from": "2024-01-01", "to": ""})
+    assert sel["id"] == "s1" and fs["id"] not in runner.cfg.model("М")["jobs"]   # выборка заменила «весь показатель»
+    runner.run()
+    rows = read_packet(packet.packet_path(runner.paths, "М"))
+    codes = {r[2] for r in rows[1:]}
+    assert codes == {"FEDSTAT_31074_643_11_M"}
+    assert min(r[0] for r in rows[1:]) == "2024-01-31"
+    srows = read_packet(packet.series_path(packet.packet_path(runner.paths, "М")))
+    assert len(srows) == 2 and srows[1][-5:-3] == [srows[1][-5], "Российская Федерация"]
+    # новые регионы, подходящие под выборку, появятся сами; удаление выборки убирает ряды
+    runner.cfg.remove_selection("М", "s1")
+    runner.run()
+    assert read_packet(packet.packet_path(runner.paths, "М"))[1:] == []
+
+
+def test_selection_windows_merge():
+    assert packet._merge_window(("2022-01-01", ""), ("2020-01-01", "2021-12-31")) == ("2020-01-01", "")
+    assert packet._merge_window(("2022-01-01", ""), None) is None
+    assert packet.in_window("2023-05-31", ("2022-01-01", "")) and not packet.in_window("2021-05-31", ("2022-01-01", ""))

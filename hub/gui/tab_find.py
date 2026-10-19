@@ -109,6 +109,12 @@ class FindTab(ttk.Frame):
         self._on_source()
 
     def _on_source(self):
+        # каталог грузим, только когда вкладка «Найти данные» действительно открыта
+        try:
+            if self.app.nb.select() != str(self):
+                return
+        except AttributeError:
+            return
         tab = self.nb.nametowidget(self.nb.select())
         if hasattr(tab, "ensure_loaded"):
             tab.ensure_loaded()

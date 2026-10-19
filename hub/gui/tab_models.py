@@ -1,6 +1,6 @@
 """«Модели» — подключённые Excel-модели и ряды, которые они получают."""
-import tkinter as tk
 from pathlib import Path
+import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ..core.base_fmt import fmt, fmt_date
@@ -16,12 +16,17 @@ class ModelsTab(ttk.Frame):
         bar = ttk.Frame(self)
         bar.pack(fill="x")
         ttk.Button(bar, text="＋ Подключить модель", style="Accent.TButton", command=self.connect).pack(side="left")
-        for text, cmd in (("Добавить ряды", self.add_series), ("Убрать ряд", self.remove_series),
-                          ("Формула", self.formula), ("Открыть в Excel", self.open_excel),
-                          ("Открыть модель", lambda: self.open_model()),
-                          ("Открыть файл с данными", self.open_packet), ("Отключить", self.disconnect)):
+        for text, cmd in (("＋ Данные для модели", self.add_series), ("Изменить выборку", self.edit_selection),
+                          ("Убрать", self.remove_series),
+                          ("Формула", self.formula), ("Открыть в Excel", self.open_excel)):
             ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(6, 0))
-        ttk.Button(bar, text="Проверить связь с Excel", command=self.diagnose).pack(side="right")
+        more = ttk.Menubutton(bar, text="Ещё ▾")
+        menu = tk.Menu(more, tearoff=False)
+        for text, cmd in (("Открыть модель", lambda: self.open_model()), ("Открыть файл с данными", self.open_packet),
+                          ("Проверить связь с Excel", self.diagnose), ("Отключить модель", self.disconnect)):
+            menu.add_command(label=text, command=cmd)
+        more["menu"] = menu
+        more.pack(side="left", padx=(6, 0))
         pw = ttk.PanedWindow(self, orient="vertical")
         pw.pack(fill="both", expand=True, pady=8)
         top, self.tree = W.tree_with_scroll(pw, ("name", "path", "n", "built", "news"),
@@ -31,14 +36,18 @@ class ModelsTab(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_series())
         bottom = ttk.Frame(pw)
         pw.add(bottom, weight=2)
-        self.caption = ttk.Label(bottom, text="Ряды модели", style="Title.TLabel")
+        self.caption = ttk.Label(bottom, text="Что получает модель", style="Title.TLabel")
         self.caption.pack(anchor="w", pady=(4, 2))
-        sf, self.series = W.tree_with_scroll(bottom, ("pos", "code", "name", "last", "value"),
-                                             ("№ столбца", "Код (имя столбца в таблице Хаб)", "Название",
+        sf, self.series = W.tree_with_scroll(bottom, ("pos", "code", "last", "value"),
+                                             ("№ столбца", "Код (имя столбца в таблице Хаб)",
                                               "Последний период", "Последнее значение"),
-                                             {"pos": 80, "code": 230, "name": 420, "last": 110, "value": 130},
-                                             selectmode="extended")
+                                             {"pos": 80, "code": 260, "last": 110, "value": 130},
+                                             selectmode="extended", show="tree headings")
+        self.series.heading("#0", text="Выборка / ряд")
+        self.series.column("#0", width=520, stretch=True)
         sf.pack(fill="both", expand=True)
+        self.groups = {}        # iid строки-группы -> ("sel", id) | ("job", id) | ("codes", None)
+        self.code_of = {}       # iid строки-ряда -> код
         ttk.Label(self, style="Hint.TLabel", wraplength=1100, justify="left", text=(
             "Модель получает данные через файл в папке «Для моделей» и обновляет их сама при открытии "
             "(или «Данные → Обновить всё»). Новые ряды появляются справа, старые столбцы не сдвигаются.")).pack(anchor="w")
@@ -73,19 +82,59 @@ class ModelsTab(ttk.Frame):
         return self.app.cfg.model(sel[0])
 
     def show_series(self):
-        self.series.delete(*self.series.get_children())
+        tree = self.series
+        tree.delete(*tree.get_children())
+        self.groups.clear()
+        self.code_of.clear()
         m = self.current(quiet=True)
         if not m:
-            self.caption.configure(text="Ряды модели")
+            self.caption.configure(text="Что получает модель")
             return
-        self.caption.configure(text=f"Ряды модели «{m['name']}»")
-        codes = packet.model_codes(self.app.cfg, self.app.store, m)
-        for i, c in enumerate(codes, 1):
-            s = self.app.store.series(c)
-            last = self.app.store.last_values(c, 1)
-            self.series.insert("", "end", iid=c, values=(i + 2, c, s["name"] if s else "",
-                                                         last[0]["period_label"] if last else "—",
-                                                         fmt(last[0]["value"]) if last else "—"))
+        store, cfg = self.app.store, self.app.cfg
+        order = {c: i for i, c in enumerate(packet.model_codes(cfg, store, m), 3)}   # столбцы A, B — Дата, Период
+        jobs = {j["id"]: j for j in cfg.jobs()}
+        excl = set(m.get("exclude", []))
+        groups = []
+        for sel in m.get("selections", []):
+            codes = packet.selection_codes(store, sel) if sel.get("job") in jobs else []
+            groups.append((("sel", sel["id"]), f"Выборка: {sel.get('name') or sel['id']}", codes))
+        for job_id in m.get("jobs", []):
+            if job_id in jobs:
+                codes = [r["code"] for r in store.series_of_job(job_id)]
+                note = " — много рядов, нажмите «Изменить выборку», чтобы отдавать выжимку" if len(codes) > 50 else ""
+                groups.append((("job", job_id), f"Весь показатель: {jobs[job_id]['name']}{note}", codes))
+        if m.get("series"):
+            groups.append((("codes", None), "Отдельные ряды", list(m["series"])))
+        total = 0
+        for gi, (key, title, codes) in enumerate(groups):
+            codes = [c for c in codes if c not in excl]
+            total += len(codes)
+            giid = f"g{gi}"
+            self.groups[giid] = key
+            tree.insert("", "end", iid=giid, text=f"{title}  ({len(codes)} рядов)", open=len(codes) <= 30)
+            fields = {c: packet.series_fields(store.series(c)) for c in codes[:2000] if store.series(c)}
+            varying = {k for f in fields.values() for k in f
+                       if len({str(g.get(k)) for g in fields.values()}) > 1}
+            for c in codes[:2000]:
+                s = store.series(c)
+                f = fields.get(c, {})
+                label = " | ".join(str(v) for k, v in f.items() if k in varying) or (s["name"] if s else c)
+                last = store.last_values(c, 1)
+                iid = f"{giid}|{c}"
+                self.code_of[iid] = c
+                tree.insert(giid, "end", iid=iid, text=label, values=(
+                    order.get(c, ""), c, last[0]["period_label"] if last else "—",
+                    fmt(last[0]["value"]) if last else "—"))
+        self.caption.configure(text=f"Что получает модель «{m['name']}» — рядов: {len(order)}")
+
+    def selected_codes(self):
+        out = []
+        for iid in self.series.selection():
+            if iid in self.code_of:
+                out.append(self.code_of[iid])
+            elif iid in self.groups:
+                out += [self.code_of[c] for c in self.series.get_children(iid)]
+        return list(dict.fromkeys(out))
 
     # --- действия ------------------------------------------------------------
     def connect(self):
@@ -115,7 +164,7 @@ class ModelsTab(ttk.Frame):
         def done(res):
             self.app.refresh_all()
             self.tree.selection_set(name) if self.tree.exists(name) else None
-            text = res["message"] + "\n\nДальше: «Добавить ряды» — отметьте, какие данные получает модель. " \
+            text = res["message"] + "\n\nДальше: «＋ Данные для модели» — отметьте, какую выжимку получает модель. " \
                                     f"Пример формулы:\n{res['formula']}"
             if res["files"]:
                 text += "\n\nФайлы: " + "\n".join(res["files"])
@@ -150,22 +199,53 @@ class ModelsTab(ttk.Frame):
     def add_series(self):
         m = self.current()
         if m:
-            PickSeries(self.app, m, on_done=self._rebuild)
+            from .dialog_select import SelectionDialog
+            SelectionDialog(self.app, m["name"], on_done=self._rebuild)
+
+    def edit_selection(self):
+        m = self.current()
+        if not m:
+            return
+        key = next((self.groups[i] for i in self.series.selection() if i in self.groups), None)
+        if key is None:
+            parent = next((self.series.parent(i) for i in self.series.selection() if i in self.code_of), None)
+            key = self.groups.get(parent)
+        if not key or key[0] == "codes":
+            messagebox.showinfo("Изменить выборку", "Выделите строку выборки (или «Весь показатель») в нижнем списке.",
+                                parent=self)
+            return
+        from .dialog_select import SelectionDialog
+        if key[0] == "sel":
+            sel = next(s for s in m["selections"] if s.get("id") == key[1])
+            SelectionDialog(self.app, m["name"], selection=sel, on_done=self._rebuild)
+        else:
+            SelectionDialog(self.app, m["name"], job_id=key[1], on_done=self._rebuild)
 
     def remove_series(self):
         m = self.current()
         if not m:
             return
-        codes = self.series.selection()
-        if not codes:
-            messagebox.showinfo("Убрать ряд", "Выделите ряд в нижнем списке.", parent=self)
+        chosen = self.series.selection()
+        if not chosen:
+            messagebox.showinfo("Убрать", "Выделите выборку или ряд в нижнем списке.", parent=self)
             return
-        if not messagebox.askyesno("Убрать ряд", f"Модель «{m['name']}» перестанет получать {len(codes)} ряд(а). "
-                                                 "Столбцы исчезнут из таблицы Хаб после обновления модели — "
-                                                 "проверьте, что на них нет формул. Продолжить?", parent=self):
+        n = len(self.selected_codes())
+        if not messagebox.askyesno("Убрать", f"Модель «{m['name']}» перестанет получать {n} ряд(а/ов). Их столбцы "
+                                             "исчезнут из таблицы Хаб после обновления модели — проверьте, что на них "
+                                             "нет формул. Продолжить?", parent=self):
             return
-        for c in codes:
-            self.app.cfg.unsubscribe_code(m["name"], c)
+        for iid in chosen:
+            if iid in self.groups:
+                kind, ident = self.groups[iid]
+                if kind == "sel":
+                    self.app.cfg.remove_selection(m["name"], ident)
+                elif kind == "job":
+                    self.app.cfg.unsubscribe_job(m["name"], ident)
+                else:
+                    for c in [self.code_of[x] for x in self.series.get_children(iid)]:
+                        self.app.cfg.unsubscribe_code(m["name"], c)
+            elif iid in self.code_of and self.series.parent(iid) not in chosen:
+                self.app.cfg.unsubscribe_code(m["name"], self.code_of[iid])
         self._rebuild()
 
     def _rebuild(self):
@@ -189,15 +269,15 @@ class ModelsTab(ttk.Frame):
         m = self.current()
         if not m:
             return
-        codes = list(self.series.selection()) or self.app.store.subscribed(m["name"])
-        FormulaWindow(self.app, codes)
+        codes = self.selected_codes() or self.app.store.subscribed(m["name"])
+        FormulaWindow(self.app, codes[:500])
 
     def open_excel(self):
         """Разовый файл с выбранными рядами (или всеми рядами модели) — для просмотра."""
         m = self.current()
         if not m:
             return
-        codes = list(self.series.selection()) or self.app.store.subscribed(m["name"])
+        codes = self.selected_codes() or self.app.store.subscribed(m["name"])
         if not codes:
             messagebox.showinfo("Нет рядов", "Модель пока не получает ни одного ряда.", parent=self)
             return
@@ -233,83 +313,3 @@ class ModelsTab(ttk.Frame):
                                      parent=self):
             M.disconnect(self.app.cfg, m["name"])
             self.refresh()
-
-
-class PickSeries(tk.Toplevel):
-    """«Добавить ряды»: выбор из «Моих показателей» с поиском и галками."""
-
-    def __init__(self, app, model, on_done=None):
-        super().__init__(app.root)
-        self.app = app
-        self.model = model
-        self.on_done = on_done
-        self.title(f"Ряды для модели «{model['name']}»")
-        self.geometry("980x600")
-        top = ttk.Frame(self, padding=10)
-        top.pack(fill="x")
-        ttk.Label(top, text="Поиск:").pack(side="left")
-        self.q = tk.StringVar()
-        ttk.Entry(top, textvariable=self.q, width=40).pack(side="left", padx=6)
-        self.q.trace_add("write", lambda *_: self.fill())
-        ttk.Label(top, text="Щёлкните по строке, чтобы поставить или снять галку.", style="Hint.TLabel").pack(side="left", padx=10)
-        frame, self.tree = W.tree_with_scroll(self, ("mark", "name", "code", "unit"), ("", "Ряд", "Код", "Единицы"),
-                                              {"mark": 40, "name": 560, "code": 220, "unit": 100}, show="tree headings")
-        self.tree.column("#0", width=30, stretch=False)
-        frame.pack(fill="both", expand=True, padx=10)
-        self.tree.bind("<Button-1>", self.toggle)
-        subs = set(app.store.subscribed(model["name"]))
-        self.marked = set(subs)
-        bar = ttk.Frame(self, padding=10)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="Сохранить", style="Accent.TButton", command=self.save).pack(side="right")
-        ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="right", padx=8)
-        self.fill()
-        W.center(self, app.root)
-
-    def fill(self):
-        self.tree.delete(*self.tree.get_children())
-        q = self.q.get().strip().lower()
-        for job in self.app.cfg.jobs():
-            series = self.app.store.series_of_job(job["id"])
-            rows = [s for s in series if not q or q in (s["name"] + s["code"] + job["name"]).lower()]
-            if not rows:
-                continue
-            all_on = all(s["code"] in self.marked for s in series)
-            jid = "job:" + job["id"]
-            self.tree.insert("", "end", iid=jid, open=bool(q) or len(series) <= 6,
-                             values=("☑" if all_on else "☐", f"{job['name']}  (все ряды показателя)", "", ""))
-            for s in rows:
-                self.tree.insert(jid, "end", iid=s["code"], values=("☑" if s["code"] in self.marked else "☐",
-                                                                    s["name"], s["code"], s["unit"]))
-
-    def toggle(self, e):
-        iid = self.tree.identify_row(e.y)
-        if not iid or self.tree.identify_element(e.x, e.y) in ("Treeitem.indicator",):
-            return
-        if iid.startswith("job:"):
-            codes = [s["code"] for s in self.app.store.series_of_job(iid[4:])]
-            on = not all(c in self.marked for c in codes)
-            for c in codes:
-                (self.marked.add if on else self.marked.discard)(c)
-        else:
-            (self.marked.discard if iid in self.marked else self.marked.add)(iid)
-        self.fill()
-        return "break"
-
-    def save(self):
-        cfg = self.app.cfg
-        before = set(self.app.store.subscribed(self.model["name"]))
-        all_codes = {s["code"]: s["job_id"] for s in self.app.store.all_series()}
-        for c in self.marked - before:
-            cfg.subscribe(self.model["name"], code=c)
-        for c in before - self.marked:
-            cfg.unsubscribe_code(self.model["name"], c)
-        # если отмечены все ряды показателя — подписка на показатель целиком (новые ряды придут сами)
-        m = cfg.model(self.model["name"])
-        for job in cfg.jobs():
-            codes = [c for c, j in all_codes.items() if j == job["id"]]
-            if codes and all(c in self.marked for c in codes) and job["id"] not in m["jobs"]:
-                cfg.subscribe(self.model["name"], job_id=job["id"])
-        self.destroy()
-        if self.on_done:
-            self.on_done()

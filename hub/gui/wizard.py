@@ -64,7 +64,7 @@ class FirstRunWizard(tk.Toplevel):
             ttk.Label(b, text="Готово!", style="Big.TLabel").pack(anchor="w")
             ttk.Label(b, wraplength=620, justify="left", text=(
                 "Дальше:\n\n1. «Найти данные» → найдите показатель → «＋ В обновления».\n"
-                "2. «Модели» → «Подключить модель» → «Добавить ряды».\n"
+                "2. «Модели» → «Подключить модель» → «＋ Данные для модели».\n"
                 "3. В модели: «Данные → Обновить всё». Данные появятся на листе «Хаб».")).pack(anchor="w", pady=8)
             self.next_btn.configure(text="Начать работу")
 

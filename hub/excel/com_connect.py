@@ -258,7 +258,9 @@ def _finish_table(lo, query_name, table_name, log):
     except Exception as e:  # noqa: BLE001
         raise StepError(f"обновить таблицу {table_name} (Power Query)", e)
     try:
-        qt.WorkbookConnection.Name = f"Запрос — {query_name}"
+        taken = {c.Name for c in lo.Parent.Parent.Connections}
+        if f"Запрос — {query_name}" not in taken:
+            qt.WorkbookConnection.Name = f"Запрос — {query_name}"
         qt.WorkbookConnection.OLEDBConnection.RefreshOnFileOpen = True
         qt.WorkbookConnection.OLEDBConnection.BackgroundQuery = False
     except Exception as e:  # noqa: BLE001

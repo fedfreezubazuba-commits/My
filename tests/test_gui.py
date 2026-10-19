@@ -70,12 +70,13 @@ def test_add_flow_model_and_formula(app, fakes):
     w.destroy()
     app.models.refresh()
     assert app.models.tree.exists("Сбербанк")
-    assert app.models.series.exists("CBR_18_37_m1_2")
+    assert "CBR_18_37_m1_2" in app.models.code_of.values()
     d.destroy()
 
 
 def test_navigators_with_fake_cbr(app, fakes):
     app.find.cbr.cbr = fakes["cbr"]
+    app.nb.select(app.find)              # каталог грузится только на открытой вкладке «Найти данные»
     app.find.nb.select(app.find.cbr)
     assert pump(app, 10, until=lambda: app.find.cbr.roots)
     app.find.cbr.select_indicator(18, 37, "Средневзвешенные процентные ставки по вкладам физических лиц в рублях")
@@ -171,3 +172,35 @@ def test_settings_examples_and_exports(app, fakes):
     assert wb["Длинная"]["E2"].value.startswith("до 1 года")
     files = exports.update_job_files(app.cfg, app.store, app.paths, app.cfg.jobs())
     assert all(v.endswith(".xlsx") for v in files.values())
+
+
+def test_selection_dialog_extract(app, fakes):
+    """«Данные для модели»: из показателя с 4 рядами отмечаем регион и период — в модель уходит выжимка."""
+    from hub.excel import packet
+    from hub.gui.dialog_select import SelectionDialog, parse_bound
+    assert parse_bound("2022") == "2022-01-01" and parse_bound("2022-02", end=True) == "2022-02-28"
+    job = app.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883", "1558900"]}})
+    r = app.runner()
+    r.run(force=True)
+    r.close()
+    app.cfg.add_model("Сбербанк", str(app.paths.root / "Сбербанк.xlsx"))
+    d = SelectionDialog(app, "Сбербанк", job_id=job["id"])
+    pump(app, 1)
+    region = "Классификатор объектов административно-территориального деления (ОКАТО)"
+    assert set(d.fields) == {region, "Периодичность"}
+    assert "Подходит рядов: 4" in d.count.cget("text")
+    d.fields[region][0].discard("Центральный федеральный округ")
+    d.fields["Периодичность"][0].discard("годовая")
+    d.d_from.set("2024")
+    d.recount()
+    assert "Подходит рядов: 1, значений за период: 20" in d.count.cget("text")
+    assert "Российская Федерация" in d.name.get() and "с 2024" in d.name.get()
+    d.save()
+    sel = app.cfg.model("Сбербанк")["selections"][0]
+    assert sel["filters"] == {region: ["Российская Федерация"], "Периодичность": ["месячная"]}
+    assert sel["from"] == "2024-01-01"
+    codes, windows = packet.model_plan(app.cfg, app.store, app.cfg.model("Сбербанк"))
+    assert codes == ["FEDSTAT_31074_643_11_M"] and windows[codes[0]] == ("2024-01-01", "")
+    app.models.refresh()
+    groups = app.models.series.get_children()
+    assert len(groups) == 1 and "Выборка" in app.models.series.item(groups[0], "text")

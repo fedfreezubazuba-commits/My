@@ -72,28 +72,78 @@ def _csv(rows, cols) -> bytes:
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
-def model_codes(cfg, store, model) -> list[str]:
-    """Ряды подписки в постоянном порядке столбцов (новые — справа)."""
+def series_fields(row) -> dict:
+    """Поля ряда для выборок: разрезы + «Периодичность»."""
+    d = dict(series_dims(row))
+    d["Периодичность"] = P.PERIODICITY_RU.get(row["periodicity"], row["periodicity"] or "")
+    return d
+
+
+def matches(fields: dict, filters: dict) -> bool:
+    return all(fields.get(k) in set(v) for k, v in (filters or {}).items())
+
+
+def selection_codes(store, sel) -> list[str]:
+    """Ряды показателя, подходящие под выборку (в порядке появления)."""
+    return [r["code"] for r in store.series_of_job(sel.get("job"))
+            if matches(series_fields(r), sel.get("filters") or {})]
+
+
+def _merge_window(old, new):
+    """Объединение периодов: None — без ограничений."""
+    if old is None or new is None:
+        return None
+    a = min(x for x in (old[0], new[0])) if old[0] and new[0] else ""
+    b = max(x for x in (old[1], new[1])) if old[1] and new[1] else ""
+    return (a, b)
+
+
+def model_plan(cfg, store, model):
+    """(ряды подписки в постоянном порядке столбцов, {код: (с, по) или None})."""
     jobs = {j["id"] for j in cfg.jobs()}
-    wanted = []
+    wanted, windows = [], {}
+
+    def add(codes, window):
+        for c in codes:
+            windows[c] = _merge_window(windows[c], window) if c in windows else window
+            wanted.append(c)
+
     for job_id in model.get("jobs", []):
         if job_id in jobs:
-            wanted += [r["code"] for r in store.series_of_job(job_id)]
-    wanted += [c for c in model.get("series", []) if store.series(c)]
+            add([r["code"] for r in store.series_of_job(job_id)], None)
+    for sel in model.get("selections", []):
+        if sel.get("job") in jobs:
+            win = (sel.get("from") or "", sel.get("to") or "")
+            add(selection_codes(store, sel), None if win == ("", "") else win)
+    add([c for c in model.get("series", []) if store.series(c)], None)
     excl = set(model.get("exclude", []))
     wanted = [c for c in dict.fromkeys(wanted) if c not in excl]
-    return store.sync_subscriptions(model["name"], wanted)
+    return store.sync_subscriptions(model["name"], wanted), windows
 
 
-def build(store, codes, jobs_by_id=None):
-    """(байты посылки, байты справочника) для списка кодов в порядке столбцов."""
-    jobs_by_id = jobs_by_id or {}
+def model_codes(cfg, store, model) -> list[str]:
+    """Ряды подписки в постоянном порядке столбцов (новые — справа)."""
+    return model_plan(cfg, store, model)[0]
+
+
+def in_window(period_end: str, window) -> bool:
+    if not window:
+        return True
+    a, b = window
+    return (not a or period_end >= a) and (not b or period_end <= b)
+
+
+def build(store, codes, windows=None):
+    """(байты посылки, байты справочника) для списка кодов в порядке столбцов.
+
+    windows — {код: (с, по)}: модель получает только этот период ряда (выжимка)."""
+    windows = windows or {}
     rows, srows = [], []
     for pos, code in enumerate(codes, 1):
         s = store.series(code)
         if not s:
             continue
-        obs = store.current_rows(code)
+        obs = [o for o in store.current_rows(code) if in_window(o["period_end"], windows.get(code))]
         for o in obs:
             rows.append([o["period_end"], o["period_label"] or "", code, s["name"] or "", s["unit"] or "", num(o["value"])])
         last = obs[-1] if obs else None
@@ -144,8 +194,8 @@ def rebuild(cfg, store, paths, models=None, log=None) -> dict:
     for m in models if models is not None else cfg.models():
         if not m.get("active", True):
             continue
-        codes = model_codes(cfg, store, m)
-        packet, series = build(store, codes)
+        codes, windows = model_plan(cfg, store, m)
+        packet, series = build(store, codes, windows)
         path = packet_path(paths, m["name"])
         try:
             changed = write_if_changed(path, packet)
