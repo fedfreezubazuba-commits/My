@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS job_state (
     job_id TEXT PRIMARY KEY, status TEXT, category TEXT, message TEXT,
     last_success TEXT, last_attempt TEXT, last_change TEXT, fail_count INTEGER DEFAULT 0,
     expected_next TEXT, n_series INTEGER, n_rows INTEGER, first_period TEXT, last_period TEXT,
-    last_label TEXT, last_value REAL, last_unit TEXT, source_updated TEXT, warnings TEXT);
+    last_label TEXT, last_value REAL, last_unit TEXT, source_updated TEXT, warnings TEXT, fetch_rows INTEGER);
 CREATE TABLE IF NOT EXISTS subscriptions (
     model TEXT NOT NULL, code TEXT NOT NULL, position INTEGER NOT NULL, active INTEGER DEFAULT 1,
     added TEXT, PRIMARY KEY(model, code));
@@ -89,7 +89,14 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self):
+        """Новые столбцы в старых базах (база пользователя никогда не пересоздаётся)."""
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(job_state)")}
+        if "fetch_rows" not in have:
+            self.conn.execute("ALTER TABLE job_state ADD COLUMN fetch_rows INTEGER")
 
     def close(self):
         self.conn.close()

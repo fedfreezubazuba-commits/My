@@ -39,6 +39,15 @@ class Busy(Exception):
     pass
 
 
+def default_browser(paths):
+    """Встроенный браузер для страниц со скриптами и входом (если установлен Playwright)."""
+    try:
+        from .sources.browser import Browser
+        return Browser(paths) if Browser.available() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class Lock:
     """Файл-замок runner.lock: создаётся атомарно; если старше 3 часов — считается брошенным."""
 
@@ -119,14 +128,15 @@ class Runner:
         self.log = log or get_logger(self.paths)
         self.clients = ctx_clients or {}
         self.now = now
-        self.browser = browser
+        self.browser = browser if browser is not None else default_browser(self.paths)
 
     def close(self):
         self.store.close()
 
-    def context(self):
+    def context(self, dry_run=False):
         return sources.Context(paths=self.paths, log=self.log, settings=self.cfg.settings(),
-                               clients=self.clients, browser=self.browser, now=self.now or dt.datetime.now())
+                               clients=self.clients, browser=self.browser, now=self.now or dt.datetime.now(),
+                               dry_run=dry_run)
 
     # --- выбор показателей ---------------------------------------------------
     def due_jobs(self, now=None):
@@ -168,7 +178,7 @@ class Runner:
     def check(self, job):
         """Пробная загрузка без записи: (FetchResult, проблемы проверок)."""
         src = sources.get(job["source"])
-        res = src.fetch(job.get("params") or {}, self.context())
+        res = src.fetch(job.get("params") or {}, self.context(dry_run=True))
         codes = {s.key: self.store.peek_code(job["id"], s.key) or s.code for s in res.series}
         return res, run_checks(job, res, self.store, codes)
 
@@ -231,6 +241,8 @@ class Runner:
             self.log.warning("Показатель %s: %s (%s)", job["id"], out.message, cat)
             return out
 
+        if kind == "fetched" and getattr(payload, "unchanged", False) and not payload.obs:
+            kind, payload = "no_change", None
         if kind == "no_change":
             exp, per = S.expected_next(self.store, job)
             out.status = "delayed" if S.is_delayed(exp, per, now) else "waiting"
@@ -247,7 +259,7 @@ class Runner:
         out.raw_path = self._save_raw(job, res)
         initial = not self.store.series_of_job(job["id"]) or initial_hint
         codes = {s.key: self.store.peek_code(job["id"], s.key) or s.code for s in res.series}
-        problems = run_checks(job, res, self.store, codes)
+        problems = run_checks(job, res, self.store, codes, today=(self.now or now).date())
         if problems and initial and not any(p.startswith(("Значение не число", "Дата из будущего")) for p in problems):
             problems = []   # первая загрузка: сравнивать не с чем
         if not res.obs and initial:
@@ -300,6 +312,7 @@ class Runner:
             self.store.set_state(job["id"], **upd)
         self.store.set_state(job["id"], status=out.status, category=out.category, message=out.message,
                              last_attempt=fetched_at, fail_count=0,
+                             fetch_rows=sum(1 for o in res.obs if o.value is not None),
                              source_updated=str(res.source_updated) if res.source_updated else None,
                              warnings="\n".join(out.warnings) or None)
         self.store.finish_run(run_id, status=out.status, category=out.category, message=out.message,

@@ -17,7 +17,8 @@ class ModelsTab(ttk.Frame):
         bar.pack(fill="x")
         ttk.Button(bar, text="＋ Подключить модель", style="Accent.TButton", command=self.connect).pack(side="left")
         for text, cmd in (("Добавить ряды", self.add_series), ("Убрать ряд", self.remove_series),
-                          ("Формула", self.formula), ("Открыть модель", lambda: self.open_model()),
+                          ("Формула", self.formula), ("Открыть в Excel", self.open_excel),
+                          ("Открыть модель", lambda: self.open_model()),
                           ("Открыть файл с данными", self.open_packet), ("Отключить", self.disconnect)):
             ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(6, 0))
         pw = ttk.PanedWindow(self, orient="vertical")
@@ -166,6 +167,25 @@ class ModelsTab(ttk.Frame):
             return
         codes = list(self.series.selection()) or self.app.store.subscribed(m["name"])
         FormulaWindow(self.app, codes)
+
+    def open_excel(self):
+        """Разовый файл с выбранными рядами (или всеми рядами модели) — для просмотра."""
+        m = self.current()
+        if not m:
+            return
+        codes = list(self.series.selection()) or self.app.store.subscribed(m["name"])
+        if not codes:
+            messagebox.showinfo("Нет рядов", "Модель пока не получает ни одного ряда.", parent=self)
+            return
+
+        def work():
+            from ..core.store import Store
+            st = Store(self.app.paths.db)
+            try:
+                return exports.export_codes(self.app.cfg, st, self.app.paths, codes, m["name"])
+            finally:
+                st.close()
+        self.app.bg(work, exports.open_file, "Готовлю файл Excel…")
 
     def open_model(self, name=None):
         m = self.app.cfg.model(name) if name else self.current()

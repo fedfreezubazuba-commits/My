@@ -57,7 +57,7 @@ class AddDialog(tk.Toplevel):
         self.sched = tk.StringVar(value=dict(self.choices)[default])
         ttk.Combobox(body, textvariable=self.sched, values=[t for _, t in self.choices], state="readonly",
                      width=45).pack(anchor="w", pady=(2, 6))
-        hint = note or ("Цена на сайте хранится только текущая — хаб будет сохранять её каждый день "
+        hint = note or ("На сайте видно только текущее значение — хаб будет сохранять его каждый день "
                         "и сам построит историю." if self.src.snapshot else
                         "Хаб сам поймёт, когда выходят новые данные, и будет проверять чаще в эти дни.")
         ttk.Label(body, text=hint, style="Hint.TLabel", wraplength=560, justify="left").pack(anchor="w", pady=(0, 6))

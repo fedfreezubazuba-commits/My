@@ -4,9 +4,9 @@
 """
 
 RU = {"xlookup": "ПРОСМОТРX", "sumifs": "СУММЕСЛИМН", "eomonth": "КОНМЕСЯЦА", "index": "ИНДЕКС",
-      "match": "ПОИСКПОЗ", "iferror": "ЕСЛИОШИБКА", "sep": ";"}
+      "match": "ПОИСКПОЗ", "iferror": "ЕСЛИОШИБКА", "lookup": "ПРОСМОТР", "sep": ";"}
 EN = {"xlookup": "XLOOKUP", "sumifs": "SUMIFS", "eomonth": "EOMONTH", "index": "INDEX",
-      "match": "MATCH", "iferror": "IFERROR", "sep": ","}
+      "match": "MATCH", "iferror": "IFERROR", "lookup": "LOOKUP", "sep": ","}
 
 
 def variants(code: str, locale: str = "ru", date_cell: str = "$A10") -> list[tuple[str, str]]:
@@ -24,6 +24,8 @@ def variants(code: str, locale: str = "ru", date_cell: str = "$A10") -> list[tup
         ("Сумма за квартал из месячных данных (в " + date_cell + " — конец квартала)",
          f"={f['sumifs']}({col}{s} Хаб[Дата]{s} \">\"&{f['eomonth']}({date_cell}{s}-3){s} "
          f"Хаб[Дата]{s} \"<=\"&{date_cell})"),
+        ("Последнее известное значение на дату (для цен с сайтов: если именно на эту дату значения нет)",
+         f"={f['lookup']}(2{s} 1/((Хаб[Дата]<={date_cell})*({col}<>\"\")){s} {col})"),
         ("Значение на дату для старых версий Excel (без " + f["xlookup"] + ")",
          f"={f['iferror']}({f['index']}({col}{s} {f['match']}({date_cell}{s} Хаб[Дата]{s} 0)){s} \"\")"),
     ]

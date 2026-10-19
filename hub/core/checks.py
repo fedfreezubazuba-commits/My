@@ -68,7 +68,7 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
                                     f" (порог {jump}%)")
                     break
 
-    prev_rows = state.get("n_rows") or 0
+    prev_rows = state.get("fetch_rows") or 0       # сколько значений вернула прошлая загрузка
     min_ratio = float(checks.get("min_rows_ratio", 0.5))
     if prev_rows >= 10 and len(values) < prev_rows * min_ratio and not job.get("params", {}).get("partial"):
         problems.append(f"Резко уменьшилось число строк: было {prev_rows}, стало {len(values)}")

@@ -2,6 +2,7 @@
 requests>=2.31
 openpyxl>=3.1
 lxml>=4.9
+cssselect>=1.2
 PyYAML>=6.0
 pdfplumber>=0.10
 xlrd>=2.0

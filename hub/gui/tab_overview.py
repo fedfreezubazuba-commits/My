@@ -16,7 +16,6 @@ class OverviewTab(ttk.Frame):
         head.pack(fill="x")
         self.big = ttk.Label(head, text="…", style="Big.TLabel")
         self.big.pack(side="left")
-        self.go_btn = ttk.Button(head, text="Показать проблемы", command=self._scroll_to_problems)
         right = ttk.Frame(head)
         right.pack(side="right")
         ttk.Button(right, text="⟳ Обновить всё сейчас", style="Accent.TButton",
@@ -28,9 +27,6 @@ class OverviewTab(ttk.Frame):
         self.auto_info.pack(fill="x", pady=(2, 8))
         self.body = W.ScrollFrame(self)
         self.body.pack(fill="both", expand=True)
-
-    def _scroll_to_problems(self):
-        self.body.canvas.yview_moveto(0)
 
     def _toggle_auto(self):
         want = self.auto.get()

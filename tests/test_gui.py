@@ -22,7 +22,7 @@ def pump(app, seconds=3.0, until=None):
 def app(workdir, fakes, monkeypatch):
     from hub.gui import app as A
     from hub.core.config import Config
-    from hub.core.paths import Paths, set_workdir
+    from hub.core.paths import Paths
     monkeypatch.setattr("hub.core.paths.POINTER", workdir / "pointer.txt")
     Config(Paths(workdir).ensure()).update_settings(first_run_done=True)
     shown = []
@@ -99,3 +99,61 @@ def test_fedstat_nav_params(app, fakes, tmp_path):
     params, name = nav.current_params()
     assert params == {"id": 31074, "select": {"0": ["1558883"]}}
     assert "Российская Федерация" in name
+
+
+def test_site_wizard_offline(app, monkeypatch):
+    from pathlib import Path
+    from hub.sources import _web as W
+    web = Path(__file__).resolve().parents[1] / "samples" / "web"
+    monkeypatch.setattr(W, "http_get", lambda url, ctx=None, timeout=60: (200, "text/html",
+                                                                          (web / "metro_losos.html").read_bytes(), url))
+    site = app.find.site
+    app.find.nb.select(site)
+    site.url.set("https://online.metro-cc.ru/products/losos-murmanskij-6-7kg-inarctica?utm_source=x")
+    site.analyze()
+    assert pump(app, 15, until=lambda: site.found is not None)
+    assert "utm_source" not in site.url.get()
+    assert len(site.values.get_children()) == 3
+    assert str(site.add_btn.cget("state")) == "normal"
+    site.add()
+    pump(app, 0.3)
+    dialogs = [w for w in app.root.winfo_children() if w.winfo_class() == "Toplevel"]
+    assert dialogs and dialogs[-1].name.get().startswith("Лосось")
+    dialogs[-1].destroy()
+
+
+def test_file_tab_preview(app, tmp_path, monkeypatch):
+    import datetime as dt
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Нефть"
+    ws.append(["Дата", "Брент"])
+    ws.append([dt.datetime(2026, 9, 1), 80.0])
+    ws.append([dt.datetime(2026, 10, 1), 82.0])
+    f = tmp_path / "выгрузка.xlsx"
+    wb.save(f)
+    from tkinter import filedialog
+    monkeypatch.setattr(filedialog, "askopenfilename", lambda **k: str(f))
+    tab = app.find.file
+    tab.load_inbox()
+    pump(app, 0.3)
+    assert tab.list.get_children() and tab.mode.get() == "history"
+    tab.add()
+    pump(app, 0.3)
+    assert (app.paths.inbox / "vygruzka" / "выгрузка.xlsx").exists()
+
+
+def test_settings_examples_and_exports(app, fakes):
+    from hub.excel import exports
+    app.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]})
+    r = app.runner()
+    r.run(force=True)
+    r.close()
+    path = exports.export_job(app.cfg, app.store, app.paths, app.cfg.jobs()[0]["id"])
+    from openpyxl import load_workbook
+    wb = load_workbook(path)
+    assert wb.sheetnames == ["Данные", "Последние", "Длинная", "Паспорт"]
+    assert wb["Данные"]["C2"].value == "CBR_18_37_m1_2"
+    files = exports.update_job_files(app.cfg, app.store, app.paths, app.cfg.jobs())
+    assert all(v.endswith(".xlsx") for v in files.values())

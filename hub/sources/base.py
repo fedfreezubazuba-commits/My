@@ -41,6 +41,7 @@ class FetchResult:
     url: str = ""
     source_updated: str | None = None
     warnings: list = field(default_factory=list)
+    unchanged: bool = False       # источник сам знает, что нового нет (например, папка «Входящие» пуста)
 
     def describe(self) -> str:
         """«3 ряда, месячные, 2010–2025, последнее значение 15,8 % на 30.09.2025»."""
@@ -77,7 +78,8 @@ def fmt_num(v) -> str:
 class Context:
     """Что источнику дают снаружи: пути, журнал, браузер, «сессия» запросов, флаг остановки."""
 
-    def __init__(self, paths=None, log=None, settings=None, clients=None, browser=None, now=None):
+    def __init__(self, paths=None, log=None, settings=None, clients=None, browser=None, now=None, dry_run=False):
+        self.dry_run = dry_run           # пробная загрузка: ничего не перемещать и не менять
         self.paths = paths
         self.log = log
         self.settings = settings or {}
@@ -108,7 +110,7 @@ class Source:
         return self.title
 
     def default_schedule(self, params) -> str:
-        return "daily" if self.snapshot else "auto"
+        return "auto"      # для снимков «автоматически» = раз в день
 
     def host(self, params) -> str:
         """Хост для очереди запросов: к одному хосту — строго последовательно."""

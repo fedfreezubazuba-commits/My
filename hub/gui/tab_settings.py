@@ -65,6 +65,8 @@ class SettingsTab(ttk.Frame):
         bar.pack(fill="x", pady=16)
         ttk.Button(bar, text="Сохранить настройки", style="Accent.TButton", command=self.save).pack(side="left")
         ttk.Button(bar, text="Мастер первого запуска", command=self.app.first_run).pack(side="left", padx=8)
+        ttk.Button(bar, text="Добавить примеры: Metro, Металл Торг, Fearnleys",
+                   command=self.add_examples).pack(side="left")
 
     def refresh(self):
         s = self.app.cfg.settings()
@@ -111,3 +113,14 @@ class SettingsTab(ttk.Frame):
         set_workdir(d)
         self.app.reopen()
         self.refresh()
+
+    def add_examples(self):
+        from ..core.examples import add_examples
+        added = add_examples(self.app.cfg)
+        if not added:
+            messagebox.showinfo("Примеры", "Примеры уже добавлены — они на вкладке «Мои показатели».", parent=self)
+            return
+        messagebox.showinfo("Примеры", f"Добавлено показателей: {len(added)}. Сейчас хаб попробует их загрузить. "
+                                       "Сайты с защитой или скриптами (Metro, Fearnleys) читаются встроенным браузером.",
+                            parent=self)
+        self.app.update_jobs(added)

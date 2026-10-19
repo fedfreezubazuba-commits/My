@@ -30,6 +30,16 @@ hub/
     cbr_api.py     ← legacy/cbr_client.py БЕЗ изменений логики (проверено вживую)
     fedstat_api.py ← legacy/fedstat_client.py БЕЗ изменений логики
     cbr.py, fedstat.py
+    web_value.py   цена/число на странице (снимки → история); стратегии: profile, jsonld, meta, script,
+                   json, css, xpath, anchor; запасные стратегии + сигнал о расхождении
+    web_table.py   таблица на странице (html или «плитки»), режимы snapshot/history; ищется по подписи
+    file_link.py   xlsx/xls/csv/pdf по ссылке или «свежий файл со страницы по шаблону ссылки»
+    folder_inbox.py файлы из Входящие/<папка>/ → объединение с историей → обработано/
+    _web.py        загрузка (requests → встроенный браузер), очистка utm, защита/вход, JSON-LD, NUXT, дата отчёта
+    _tables.py     поиск таблиц и плиток, угадывание столбцов (подпись/значение/дата/изменение), → ряды
+    _files.py      чтение таблиц из файлов; _analyze.py — что показать в мастере «Сайт»
+    browser.py     Playwright (необязателен): get_html, login (входит пользователь), pick (выбор элемента)
+    sites/         профили сайтов (metro.py: цена за шт., за кг, наличие)
   excel/
     packet.py      «посылки» Для моделей/<модель>.csv и «<модель> — ряды.csv»
     templates/*.m  шаблоны Power Query (M): Хаб_Посылка (параметр), Хаб, Хаб_Ряды
@@ -39,7 +49,8 @@ hub/
     formulas.py    формулы ПРОСМОТРX/СУММЕСЛИМН/ИНДЕКС-ПОИСКПОЗ (ru/en)
     exports.py     «Открыть в Excel», файлы по показателям
   gui/             tkinter + ttk; app.py — окно и фоновые задачи (app.bg), вкладки tab_*.py,
-                   nav_cbr.py / nav_fedstat.py — бывшие навигаторы, dialog_add.py — «＋ В обновления»
+                   nav_cbr.py / nav_fedstat.py — бывшие навигаторы, dialog_add.py — «＋ В обновления»,
+                   tab_site.py — мастер «Сайт», tab_file.py — «Файл»
 tests/             pytest; fakes.py подменяет клиентов ЦБ/ЕМИСС образцами из samples/
 samples/           образцы ответов источников (cbr/, fedstat/ — синтетические; web/ — сохранённые страницы)
 legacy/            исходные навигаторы пользователя (не используются программой)
@@ -83,7 +94,12 @@ legacy/            исходные навигаторы пользовател�
 pip install -r requirements-dev.txt
 python -m pytest -q                       # ядро, источники, посылки, M-шаблоны
 xvfb-run -a python -m pytest -q           # плюс проверка окна (в Linux без дисплея)
+HUB_CHROMIUM=/opt/pw-browsers/chromium-1194/chrome-linux/chrome xvfb-run -a python -m pytest -q
+                                          # плюс «Выбрать на странице» в настоящем Chromium
 ```
+
+Веб-источники тестируются на сохранённых страницах `samples/web/` (Metro, Металл Торг, Fearnleys):
+`tests/test_web.py` подменяет `_web.http_get`. Показатели-образцы — `hub/core/examples.py`.
 
 В облаке Python 3.13 системы может быть без tkinter — используй `python3.12 -m venv`.
 Сайты ЦБ/ЕМИСС из облака недоступны: тестируй только на `samples/` (см. `tests/fakes.py`).
