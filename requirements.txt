@@ -1,0 +1,10 @@
+# Зависимости Хаба данных. Ставятся автоматически из «Установка.bat».
+requests>=2.31
+openpyxl>=3.1
+lxml>=4.9
+PyYAML>=6.0
+pdfplumber>=0.10
+xlrd>=2.0
+pywin32>=306; sys_platform == "win32"
+# Встроенный браузер (вход на сайты, «Выбрать на странице») ставится отдельно и по желанию:
+#   pip install playwright && python -m playwright install chromium

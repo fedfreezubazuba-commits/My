@@ -1,0 +1,17 @@
+# окружение и кэши
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# данные пользователя — не в репозиторий
+config/workdir.txt
+MarketData/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+logs/
+browser_profile/
+catalog_cache.json
+cbr_gui_settings.json
+*.hubcheck
+~$*

@@ -1,0 +1,34 @@
+{
+ "category": [
+  {
+   "category_id": 18,
+   "category_name": "Процентные ставки по вкладам (депозитам) физических лиц",
+   "indicator_id": 37,
+   "indicator_name": "Средневзвешенные процентные ставки по вкладам физических лиц в рублях",
+   "indicator_parent": -1,
+   "begin_dt": 2024,
+   "end_dt": 2025,
+   "link": "/statistics/bank_sector/int_rat/"
+  },
+  {
+   "category_id": 18,
+   "category_name": "Процентные ставки по вкладам (депозитам) физических лиц",
+   "indicator_id": 38,
+   "indicator_name": "Средневзвешенные процентные ставки по вкладам физических лиц в долларах США",
+   "indicator_parent": -1,
+   "begin_dt": 2024,
+   "end_dt": 2025,
+   "link": ""
+  },
+  {
+   "category_id": 5,
+   "category_name": "Денежная масса (М2)",
+   "indicator_id": 7,
+   "indicator_name": "Денежная масса М2 (остаток на 1 число)",
+   "indicator_parent": -1,
+   "begin_dt": 2024,
+   "end_dt": 2025,
+   "link": ""
+  }
+ ]
+}

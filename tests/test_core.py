@@ -1,0 +1,147 @@
+import datetime as dt
+import xml.etree.ElementTree as ET
+
+import pytest
+
+from hub.core import claude_pack, periods as P, schedule as S, winsched
+from hub.core.config import Config, slug
+from hub.core.paths import Paths
+from hub.core.store import make_code
+from hub.excel import formulas, packet
+
+
+def test_parse_number():
+    cases = {"1 979,50 ₽": 1979.5, "$71,778": 71778, "-0,6%": -0.6, "-$134": -134, "12863.5": 12863.5,
+             "280'": 280, "+0.41%": 0.41, "1\u00a0250": 1250, "abc": None, "−15": -15}
+    for text, val in cases.items():
+        assert P.parse_number(text) == val, text
+
+
+def test_parse_date():
+    assert P.parse_date("Week 42 - October 14, 2026") == dt.date(2026, 10, 14)
+    assert P.parse_date("19 октября 2026 г.") == dt.date(2026, 10, 19)
+    assert P.parse_date("31.01.2025") == dt.date(2025, 1, 31)
+    assert P.parse_date("нет даты") is None
+
+
+def test_labels_and_rank():
+    d = dt.date(2025, 3, 31)
+    assert [P.label(p, d) for p in (P.MONTH, P.QUARTER, P.HALF, P.YEAR)] == ["2025-03", "2025-Q1", "2025-H1", "2025"]
+    assert P.label(P.WEEK, dt.date(2026, 10, 14)) == "2026-W42"
+    assert sorted(["2025", "2025-Q1", "2025-03", "2025-03-31"], key=P.rank) == ["2025-03-31", "2025-03", "2025-Q1", "2025"]
+
+
+def test_schedule_parse_and_slots():
+    assert S.parse("weekly:Wed") == ("weekly", 2)
+    assert S.parse("weekly:ср") == ("weekly", 2)
+    assert S.parse("monthly:15") == ("monthly", 15)
+    assert S.parse("every:6h") == ("every", 6)
+    with pytest.raises(ValueError):
+        S.parse("иногда")
+    now = dt.datetime(2026, 10, 19, 10, 0)    # понедельник
+    assert S.last_slot("weekly", 2, now) == dt.datetime(2026, 10, 14, 6)
+    assert S.last_slot("monthly", 31, dt.datetime(2026, 3, 1, 5)) == dt.datetime(2026, 2, 28, 6)
+
+
+def test_is_due():
+    now = dt.datetime(2026, 10, 19, 10, 0)
+    job = {"schedule": "daily", "enabled": True}
+    assert S.is_due(job, {}, now)
+    assert not S.is_due(job, {"last_attempt": "2026-10-19T07:00:00"}, now)
+    assert S.is_due(job, {"last_attempt": "2026-10-18T22:00:00"}, now)
+    assert not S.is_due({**job, "enabled": False}, {}, now)
+    # сбой: повтор через 15 мин, потом реже
+    st = {"last_attempt": "2026-10-19T09:50:00", "fail_count": 1}
+    assert not S.is_due(job, st, now) and S.is_due(job, st, now + dt.timedelta(minutes=6))
+    assert S.backoff_minutes(10) == 360
+    # auto: до ожидаемой даты — редко, после — ежедневно
+    auto = {"schedule": "auto", "enabled": True}
+    st = {"last_attempt": "2026-10-17T10:00:00", "expected_next": "2026-11-05T06:00:00"}
+    assert not S.is_due(auto, st, now, periodicity=P.MONTH)
+    assert S.is_due(auto, st, now + dt.timedelta(days=6), periodicity=P.MONTH)
+    st = {"last_attempt": "2026-10-18T10:00:00", "expected_next": "2026-10-10T06:00:00"}
+    assert S.is_due(auto, st, now, periodicity=P.MONTH)
+    assert S.is_due(auto, {"last_attempt": "2026-10-18T10:00:00"}, now, snapshot=True)
+
+
+def test_delayed():
+    exp = dt.datetime(2026, 10, 1, 6)
+    assert not S.is_delayed(exp, P.MONTH, dt.datetime(2026, 10, 5))
+    assert S.is_delayed(exp, P.MONTH, dt.datetime(2026, 10, 20))
+
+
+def test_codes():
+    assert make_code("CBR_18_37_m1_2", "x") == "CBR_18_37_m1_2"
+    long = make_code("FEDSTAT_31074_" + "_".join(["1234567"] * 8), "ident")
+    assert len(long) <= 40 and long.startswith("FEDSTAT_31074_")
+    assert make_code("12 лосось!", "y").startswith("S_12")
+    assert slug("Лосось Мурманский, руб/кг") == "losos_murmanskij_rub_kg"
+
+
+def test_formulas():
+    ru = dict(formulas.variants("CBR_18_37_m1_2", "ru"))
+    assert "=ПРОСМОТРX($A10; Хаб[Дата]; Хаб[CBR_18_37_m1_2])" in ru.values()
+    assert '=ПРОСМОТРX("CBR_18_37_m1_2"; Хаб_Ряды[Код]; Хаб_Ряды[Последнее значение])' in ru.values()
+    en = formulas.variants("X", "en")
+    assert en[0][1] == "=XLOOKUP($A10, Хаб[Дата], Хаб[X])"
+    assert any("SUMIFS" in f for _, f in en) and any("INDEX" in f for _, f in en)
+
+
+def test_packet_number_format():
+    assert packet.num(15.8) == "15.8"
+    assert packet.num(1e-5) == "0.00001"
+    assert packet.num(1250000.0) == "1250000"
+    assert packet.num(-0.0) == "0"
+    assert packet.safe_name('Сбер: "план"/2026') == "Сбер_ _план_2026"
+
+
+def test_task_xml_is_valid():
+    xml = winsched.task_xml(r"C:\Хаб\.venv\Scripts\pythonw.exe", "-m hub update --scheduled", r"C:\Хаб",
+                            user="Аналитик", start=dt.datetime(2026, 10, 19, 10))
+    root = ET.fromstring(xml.replace('encoding="UTF-16"', ""))
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    assert root.find("t:Settings/t:StartWhenAvailable", ns).text == "true"
+    assert root.find("t:Triggers/t:TimeTrigger/t:Repetition/t:Interval", ns).text == "PT1H"
+    assert root.find("t:Triggers/t:LogonTrigger", ns) is not None
+    assert root.find("t:Actions/t:Exec/t:Arguments", ns).text == "-m hub update --scheduled"
+
+
+def test_scrub_secrets():
+    text = ('<input name="token" value="ABC123"/> Cookie: sid=1; x=2\nAuthorization: Bearer xyz\n'
+            'password=qwerty&user=ivan "csrf": "zzz"')
+    out = claude_pack.scrub(text)
+    for secret in ("ABC123", "sid=1", "xyz", "qwerty", "zzz"):
+        assert secret not in out
+    assert claude_pack.scrub_obj({"url": "x", "session_cookie": "s"}) == {"url": "x", "session_cookie": "***"}
+
+
+def test_config_trash_roundtrip(workdir):
+    cfg = Config(Paths(workdir).ensure())
+    j = cfg.add_job("cbr", "Ставки", {"category": 18})
+    j2 = cfg.add_job("cbr", "Ставки", {"category": 19})
+    assert j["id"] == "cbr-stavki" and j2["id"] == "cbr-stavki-2"
+    cfg.delete_job(j["id"])
+    assert [x["id"] for x in cfg.jobs()] == [j2["id"]]
+    assert cfg.purge_trash(30, now=dt.datetime.now() + dt.timedelta(days=10)) == []
+    cfg.restore_job(j["id"])
+    assert {x["id"] for x in cfg.jobs()} == {j["id"], j2["id"]}
+    cfg.delete_job(j["id"])
+    assert cfg.purge_trash(30, now=dt.datetime.now() + dt.timedelta(days=31)) == [j["id"]]
+    # jobs.yaml читается человеком: русские буквы без \\u-экранирования
+    assert "Ставки" in cfg.paths.jobs.read_text("utf-8")
+
+
+def test_claude_package(runner, fakes):
+    job = runner.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37]})
+    fakes["cbr"].fail = ValueError("Неожиданный ответ")
+    runner.run(force=True)
+    text = claude_pack.job_package(runner.cfg, runner.store, job["id"])
+    assert "Ставки" in text and "Неожиданный ответ" in text and '"category": 18' in text
+    assert "Трассировка" in text
+
+
+def test_report_html(runner, fakes):
+    runner.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37]})
+    rep = runner.run(force=True)
+    html = rep.path.read_text("utf-8")
+    assert "Что обновилось" in html and "Ставки" in html and "Здоровье системы" in html

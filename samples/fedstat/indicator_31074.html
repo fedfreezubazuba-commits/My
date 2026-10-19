@@ -1,0 +1,38 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>ЕМИСС</title></head><body>
+<form id="exportForm" action="/indicator/downloadData.do" method="post">
+<input type="hidden" name="struts.token.name" value="token" />
+<input type="hidden" name="token" value="SYNTHETICTOKEN123" />
+</form>
+<script type="text/javascript">
+var grid = new FGrid({
+    title: 'Среднемесячная номинальная начисленная заработная плата работников по полному кругу организаций',
+    unit: 'рубль',
+    filters: {
+        0: {title: 'Классификатор объектов административно-территориального деления (ОКАТО)', all: false,
+            values: { 1558883: {title: 'Российская Федерация', order: 0, checked: true},
+                      1558900: {title: 'Центральный федеральный округ', order: 1, checked: false} }},
+        3: {title: 'Год', all: true,
+            values: { 2023: {title: '2023', order: 0, checked: true},
+                      2024: {title: '2024', order: 1, checked: true},
+                      2025: {title: '2025', order: 2, checked: true} }},
+        33560: {title: 'Период', all: true,
+            values: { 1558885: {title: 'январь', order: 0, checked: true},
+1558886: {title: 'февраль', order: 1, checked: true},
+1558887: {title: 'март', order: 2, checked: true},
+1558888: {title: 'апрель', order: 3, checked: true},
+1558889: {title: 'май', order: 4, checked: true},
+1558890: {title: 'июнь', order: 5, checked: true},
+1558891: {title: 'июль', order: 6, checked: true},
+1558892: {title: 'август', order: 7, checked: true},
+1558893: {title: 'сентябрь', order: 8, checked: true},
+1558894: {title: 'октябрь', order: 9, checked: true},
+1558895: {title: 'ноябрь', order: 10, checked: true},
+1558896: {title: 'декабрь', order: 11, checked: true},
+ 1558897: {title: 'значение показателя за год', order: 12, checked: true} }},
+        57956: {title: 'Единица измерения', all: true, values: { 1558884: {title: 'рубль', order: 0, checked: true} }}
+    },
+    left_columns: [0],
+    top_columns: [3, 33560],
+    groups: [57956]
+});
+</script></body></html>

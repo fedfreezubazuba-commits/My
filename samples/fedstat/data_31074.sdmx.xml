@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<GenericData xmlns="http://www.SDMX.org/resources/SDMXML/schemas/v1_0/message"
+ xmlns:common="http://www.SDMX.org/resources/SDMXML/schemas/v1_0/common"
+ xmlns:compact="http://www.SDMX.org/resources/SDMXML/schemas/v1_0/compact"
+ xmlns:generic="http://www.SDMX.org/resources/SDMXML/schemas/v1_0/generic"
+ xmlns:structure="http://www.SDMX.org/resources/SDMXML/schemas/v1_0/structure">
+<Header><ID>none</ID><Test>false</Test><Prepared>2026-10-17T10:00:00</Prepared>
+<Sender id="FSGS"><Name xml:lang="ru">Росстат</Name></Sender></Header>
+<CodeLists>
+<structure:CodeList id="s_OKATO" agencyID="FSGS"><structure:Name xml:lang="ru">Классификатор объектов административно-территориального деления (ОКАТО)</structure:Name>
+<structure:Code value="643"><structure:Description xml:lang="ru">Российская Федерация</structure:Description></structure:Code>
+<structure:Code value="030"><structure:Description xml:lang="ru">Центральный федеральный округ</structure:Description></structure:Code>
+</structure:CodeList>
+<structure:CodeList id="s_mosh" agencyID="FSGS"><structure:Name xml:lang="ru">Виды экономической деятельности</structure:Name>
+<structure:Code value="11"><structure:Description xml:lang="ru">Всего по обследуемым видам экономической деятельности</structure:Description></structure:Code>
+</structure:CodeList>
+</CodeLists>
+<DataSet>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="январь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="60000,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="69000,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="78000,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="февраль"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="60600,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="69600,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="78600,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="март"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="61200,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="70200,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="79200,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="апрель"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="61800,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="70800,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="79800,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="май"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="62400,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="71400,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="80400,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="июнь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="63000,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="72000,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="81000,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="июль"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="63600,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="72600,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="81600,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="август"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="64200,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="73200,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="82200,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="сентябрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="64800,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="73800,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="октябрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="65400,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="74400,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="ноябрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="66000,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="75000,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="декабрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="66600,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="75600,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="643"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="значение показателя за год"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="63000,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="72000,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="январь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="75000,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="86250,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="97500,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="февраль"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="75750,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="87000,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="98250,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="март"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="76500,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="87750,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="99000,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="апрель"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="77250,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="88500,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="99750,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="май"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="78000,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="89250,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="100500,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="июнь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="78750,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="90000,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="101250,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="июль"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="79500,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="90750,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="102000,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="август"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="80250,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="91500,0"/></generic:Obs><generic:Obs><generic:Time>2025</generic:Time><generic:ObsValue value="102750,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="сентябрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="81000,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="92250,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="октябрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="81750,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="93000,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="ноябрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="82500,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="93750,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="декабрь"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="83250,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="94500,0"/></generic:Obs></generic:Series>
+<generic:Series><generic:SeriesKey><generic:Value concept="s_OKATO" value="030"/>
+<generic:Value concept="s_mosh" value="11"/></generic:SeriesKey>
+<generic:Attributes><generic:Value concept="EI" value="рубль"/><generic:Value concept="PERIOD" value="значение показателя за год"/></generic:Attributes>
+<generic:Obs><generic:Time>2023</generic:Time><generic:ObsValue value="78750,0"/></generic:Obs><generic:Obs><generic:Time>2024</generic:Time><generic:ObsValue value="90000,0"/></generic:Obs></generic:Series>
+</DataSet>
+</GenericData>

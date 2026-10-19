@@ -1,0 +1,26 @@
+[
+ {
+  "id": 3,
+  "parent_id": -1,
+  "category_name": "Банковский сектор",
+  "NoActive": 1,
+  "pub_description": "",
+  "updated_time": "2026-10-01T00:00:00"
+ },
+ {
+  "id": 18,
+  "parent_id": 3,
+  "category_name": "Процентные ставки по вкладам (депозитам) физических лиц",
+  "NoActive": 0,
+  "pub_description": "",
+  "updated_time": "2026-10-10T00:00:00"
+ },
+ {
+  "id": 5,
+  "parent_id": 3,
+  "category_name": "Денежная масса (М2)",
+  "NoActive": 0,
+  "pub_description": "",
+  "updated_time": "2026-10-12T00:00:00"
+ }
+]

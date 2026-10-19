@@ -1,0 +1,428 @@
+"""
+Фоновое обновление (раздел 10 ТЗ). Вызывается планировщиком Windows каждый час и при входе
+в систему, а также кнопками «Обновить сейчас» / «Обновить всё сейчас».
+
+  1. блокировка — два прохода не идут одновременно;
+  2. выбор показателей, у которых наступил срок;
+  3. загрузка: к одному хосту — строго по очереди с паузами, разные хосты — параллельно,
+     у каждого показателя тайм-аут; сбой одного показателя не мешает остальным;
+  4. проверки → запись в базу или карантин;
+  5. пересборка посылок моделей (занятый файл — повтор в следующий раз, данные уже в базе);
+  6. отчёт и уведомление, если есть что сказать.
+"""
+import datetime as dt
+import os
+import queue
+import threading
+import time
+import traceback
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+
+from . import VERSION, sources
+from .core import errors as E
+from .core import schedule as S
+from .core.checks import run_checks
+from .core.config import Config
+from .core.log import get_logger
+from .core.paths import Paths
+from .core.store import Store, now_iso
+from .excel import packet
+
+HOST_PAUSE = {"www.fedstat.ru": 3.0, "www.cbr.ru": 1.0}
+DEFAULT_PAUSE = 2.0
+MAX_HOSTS = 4
+STALE_LOCK_SEC = 3 * 3600
+
+
+class Busy(Exception):
+    pass
+
+
+class Lock:
+    """Файл-замок runner.lock: создаётся атомарно; если старше 3 часов — считается брошенным."""
+
+    def __init__(self, path):
+        self.path = path
+        self.held = False
+
+    def __enter__(self):
+        for _ in range(2):
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, f"{os.getpid()} {now_iso()}".encode())
+                os.close(fd)
+                self.held = True
+                return self
+            except FileExistsError:
+                try:
+                    age = time.time() - os.path.getmtime(self.path)
+                except OSError:
+                    continue
+                if age > STALE_LOCK_SEC:
+                    try:
+                        os.remove(self.path)
+                    except OSError:
+                        pass
+                    continue
+                raise Busy("Обновление уже идёт")
+        raise Busy("Обновление уже идёт")
+
+    def __exit__(self, *exc):
+        if self.held:
+            try:
+                os.remove(self.path)
+            except OSError:
+                pass
+
+
+class JobOutcome:
+    def __init__(self, job):
+        self.job = job
+        self.status = None          # updated | unchanged | waiting | quarantine | error | retry | login
+        self.category = None
+        self.message = ""
+        self.new_periods = []       # [(код, подпись, значение)]
+        self.revisions = []         # [(код, подпись, было, стало)]
+        self.problems = []
+        self.warnings = []
+        self.summary = ""
+        self.traceback = ""
+        self.run_id = None
+        self.raw_path = None
+
+    @property
+    def changed(self):
+        return bool(self.new_periods or self.revisions)
+
+
+class RunReport:
+    def __init__(self):
+        self.started = dt.datetime.now()
+        self.finished = None
+        self.outcomes = []
+        self.packets = {}
+        self.models_new = []
+        self.job_files = {}
+        self.purged = []
+        self.notes = []
+
+    def by_status(self, *st):
+        return [o for o in self.outcomes if o.status in st]
+
+
+class Runner:
+    def __init__(self, paths=None, ctx_clients=None, log=None, now=None, browser=None):
+        self.paths = (paths or Paths()).ensure()
+        self.cfg = Config(self.paths)
+        self.store = Store(self.paths.db)
+        self.log = log or get_logger(self.paths)
+        self.clients = ctx_clients or {}
+        self.now = now
+        self.browser = browser
+
+    def close(self):
+        self.store.close()
+
+    def context(self):
+        return sources.Context(paths=self.paths, log=self.log, settings=self.cfg.settings(),
+                               clients=self.clients, browser=self.browser, now=self.now or dt.datetime.now())
+
+    # --- выбор показателей ---------------------------------------------------
+    def due_jobs(self, now=None):
+        now = now or self.now or dt.datetime.now()
+        out = []
+        for job in self.cfg.jobs():
+            try:
+                src = sources.get(job["source"])
+            except KeyError:
+                continue
+            st = self.store.state(job["id"])
+            exp, per = S.expected_next(self.store, job)
+            if S.is_due(job, st, now, snapshot=src.snapshot, periodicity=per):
+                out.append(job)
+        return out
+
+    # --- одна загрузка -------------------------------------------------------
+    def fetch_with_timeout(self, src, job, ctx, timeout):
+        box = {}
+
+        def work():
+            try:
+                box["result"] = src.fetch(job.get("params") or {}, ctx)
+            except BaseException as e:  # noqa: BLE001
+                box["error"] = e
+                box["tb"] = traceback.format_exc()
+
+        t = threading.Thread(target=work, daemon=True, name=f"fetch-{job['id']}")
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            raise E.HubError(E.NETWORK, f"Источник не ответил за {timeout // 60} мин")
+        if "error" in box:
+            err = box["error"]
+            err.hub_traceback = box.get("tb", "")
+            raise err
+        return box["result"]
+
+    def check(self, job):
+        """Пробная загрузка без записи: (FetchResult, проблемы проверок)."""
+        src = sources.get(job["source"])
+        res = src.fetch(job.get("params") or {}, self.context())
+        codes = {s.key: self.store.peek_code(job["id"], s.key) or s.code for s in res.series}
+        return res, run_checks(job, res, self.store, codes)
+
+    def _save_raw(self, job, res):
+        if not res.raw:
+            return None
+        day = dt.date.today().isoformat()
+        d = self.paths.raw / job["id"]
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / f"{day}_{dt.datetime.now():%H%M%S}.{res.raw_ext or 'bin'}"
+        p.write_bytes(res.raw)
+        return str(p)
+
+    def fetch_job(self, job, ctx, use_cheap_check=True):
+        """Загрузка (в рабочем потоке): ('fetched', FetchResult) | ('no_change', дата) | ('error', exc)."""
+        src = sources.get(job["source"])
+        params = job.get("params") or {}
+        state = self.store.state(job["id"])
+        timeout = int(ctx.settings.get("job_timeout_sec", 600))
+        try:
+            if use_cheap_check and job.get("schedule", "auto") == "auto" and not src.snapshot \
+                    and state.get("source_updated") and state.get("status") not in ("error", "retry", "new", None):
+                try:
+                    upd = src.check_updated(params, ctx)
+                except Exception as e:  # noqa: BLE001 — дешёвая проверка не обязательна
+                    self.log.info("Проверка свежести %s не удалась: %s", job["id"], e)
+                    upd = None
+                if upd and str(upd) == str(state.get("source_updated")):
+                    return "no_change", upd
+            return "fetched", self.fetch_with_timeout(src, job, ctx, timeout)
+        except BaseException as e:  # noqa: BLE001
+            return "error", e
+
+    def apply(self, job, kind, payload, initial_hint=False) -> JobOutcome:
+        """Запись результата (в главном потоке)."""
+        out = JobOutcome(job)
+        now = dt.datetime.now()
+        run_id = self.store.start_run(job["id"])
+        out.run_id = run_id
+        state = self.store.state(job["id"])
+        fail_threshold = int(self.cfg.settings().get("fail_threshold", 3))
+        if kind == "error":
+            exc = payload
+            cat = E.classify(exc)
+            fails = (state.get("fail_count") or 0) + 1
+            out.category = cat
+            out.message = E.human_message(exc)
+            out.traceback = getattr(exc, "hub_traceback", "") or "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__))
+            if cat == E.LOGIN:
+                out.status = "login"
+            elif cat in E.TRANSIENT and fails < fail_threshold:
+                out.status = "retry"
+            else:
+                out.status = "error"
+            self.store.finish_run(run_id, status=out.status, category=cat, message=out.message,
+                                  traceback=out.traceback[-8000:])
+            self.store.set_state(job["id"], status=out.status, category=cat, message=out.message,
+                                 last_attempt=now.isoformat(timespec="seconds"), fail_count=fails)
+            self.log.warning("Показатель %s: %s (%s)", job["id"], out.message, cat)
+            return out
+
+        if kind == "no_change":
+            exp, per = S.expected_next(self.store, job)
+            out.status = "delayed" if S.is_delayed(exp, per, now) else "waiting"
+            out.category = E.NO_NEW_DATA
+            out.message = "Новых данных ещё нет"
+            self.store.finish_run(run_id, status=out.status, category=E.NO_NEW_DATA, message=out.message)
+            self.store.set_state(job["id"], status=out.status, category=None, message=out.message,
+                                 last_attempt=now.isoformat(timespec="seconds"), fail_count=0,
+                                 expected_next=exp.isoformat(timespec="seconds") if exp else None)
+            return out
+
+        res = payload
+        out.warnings = list(res.warnings)
+        out.raw_path = self._save_raw(job, res)
+        initial = not self.store.series_of_job(job["id"]) or initial_hint
+        codes = {s.key: self.store.peek_code(job["id"], s.key) or s.code for s in res.series}
+        problems = run_checks(job, res, self.store, codes)
+        if problems and initial and not any(p.startswith(("Значение не число", "Дата из будущего")) for p in problems):
+            problems = []   # первая загрузка: сравнивать не с чем
+        if not res.obs and initial:
+            out.status, out.category = "error", E.STRUCTURE
+            out.message = "Источник не вернул ни одного значения — проверьте параметры показателя"
+            self.store.finish_run(run_id, status="error", category=E.STRUCTURE, message=out.message,
+                                  raw_path=out.raw_path)
+            self.store.set_state(job["id"], status="error", category=E.STRUCTURE, message=out.message,
+                                 last_attempt=now.isoformat(timespec="seconds"),
+                                 fail_count=(state.get("fail_count") or 0) + 1)
+            return out
+        fetched_at = now.isoformat(timespec="seconds")
+        qid = self.store.new_quarantine(job["id"], run_id, problems) if problems else None
+        by_key = {}
+        for o in res.obs:
+            if o.value is not None:
+                by_key.setdefault(o.key, []).append(o)
+        for s in res.series:
+            if s.key not in by_key:
+                continue
+            code = self.store.assign_code(job, s)
+            self.store.update_series_meta(code, s)
+            changes = self.store.diff(code, by_key[s.key])
+            if not changes:
+                continue
+            self.store.apply(code, changes, run_id, fetched_at, initial=initial, qid=qid)
+            for o, old, is_new in changes:
+                if is_new:
+                    out.new_periods.append((code, o.period_label, o.value))
+                else:
+                    out.revisions.append((code, o.period_label, old, o.value))
+        out.summary = res.describe()
+        if qid:
+            out.status, out.category = "quarantine", E.CHECK_FAILED
+            out.problems = problems
+            out.message = "; ".join(problems)
+        else:
+            self.store.refresh_summary(job["id"])
+            exp, per = S.expected_next(self.store, job)
+            if out.changed:
+                out.status = "updated"
+            elif sources.get(job["source"]).snapshot:
+                out.status = "unchanged"
+            else:
+                out.status = "delayed" if S.is_delayed(exp, per, now) else "waiting"
+            out.message = out.summary
+            upd = {"last_success": fetched_at, "expected_next": exp.isoformat(timespec="seconds") if exp else None}
+            if out.changed:
+                upd["last_change"] = fetched_at
+            self.store.set_state(job["id"], **upd)
+        self.store.set_state(job["id"], status=out.status, category=out.category, message=out.message,
+                             last_attempt=fetched_at, fail_count=0,
+                             source_updated=str(res.source_updated) if res.source_updated else None,
+                             warnings="\n".join(out.warnings) or None)
+        self.store.finish_run(run_id, status=out.status, category=out.category, message=out.message,
+                              new_periods=len(out.new_periods), revisions=len(out.revisions),
+                              n_series=len(res.series), raw_path=out.raw_path,
+                              details={"new": out.new_periods[:200], "revisions": out.revisions[:200],
+                                       "problems": problems, "warnings": out.warnings})
+        self.log.info("Показатель %s: %s (новых периодов %d, пересмотров %d)", job["id"], out.status,
+                      len(out.new_periods), len(out.revisions))
+        return out
+
+    # --- проход --------------------------------------------------------------
+    def run(self, job_ids=None, force=False, scheduled=False, progress=None, write_report=True) -> RunReport:
+        report = RunReport()
+        with Lock(self.paths.lock):
+            self.store.meta_set("runner_heartbeat", now_iso())
+            settings = self.cfg.settings()
+            report.purged = self.cfg.purge_trash(int(settings.get("trash_days", 30)))
+            all_jobs = self.cfg.jobs()
+            if job_ids:
+                jobs = [j for j in all_jobs if j["id"] in job_ids]
+            elif force:
+                jobs = [j for j in all_jobs if j.get("enabled", True)]
+            else:
+                jobs = self.due_jobs()
+            self.log.info("Проход: %d показателей (force=%s, scheduled=%s)", len(jobs), force, scheduled)
+            self._run_jobs(jobs, report, progress, cheap=not (force or job_ids))
+            report.packets = packet.rebuild(self.cfg, self.store, self.paths, log=self.log)
+            from .excel.models import models_with_new_data
+            report.models_new = models_with_new_data(self.cfg, self.store)
+            if settings.get("per_job_files"):
+                from .excel import exports
+                changed_jobs = [o.job for o in report.outcomes if o.changed]
+                report.job_files = exports.update_job_files(self.cfg, self.store, self.paths, changed_jobs)
+            if settings.get("nightly_model_refresh") and scheduled and 1 <= dt.datetime.now().hour <= 5:
+                report.notes += self._nightly_models()
+            report.finished = dt.datetime.now()
+            self.store.meta_set("runner_last_finished", now_iso())
+            self._purge_raw(int(settings.get("keep_raw_days", 90) or 90))
+            if write_report and report.outcomes:
+                from .core import report as R
+                report.path = R.write(self, report)
+            if report.outcomes:
+                from .core import notify
+                notify.after_run(self, report)
+        return report
+
+    def _purge_raw(self, days):
+        """Сырые ответы старше N дней удаляются (последний ответ показателя сохраняется всегда)."""
+        limit = time.time() - days * 86400
+        if not self.paths.raw.exists():
+            return
+        for d in self.paths.raw.iterdir():
+            files = sorted(d.glob("*")) if d.is_dir() else []
+            for f in files[:-1]:
+                try:
+                    if f.stat().st_mtime < limit:
+                        f.unlink()
+                except OSError:
+                    pass
+
+    def _run_jobs(self, jobs, report, progress, cheap):
+        if not jobs:
+            return
+        ctx = self.context()
+        by_host = OrderedDict()
+        for j in jobs:
+            try:
+                host = sources.get(j["source"]).host(j.get("params") or {})
+            except KeyError:
+                o = JobOutcome(j)
+                o.status, o.category, o.message = "error", E.INTERNAL, f"Неизвестный источник «{j['source']}»"
+                report.outcomes.append(o)
+                continue
+            by_host.setdefault(host, []).append(j)
+        results = queue.Queue()
+
+        def host_worker(host, host_jobs):
+            pause = HOST_PAUSE.get(host, DEFAULT_PAUSE)
+            for i, job in enumerate(host_jobs):
+                if i:
+                    time.sleep(pause)
+                if progress:
+                    progress(f"Загружаю: {job['name']}")
+                kind, payload = self.fetch_job(job, ctx, use_cheap_check=cheap)
+                results.put((job, kind, payload))
+
+        with ThreadPoolExecutor(max_workers=min(MAX_HOSTS, len(by_host)) or 1) as ex:
+            futures = [ex.submit(host_worker, h, js) for h, js in by_host.items()]
+            done = 0
+            total = sum(len(js) for js in by_host.values())
+            while done < total:
+                try:
+                    job, kind, payload = results.get(timeout=1)
+                except queue.Empty:
+                    if all(f.done() for f in futures) and results.empty():
+                        break
+                    continue
+                done += 1
+                try:
+                    report.outcomes.append(self.apply(job, kind, payload))
+                except Exception as e:  # noqa: BLE001 — сбой записи одного показателя не мешает остальным
+                    o = JobOutcome(job)
+                    o.status, o.category, o.message = "error", E.INTERNAL, E.human_message(e)
+                    o.traceback = traceback.format_exc()
+                    self.log.exception("Ошибка записи показателя %s", job["id"])
+                    report.outcomes.append(o)
+            for f in futures:
+                f.result()
+
+    def _nightly_models(self):
+        notes = []
+        from .excel import com_connect
+        from .excel.models import models_with_new_data
+        for name, _n in models_with_new_data(self.cfg, self.store):
+            m = self.cfg.model(name)
+            try:
+                com_connect.refresh_closed_model(m["path"], self.paths.model_backups, log=self.log.info)
+                notes.append(f"Модель «{name}» обновлена ночью")
+            except Exception as e:  # noqa: BLE001
+                notes.append(f"Модель «{name}» не обновлена ночью: {E.human_message(e)}")
+        return notes
+
+
+def version_string():
+    return f"Хаб данных {VERSION}"
