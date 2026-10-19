@@ -165,7 +165,38 @@ def _way_connection(ws, query_name, cell):
     return ws.ListObjects.Add(XL_SRC_EXTERNAL, conn, _missing(), XL_YES, ws.Range(cell))
 
 
-TABLE_WAYS = [("ListObjects.Add (по порядку)", _way_positional),
+# Журнал пользователя: QueryTables.Add (все 3 аргумента заданы) работает, а ListObjects.Add — нет.
+# Вероятная причина: pywin32 подставляет «пустое значение» (VT_EMPTY) вместо пропущенных необязательных
+# аргументов (LinkSource, TableStyleName), и Excel отвечает «неверный аргумент». Поэтому сначала —
+# все аргументы явно, затем — прямой вызов COM ровно с теми аргументами, что переданы.
+TABLE_STYLE = "TableStyleMedium2"
+
+
+def _way_all_args(ws, query_name, cell):
+    return ws.ListObjects.Add(XL_SRC_EXTERNAL, _conn_string(query_name), True, XL_YES, ws.Range(cell),
+                              TABLE_STYLE)
+
+
+def _way_all_named(ws, query_name, cell):
+    return ws.ListObjects.Add(SourceType=XL_SRC_EXTERNAL, Source=_conn_string(query_name), LinkSource=True,
+                              XlListObjectHasHeaders=XL_YES, Destination=ws.Range(cell),
+                              TableStyleName=TABLE_STYLE)
+
+
+def _way_raw_invoke(ws, query_name, cell):
+    import pythoncom
+    import win32com.client
+    ole = ws.ListObjects._oleobj_
+    dispid = ole.GetIDsOfNames("Add")
+    res = ole.Invoke(dispid, 0, pythoncom.DISPATCH_METHOD, True,
+                     XL_SRC_EXTERNAL, _conn_string(query_name), True, XL_YES, ws.Range(cell)._oleobj_)
+    return win32com.client.Dispatch(res)
+
+
+TABLE_WAYS = [("ListObjects.Add (все аргументы явно)", _way_all_args),
+              ("ListObjects.Add (все аргументы по именам)", _way_all_named),
+              ("ListObjects.Add (прямой вызов COM)", _way_raw_invoke),
+              ("ListObjects.Add (по порядку)", _way_positional),
               ("ListObjects.Add (по именам)", _way_keywords),
               ("ListObjects.Add (подключение списком)", _way_array),
               ("ListObjects.Add (имя в кавычках)", _way_quoted),
@@ -397,7 +428,7 @@ def diagnose(packet_path, log=print) -> list[str]:
 
     try:
         import sys
-        import win32com  # noqa: F401
+        import win32com  # noqa: F401 — проверяем, что pywin32 установлен
         try:
             from importlib.metadata import version
             pw = version("pywin32")

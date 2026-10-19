@@ -53,7 +53,8 @@ class FakeListObjects(list):
         source = str(kw.get("Source", args[1] if len(args) > 1 else ""))
         bad = (mode == "never" or (mode == "keywords_only" and args)
                or (mode == "ascii_only" and "Location=Hub" not in source)
-               or (mode == "visible_only" and not xl.Visible))
+               or (mode == "visible_only" and not xl.Visible)
+               or (mode == "explicit_only" and len(args) < 6 and "TableStyleName" not in kw))
         if bad:
             raise COMError((-2147352567, "Ошибка.", (0, None, None, None, 0, -2147024809), None))
         lo = FakeLO(self.ws)
@@ -242,3 +243,13 @@ def test_connect_starts_with_remembered_way(fake_excel, tmp_path):
 def test_col_letter():
     from hub.excel.com_connect import col_letter
     assert [col_letter(n) for n in (1, 26, 27, 60)] == ["A", "Z", "AA", "BH"]
+
+
+def test_explicit_args_way_is_tried_first(fake_excel, tmp_path):
+    """Как у пользователя: работает только вызов со всеми аргументами — он должен сработать сразу."""
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL("explicit_only")
+    steps = []
+    r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=steps.append)
+    assert not r["partial"] and r["way"]["way"] == "ListObjects.Add (все аргументы явно)"
+    assert r["way"]["ascii"] is False and r["way"]["visible"] is False
