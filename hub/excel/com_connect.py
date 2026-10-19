@@ -238,13 +238,17 @@ class StepError(HubError):
 
 def _finish_table(lo, query_name, table_name, log):
     qt = lo.QueryTable
-    for prop, value in (("CommandType", XL_CMD_SQL), ("CommandText", [f"SELECT * FROM [{query_name}]"]),
-                        ("BackgroundQuery", False), ("RefreshOnFileOpen", True), ("PreserveColumnInfo", True),
-                        ("AdjustColumnWidth", True)):
-        try:
-            setattr(qt, prop, value)
-        except Exception as e:  # noqa: BLE001
-            log(f"  свойство {prop}: {e!r}")
+    # без CommandType/CommandText Excel отвечает «Incomplete datasource» (так же делает запись макроса)
+    sql = f"SELECT * FROM [{query_name}]"
+    for prop, values in (("CommandType", [XL_CMD_SQL]), ("CommandText", [[sql], sql]),
+                         ("BackgroundQuery", [False]), ("RefreshOnFileOpen", [True]), ("PreserveColumnInfo", [True]),
+                         ("AdjustColumnWidth", [True])):
+        for value in values:
+            try:
+                setattr(qt, prop, value)
+                break
+            except Exception as e:  # noqa: BLE001
+                log(f"  свойство {prop}: {e!r}")
     try:
         lo.Name = table_name
     except Exception as e:  # noqa: BLE001
@@ -466,11 +470,13 @@ def diagnose(packet_path, log=print) -> list[str]:
                 try:
                     lo = way(ws, names["Хаб"], cell)
                     try:
-                        lo.QueryTable.Refresh(False)
+                        # те же настройки, что при настоящем подключении (запрос SQL к запросу Power Query)
+                        _finish_table(lo, names["Хаб"], f"Проверка_{col}", lambda m: say(m))
                         say(f"Способ «{title}»: РАБОТАЕТ (строк {lo.ListRows.Count}, столбцов {lo.ListColumns.Count})")
                         worked.append(f"{variant_title(visible, ascii_names)} / {title}")
                     except Exception as e:  # noqa: BLE001
-                        say(f"Способ «{title}»: таблица создана, но обновление не удалось: {e!r}")
+                        say(f"Способ «{title}»: таблица создана, но обновление не удалось: "
+                            f"{getattr(e, 'detail', '') or repr(e)}")
                     try:
                         lo.Delete()
                     except Exception:  # noqa: BLE001
