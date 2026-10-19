@@ -14,7 +14,20 @@ from pathlib import Path
 
 from ..core import periods as P
 from ..core.errors import FileBusy
+from ..core.store import series_dims
 from . import packet
+
+
+def dims_table(store, codes):
+    """({код: {поле: значение}}, [поля по порядку]) — разрезы рядов как отдельные столбцы."""
+    per_code, fields = {}, []
+    for c in codes:
+        d = dict(series_dims(store.series(c)))
+        per_code[c] = d
+        for k in d:
+            if k not in fields:
+                fields.append(k)
+    return per_code, fields
 
 
 def _book(store, codes, passport):
@@ -23,48 +36,62 @@ def _book(store, codes, passport):
     from openpyxl.utils import get_column_letter
 
     bold = Font(bold=True)
+    wrap = Alignment(wrap_text=True, vertical="top")
     wb = Workbook()
     ws = wb.active
     ws.title = "Данные"
     meta = {c: store.series(c) for c in codes}
-    ws.append(["Дата", "Период"] + [meta[c]["name"] for c in codes])
-    ws.append(["", "код →"] + codes)
+    dims, fields = dims_table(store, codes)
+    # шапка: по строке на каждый разрез, затем единицы и коды; ниже — даты × ряды
+    for f in fields:
+        ws.append(["", f] + [dims[c].get(f, "") for c in codes])
+    ws.append(["", "Единицы"] + [meta[c]["unit"] for c in codes])
+    ws.append(["Дата", "Период"] + codes)
+    head = len(fields) + 2
     for d, label, vals in packet.wide(store, codes):
         ws.append([d, label] + [vals.get(c) for c in codes])
-    for c in ws[1]:
-        c.font = bold
-        c.alignment = Alignment(wrap_text=True, vertical="top")
-    ws.row_dimensions[1].height = 60
+    for row in ws.iter_rows(max_row=head):
+        for c in row:
+            c.font = bold
+            c.alignment = wrap
     ws.column_dimensions["A"].width = 12
+    ws.column_dimensions["B"].width = 16
     for i in range(3, len(codes) + 3):
-        ws.column_dimensions[get_column_letter(i)].width = 20
-    for row in ws.iter_rows(min_row=3, max_col=1):
+        ws.column_dimensions[get_column_letter(i)].width = 22
+    for row in ws.iter_rows(min_row=head + 1, max_col=1):
         row[0].number_format = "DD.MM.YYYY"
-    ws.freeze_panes = "C3"
+    ws.freeze_panes = f"C{head + 1}"
 
     ws = wb.create_sheet("Последние")
-    ws.append(["Код", "Название", "Единицы", "Периодичность", "Последний период", "Последнее значение",
-               "Предыдущее значение"])
+    ws.append(["Код"] + fields + ["Единицы", "Периодичность", "Последний период", "Последнее значение",
+                                  "Предыдущее значение"])
     for c in codes:
         last = store.last_values(c, 2)
-        ws.append([c, meta[c]["name"], meta[c]["unit"], P.PERIODICITY_RU.get(meta[c]["periodicity"], ""),
+        ws.append([c] + [dims[c].get(f, "") for f in fields] +
+                  [meta[c]["unit"], P.PERIODICITY_RU.get(meta[c]["periodicity"], ""),
                    last[0]["period_label"] if last else "", last[0]["value"] if last else None,
                    last[1]["value"] if len(last) > 1 else None])
     for c in ws[1]:
         c.font = bold
-    ws.column_dimensions["B"].width = 60
+    for i in range(2, len(fields) + 2):
+        ws.column_dimensions[get_column_letter(i)].width = 30
+    ws.auto_filter.ref = ws.dimensions
 
     ws = wb.create_sheet("Длинная")
-    ws.append(packet.PACKET_COLS)
+    ws.append(["Дата", "Период", "Код"] + fields + ["Единицы", "Значение"])
     for c in codes:
+        cut = [dims[c].get(f, "") for f in fields]
         for o in store.current_rows(c):
-            ws.append([dt.date.fromisoformat(o["period_end"]), o["period_label"], c, meta[c]["name"],
-                       meta[c]["unit"], o["value"]])
+            ws.append([dt.date.fromisoformat(o["period_end"]), o["period_label"], c] + cut +
+                      [meta[c]["unit"], o["value"]])
     for c in ws[1]:
         c.font = bold
     for row in ws.iter_rows(min_row=2, max_col=1):
         row[0].number_format = "DD.MM.YYYY"
+    for i in range(4, len(fields) + 4):
+        ws.column_dimensions[get_column_letter(i)].width = 30
     ws.auto_filter.ref = ws.dimensions
+    ws.freeze_panes = "A2"
 
     ws = wb.create_sheet("Паспорт")
     for k, v in passport:

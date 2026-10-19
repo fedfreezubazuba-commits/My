@@ -17,10 +17,11 @@
 """
 import datetime as dt
 import re
+import time
 import xml.etree.ElementTree as ET
 
 from ..core import periods as P
-from ..core.errors import StructureError
+from ..core.errors import HubError, StructureError, classify, human_message
 from .base import FetchResult, Obs, SeriesInfo, Source
 from .fedstat_api import BASE, Fedstat
 
@@ -115,6 +116,20 @@ def sdmx_series(xml_bytes):
     return out
 
 
+CHUNK_CELLS = 20000      # примерно столько значений просим за один запрос (дальше размер подбирается сам)
+
+
+def clean(text) -> str:
+    """«Тонна;^метрическая тонна (1000 кг)» → «Тонна; метрическая тонна (1000 кг)»."""
+    s = str(text or "").replace(";^", "; ").replace("^", " ")
+    return " ".join(s.split())
+
+
+def is_unit_dim(name) -> bool:
+    n = str(name).lower()
+    return "единиц" in n and "измерен" in n or n in ("s_okei", "okei")
+
+
 def _num(v):
     if v is None:
         return None
@@ -143,6 +158,45 @@ class FedstatSource(Source):
     def open_url(self, params):
         return f"{BASE}/indicator/{params.get('id')}"
 
+    def timeout(self, params):
+        return 3 * 3600          # большой показатель грузится частями по годам, с паузами
+
+    def _select(self, info, params, warnings):
+        select = {}
+        for fid, vals in (params.get("select") or {}).items():
+            fid = str(fid)
+            f = info["filters"].get(fid)
+            if f is None:
+                warnings.append(f"У показателя больше нет измерения {fid}")
+                continue
+            ok = [str(v) for v in vals if str(v) in f["values"]]
+            lost = [str(v) for v in vals if str(v) not in f["values"]]
+            if lost:
+                warnings.append(f"В измерении «{f['title']}» исчезли значения: {', '.join(lost)}")
+            if not ok:
+                raise StructureError(f"В измерении «{f['title']}» не осталось выбранных значений")
+            select[fid] = ok
+        return select
+
+    @staticmethod
+    def _years(info, params):
+        f = info["filters"].get(YEARS_FILTER)
+        if not f:
+            return None
+        years = [(int(t.strip()[:4]), v) for v, t in f["values"].items() if re.match(r"\d{4}", t.strip())]
+        yf = int(params.get("years_from") or 0)
+        return [v for y, v in sorted(years) if y >= yf]
+
+    @staticmethod
+    def cells_per_year(info, select):
+        """Сколько значений приходится на один год: произведение числа выбранных значений измерений."""
+        n = 1
+        for fid, f in info["filters"].items():
+            if fid == YEARS_FILTER:
+                continue
+            n *= max(1, len(select.get(fid) or f["values"]))
+        return n
+
     def fetch(self, params, ctx) -> FetchResult:
         fs = self.client(ctx)
         ind_id = str(params["id"])
@@ -151,32 +205,78 @@ class FedstatSource(Source):
         orig = fs.indicator
         fs.indicator = lambda _id: info
         warnings = []
+        partial = False
         try:
-            select = {}
-            for fid, vals in (params.get("select") or {}).items():
-                fid = str(fid)
-                f = info["filters"].get(fid)
-                if f is None:
-                    warnings.append(f"У показателя больше нет измерения {fid}")
-                    continue
-                ok = [str(v) for v in vals if str(v) in f["values"]]
-                lost = [str(v) for v in vals if str(v) not in f["values"]]
-                if lost:
-                    warnings.append(f"В измерении «{f['title']}» исчезли значения: {', '.join(lost)}")
-                if not ok:
-                    raise StructureError(f"В измерении «{f['title']}» не осталось выбранных значений")
-                select[fid] = ok
-            if params.get("years_from") and YEARS_FILTER in info["filters"]:
-                yf = int(params["years_from"])
-                select[YEARS_FILTER] = [v for v, t in info["filters"][YEARS_FILTER]["values"].items()
-                                        if re.match(r"\d{4}", t.strip()) and int(t.strip()[:4]) >= yf]
+            select = self._select(info, params, warnings)
             if not info.get("token"):
                 raise StructureError("На странице показателя ЕМИСС не найден токен выгрузки")
-            xml = fs.download(ind_id, "sdmx", select)
+            years = self._years(info, params)
+            last = getattr(ctx, "last_period", None) if ctx else None
+            if years and last and not getattr(ctx, "full_reload", True):
+                # дозагрузка: только последние годы (плюс предыдущий — там бывают пересмотры)
+                recent = [v for v in years if int(info["filters"][YEARS_FILTER]["values"][v].strip()[:4]) >= last.year - 1]
+                if recent and len(recent) < len(years):
+                    years, partial = recent, True
+            parts = self._download_in_parts(fs, ind_id, info, select, years, params, ctx)
         finally:
             fs.indicator = orig
-        res = FetchResult(url=self.open_url(params), raw=xml, raw_ext="xml", warnings=warnings)
-        series = sdmx_series(xml)
+        res = FetchResult(url=self.open_url(params), raw=parts[-1] if parts else b"", raw_ext="xml",
+                          warnings=warnings, partial=partial)
+        series = []
+        for xml in parts:
+            series += sdmx_series(xml)
+        self._to_result(series, info, ind_id, res)
+        return res
+
+    def _download_in_parts(self, fs, ind_id, info, select, years, params, ctx):
+        """Большие показатели — частями по годам. Размер части подбирается сам: при сбое части она
+        делится пополам (вплоть до одного года), после удачи — следующая часть вдвое больше."""
+        if not years:
+            self.say(ctx, f"ЕМИСС: выгружаю показатель {ind_id}")
+            return [fs.download(ind_id, "sdmx", select)]
+        limit = int(params.get("chunk_cells") or CHUNK_CELLS)
+        per_year = self.cells_per_year(info, select)
+        size = max(1, min(len(years), limit // max(per_year, 1)))
+        parts, i, fails = [], 0, 0
+        while i < len(years):
+            chunk = years[i:i + size]
+            label = self._year_label(info, chunk)
+            if size < len(years):
+                self.say(ctx, f"ЕМИСС: показатель большой (≈{per_year * len(years):,} значений), загружаю частями: "
+                              f"{label}".replace(",", " "))
+            try:
+                xml = fs.download(ind_id, "sdmx", {**select, YEARS_FILTER: chunk})
+                if b"<" not in xml[:200]:
+                    raise StructureError("ЕМИСС вернул пустой ответ")
+                parts.append(xml)
+                i += len(chunk)
+                fails = 0
+                size = min(size * 2, max(1, limit * 4 // max(per_year, 1)))
+            except StructureError:
+                raise
+            except Exception as e:  # noqa: BLE001 — сервер не справился с объёмом: дробим
+                code = getattr(e, "code", None)
+                if code and 400 <= code < 500 and code not in (408, 429):
+                    raise
+                if size > 1:
+                    size = max(1, size // 2)
+                    self.say(ctx, f"ЕМИСС не отдал данные за {label} — пробую частями поменьше ({size} г.)")
+                    time.sleep(getattr(fs, "pause", 2) * 2)
+                    continue
+                fails += 1
+                if fails >= 2:
+                    raise HubError(classify(e), f"ЕМИСС не отдаёт данные даже за один год ({label}): "
+                                                f"{human_message(e)}. Попробуйте позже или выберите меньше значений")
+                time.sleep(getattr(fs, "pause", 2) * 10)
+        return parts
+
+    @staticmethod
+    def _year_label(info, chunk):
+        vals = info["filters"].get(YEARS_FILTER, {}).get("values", {})
+        ys = [vals.get(v, v).strip()[:4] for v in chunk]
+        return ys[0] if len(ys) == 1 else f"{ys[0]}–{ys[-1]}"
+
+    def _to_result(self, series, info, ind_id, res):
         varying = self._varying_dims(series)
         kinds_seen = set()
         parsed = []
@@ -185,25 +285,34 @@ class FedstatSource(Source):
                 kind, end, label = fedstat_period(time_text, attrs.get("PERIOD", ""))
                 kinds_seen.add(kind)
                 parsed.append((key, key_names, attrs, kind, end, label, _num(value), time_text))
-        known = {}
+        known, seen_obs = {}, set()
         for key, key_names, attrs, kind, end, label, value, time_text in parsed:
             if value is None:
                 continue
             ident = "|".join(f"{c}={v}" for c, v in key) + f"|P={kind}"
+            if (ident, end) in seen_obs:
+                continue                       # одна и та же точка в соседних частях выгрузки
+            seen_obs.add((ident, end))
             if ident not in known:
                 per, note = KINDS[kind]
-                parts = [info["title"]] + [str(key_names[d]).strip() for d in key_names if d in varying]
+                unit_dims = [d for d in key_names if is_unit_dim(d)]
+                dims = [("Показатель", clean(info["title"]))]
+                dims += [(clean(d), clean(key_names[d])) for d in key_names if d not in unit_dims]
+                parts = [clean(info["title"])] + [clean(key_names[d]) for d in key_names
+                                                  if d in varying and d not in unit_dims]
                 if note and (len(kinds_seen) > 1 or kind in ("MC", "S", "SY")):
                     parts.append(note)
+                    dims.append(("Вид значения", note))
+                ei = clean(attrs.get("EI") or "")
+                unit = ei if ei not in ("", "-", "—") else (clean(key_names[unit_dims[0]]) if unit_dims else
+                                                          clean(info.get("unit") or ""))
                 code = f"FEDSTAT_{ind_id}_" + "_".join(str(v) for _c, v in key if _c and v) + f"_{kind}"
-                known[ident] = SeriesInfo(key=ident, name=" | ".join(p for p in parts if p),
-                                          unit=(attrs.get("EI") or info.get("unit") or "").strip(),
-                                          periodicity=per, code=code, url=res.url,
+                known[ident] = SeriesInfo(key=ident, name=" | ".join(p for p in parts if p), unit=unit,
+                                          periodicity=per, code=code, url=res.url, dims=dims,
                                           date_rule=f"период ЕМИСС → конец периода ({per})")
                 res.series.append(known[ident])
             res.obs.append(Obs(key=ident, period_end=end, period_label=label, value=value,
                                source_date=f"{time_text} {attrs.get('PERIOD', '')}".strip()))
-        return res
 
     @staticmethod
     def _varying_dims(series):

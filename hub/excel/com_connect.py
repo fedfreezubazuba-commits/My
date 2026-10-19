@@ -23,6 +23,7 @@ from . import mcode
 SHEET = "Хаб"
 XL_SRC_EXTERNAL = 0
 XL_CMD_SQL = 2
+XL_YES = 1
 XL_OPENXML_WORKBOOK = 51
 XL_OPENXML_WORKBOOK_MACRO = 52
 
@@ -110,6 +111,57 @@ def _sheet(wb, log):
     return ws
 
 
+def _conn_string(query_name):
+    return (f"OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;"
+            f"Location={query_name};Extended Properties=\"\"")
+
+
+def _missing():
+    try:
+        import pythoncom
+        return pythoncom.Missing
+    except ImportError:
+        return None
+
+
+# Способы загрузить запрос в таблицу листа. Разные версии Excel и pywin32 по-разному принимают
+# аргументы ListObjects.Add, поэтому пробуем по очереди и запоминаем в журнале, какой сработал.
+def _way_positional(ws, query_name, cell):
+    return ws.ListObjects.Add(XL_SRC_EXTERNAL, _conn_string(query_name), _missing(), XL_YES, ws.Range(cell))
+
+
+def _way_keywords(ws, query_name, cell):
+    return ws.ListObjects.Add(SourceType=XL_SRC_EXTERNAL, Source=_conn_string(query_name),
+                              Destination=ws.Range(cell))
+
+
+def _way_connection(ws, query_name, cell):
+    wb = ws.Parent
+    name = f"Запрос — {query_name}"
+    conn = None
+    for c in wb.Connections:
+        if c.Name == name:
+            conn = c
+    if conn is None:
+        conn = wb.Connections.Add2(name, f"Хаб данных: {query_name}", _conn_string(query_name),
+                                   f"SELECT * FROM [{query_name}]", XL_CMD_SQL)
+    return ws.ListObjects.Add(XL_SRC_EXTERNAL, conn, _missing(), XL_YES, ws.Range(cell))
+
+
+TABLE_WAYS = [("ListObjects.Add (по порядку)", _way_positional),
+              ("ListObjects.Add (по именам)", _way_keywords),
+              ("Connections.Add2 + ListObjects.Add", _way_connection)]
+
+
+class StepError(HubError):
+    """Ошибка на конкретном шаге подключения — с понятным названием шага."""
+
+    def __init__(self, step, exc):
+        super().__init__(INTERNAL, f"Excel не смог выполнить шаг «{step}»", detail=f"{step}: {exc!r}")
+        self.step = step
+        self.exc = exc
+
+
 def _load_table(ws, query_name, cell, log):
     for lo in ws.ListObjects:
         if lo.Name == query_name:
@@ -117,41 +169,78 @@ def _load_table(ws, query_name, cell, log):
             lo.QueryTable.Refresh(False)
             return lo
     log(f"Загружаю запрос {query_name} в таблицу на листе «Хаб» ({cell})")
-    conn = (f"OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;"
-            f"Location={query_name};Extended Properties=\"\"")
-    lo = ws.ListObjects.Add(SourceType=XL_SRC_EXTERNAL, Source=conn, Destination=ws.Range(cell))
-    lo.Name = query_name
+    lo, errors = None, []
+    for title, way in TABLE_WAYS:
+        try:
+            lo = way(ws, query_name, cell)
+            log(f"  способ «{title}» сработал")
+            break
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{title}: {e!r}")
+            log(f"  способ «{title}» не сработал: {e!r}")
+    if lo is None:
+        raise StepError(f"создать таблицу {query_name}", "; ".join(errors))
     qt = lo.QueryTable
-    qt.CommandType = XL_CMD_SQL
-    qt.CommandText = [f"SELECT * FROM [{query_name}]"]
-    qt.BackgroundQuery = False
-    qt.RefreshOnFileOpen = True
-    qt.PreserveColumnInfo = True
-    qt.AdjustColumnWidth = True
-    qt.Refresh(False)
+    for prop, value in (("CommandType", XL_CMD_SQL), ("CommandText", [f"SELECT * FROM [{query_name}]"]),
+                        ("BackgroundQuery", False), ("RefreshOnFileOpen", True), ("PreserveColumnInfo", True),
+                        ("AdjustColumnWidth", True)):
+        try:
+            setattr(qt, prop, value)
+        except Exception as e:  # noqa: BLE001
+            log(f"  свойство {prop}: {e!r}")
+    try:
+        lo.Name = query_name
+    except Exception as e:  # noqa: BLE001
+        log(f"  имя таблицы {query_name}: {e!r}")
+    try:
+        qt.Refresh(False)
+    except Exception as e:  # noqa: BLE001
+        raise StepError(f"обновить таблицу {query_name} (Power Query)", e)
     try:
         qt.WorkbookConnection.Name = f"Запрос — {query_name}"
         qt.WorkbookConnection.OLEDBConnection.RefreshOnFileOpen = True
         qt.WorkbookConnection.OLEDBConnection.BackgroundQuery = False
     except Exception as e:  # noqa: BLE001
-        log(f"Настройка подключения {query_name}: {e}")
+        log(f"  настройка подключения {query_name}: {e!r}")
     return lo
 
 
+def col_letter(n: int) -> str:
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _step(name, fn, *args, log):
+    log(name)
+    try:
+        return fn(*args)
+    except HubError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise StepError(name, e)
+
+
 def _fill(wb, packet_path, log):
-    _add_queries(wb, packet_path, log)
-    ws = _sheet(wb, log)
+    _step("Добавляю запросы Power Query", _add_queries, wb, packet_path, log, log=log)
+    ws = _step("Готовлю лист «Хаб»", _sheet, wb, log, log=log)
     _load_table(ws, "Хаб", "A1", log)
-    used = ws.ListObjects("Хаб").Range.Columns.Count
+    try:
+        used = ws.ListObjects("Хаб").Range.Columns.Count
+    except Exception:  # noqa: BLE001
+        used = 10
     # справочник ставим правее с запасом, чтобы новые ряды Хаба не упёрлись в него
-    col = max(used + 3, 60)
-    from_cell = ws.Cells(1, col).Address(False, False)
-    _load_table(ws, "Хаб_Ряды", from_cell, log)
+    _load_table(ws, "Хаб_Ряды", f"{col_letter(max(used + 3, 60))}1", log)
     return ws
 
 
 def connect_model(model_path, packet_path, backups_dir, log=print) -> dict:
-    """Подключить модель. Возвращает {'backup': путь копии, 'steps': [...]}."""
+    """Подключить модель. Возвращает {'backup', 'steps', 'partial'}.
+
+    partial=True — запросы добавлены и модель сохранена, но таблицы на лист загрузить не удалось:
+    пользователю остаётся «Загрузить в…» (2 действия, инструкция в сообщении)."""
     model_path = Path(model_path)
     steps = []
 
@@ -169,31 +258,102 @@ def connect_model(model_path, packet_path, backups_dir, log=print) -> dict:
     say(f"Резервная копия: {copy}")
     xl = _excel(say)
     wb = None
+    partial = False
     try:
-        say(f"Открываю модель {model_path.name}")
-        wb = xl.Workbooks.Open(str(model_path), UpdateLinks=0, ReadOnly=False)
-        _fill(wb, packet_path, say)
-        say("Сохраняю модель")
-        wb.Save()
-        wb.Close(SaveChanges=False)
+        wb = _step(f"Открываю модель {model_path.name}", lambda: xl.Workbooks.Open(str(model_path), 0, False), log=say)
+        try:
+            _fill(wb, packet_path, say)
+        except StepError as e:
+            if not e.step.startswith(("создать таблицу", "обновить таблицу")):
+                raise
+            partial = True
+            say(f"Таблицы не загрузились ({e.detail}). Сохраняю модель с запросами — осталось загрузить их вручную")
+        _step("Сохраняю модель", wb.Save, log=say)
+        wb.Close(False)
         wb = None
-        say("Готово")
+        say("Готово" if not partial else "Готово частично")
+    except StepError as e:
+        say(f"Ошибка: {e.detail}")
+        raise HubError(INTERNAL, f"{e}. Модель не изменена — резервная копия: {copy}",
+                       detail="\n".join(steps))
     except HubError:
         raise
     except Exception as e:  # noqa: BLE001
-        raise HubError(INTERNAL, f"Excel не смог подключить модель: {e}. Модель не изменена — "
-                                 f"резервная копия: {copy}", detail="\n".join(steps))
+        say(f"Ошибка: {e!r}")
+        raise HubError(INTERNAL, f"Excel не смог подключить модель. Модель не изменена — резервная копия: {copy}",
+                       detail="\n".join(steps))
     finally:
         if wb is not None:
             try:
-                wb.Close(SaveChanges=False)
+                wb.Close(False)
             except Exception:  # noqa: BLE001
                 pass
         try:
             xl.Quit()
         except Exception:  # noqa: BLE001
             pass
-    return {"backup": str(copy), "steps": steps}
+    return {"backup": str(copy), "steps": steps, "partial": partial}
+
+
+def diagnose(packet_path, log=print) -> list[str]:
+    """«Проверить связь с Excel»: все шаги подключения на новой пустой книге (модель не трогается).
+    Возвращает подробный журнал — его можно отправить Claude."""
+    out = []
+
+    def say(msg):
+        out.append(msg)
+        log(msg)
+
+    try:
+        import sys
+        import win32com
+        say(f"Python {sys.version.split()[0]}, pywin32 {getattr(win32com, '__version__', '?')}")
+    except ImportError:
+        say("pywin32 не установлен")
+        return out
+    try:
+        xl = _excel(say)
+    except HubError as e:
+        say(str(e))
+        return out
+    wb = None
+    try:
+        say(f"Excel {xl.Version}, сборка {getattr(xl, 'Build', '?')}")
+        wb = xl.Workbooks.Add()
+        try:
+            _add_queries(wb, packet_path, say)
+            say("Запросы добавлены: " + ", ".join(q.Name for q in wb.Queries))
+        except Exception as e:  # noqa: BLE001
+            say(f"Не удалось добавить запросы: {e!r}")
+            return out
+        ws = wb.Worksheets(1)
+        for i, (title, way) in enumerate(TABLE_WAYS):
+            cell = f"{col_letter(1 + i * 20)}1"
+            try:
+                lo = way(ws, "Хаб", cell)
+                say(f"Способ «{title}»: таблица создана")
+                try:
+                    lo.QueryTable.Refresh(False)
+                    say(f"  обновление: строк {lo.ListRows.Count}, столбцов {lo.ListColumns.Count}")
+                except Exception as e:  # noqa: BLE001
+                    say(f"  обновление не удалось: {e!r}")
+                try:
+                    lo.Delete()
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception as e:  # noqa: BLE001
+                say(f"Способ «{title}»: ошибка {e!r}")
+    finally:
+        if wb is not None:
+            try:
+                wb.Close(False)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            xl.Quit()
+        except Exception:  # noqa: BLE001
+            pass
+    return out
 
 
 def make_connection_file(target: Path, packet_path, log=print) -> Path:
@@ -203,7 +363,12 @@ def make_connection_file(target: Path, packet_path, log=print) -> Path:
     wb = None
     try:
         wb = xl.Workbooks.Add()
-        _fill(wb, packet_path, log)
+        try:
+            _fill(wb, packet_path, log)
+        except StepError as e:
+            if not e.step.startswith(("создать таблицу", "обновить таблицу")):
+                raise
+            log(f"Таблицы не загрузились ({e.detail}); файл-подключение будет только с запросами")
         for ws in list(wb.Worksheets):
             if ws.Name != SHEET and wb.Worksheets.Count > 1:
                 ws.Delete()

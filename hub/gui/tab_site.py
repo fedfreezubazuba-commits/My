@@ -220,14 +220,24 @@ class SiteTab(ttk.Frame):
             self.info.configure(text="Окно закрыто без выбора.", style="Muted.TLabel")
             return
         url = W.clean_url(pick.get("url") or self.url.get())
+        page_html = pick.get("page_html", "")
         if pick["kind"] == "table":
             t = A.picked_table(url, pick)
-            found = A.analyze(pick.get("page_html", ""), url)
             if t is None:
-                self.info.configure(text="Не удалось распознать таблицу — попробуйте щёлкнуть по числу.", style="red.TLabel")
+                self.info.configure(text="Не удалось распознать в выбранном блоке таблицу с числами. Попробуйте "
+                                         "щёлкнуть по одному числу или по блоку чуть шире.", style="red.TLabel")
                 return
-            params, name = A.table_params(found, t)
-            AddDialog(self.app, "web_table", params, name, note="Каждая строка выбранной таблицы станет рядом.")
+            # показываем всё найденное на странице и выделяем выбранную таблицу — видно, что попадёт в хаб
+            self.url.set(url)
+            self._show((page_html, "browser", A.analyze(page_html, url)))
+            idx = next((i for i, x in enumerate(self.found.tables) if x.rows[:3] == t.rows[:3]), None)
+            if idx is not None:
+                self.nb.select(1)
+                self.tables.selection_set(f"t{idx}")
+                self.tables.see(f"t{idx}")
+            params, name = A.table_params(self.found, t)
+            AddDialog(self.app, "web_table", params, name,
+                      note=f"Каждая строка выбранной таблицы ({len(t.rows)} строк) станет рядом.")
             return
         params, label = A.picked_value_params(url, pick)
         from ..sources.web_value import extract_fields
@@ -236,7 +246,7 @@ class SiteTab(ttk.Frame):
         if value is None:
             self.info.configure(text=f"В выбранном элементе нет числа: «{pick.get('text', '')[:60]}».", style="red.TLabel")
             return
-        params["fetch_mode"] = "browser"     # страница открывалась в браузере — так и будем читать
+        params["fetch_mode"] = "auto"        # сначала обычная загрузка, при неудаче — встроенный браузер
         self.info.configure(text=f"Выбрано: {fmt(value)} («{label}»).", style="green.TLabel")
         title = (self.found.title if self.found else "") or W.site_name(url)
         AddDialog(self.app, "web_value", params, f"{title} — {label}")

@@ -87,3 +87,44 @@ def test_fedstat_periods(time, period, expected):
 def test_fedstat_unknown_period():
     with pytest.raises(StructureError):
         fedstat_period("2024", "неведомый период")
+
+
+def test_fedstat_big_indicator_downloads_in_parts(fakes, monkeypatch):
+    """Сервер не отдаёт больше одного года за раз → хаб дробит выгрузку и склеивает результат."""
+    import hub.sources.fedstat as FS
+    monkeypatch.setattr(FS.time, "sleep", lambda s: None)
+    fs = fakes["fedstat"]
+    fs.max_years = 1
+    said = []
+    ctx = Context(clients=fakes)
+    ctx.progress = said.append
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883"]}}, ctx)
+    assert fs.downloads == [["2023"], ["2024"], ["2025"]]
+    assert len([o for o in res.obs if o.key.endswith("P=M")]) == 12 + 12 + 8
+    assert any("поменьше" in s for s in said)
+    assert not res.partial
+
+
+def test_fedstat_small_indicator_in_one_request(fakes):
+    get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883"]}}, Context(clients=fakes))
+    assert fakes["fedstat"].downloads == [["2023", "2024", "2025"]]
+
+
+def test_fedstat_incremental_update_loads_recent_years(fakes):
+    ctx = Context(clients=fakes)
+    ctx.last_period, ctx.full_reload = dt.date(2025, 8, 31), False
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883"]}}, ctx)
+    assert fakes["fedstat"].downloads == [["2024", "2025"]] and res.partial
+
+
+def test_fedstat_dims_and_unit():
+    from hub.sources.fedstat import clean, is_unit_dim
+    assert clean("Тонна;^метрическая тонна (1000 кг)") == "Тонна; метрическая тонна (1000 кг)"
+    assert is_unit_dim("Единица измерения") and not is_unit_dim("Регион")
+
+
+def test_fedstat_series_have_separate_dims(fakes):
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883", "1558900"]}}, Context(clients=fakes))
+    s = next(s for s in res.series if s.code.endswith("643_11_M"))
+    assert s.dims[0][0] == "Показатель"
+    assert ("Классификатор объектов административно-территориального деления (ОКАТО)", "Российская Федерация") in s.dims

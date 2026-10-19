@@ -10,6 +10,7 @@
   5. пересборка посылок моделей (занятый файл — повтор в следующий раз, данные уже в базе);
   6. отчёт и уведомление, если есть что сказать.
 """
+import copy
 import datetime as dt
 import os
 import queue
@@ -192,12 +193,33 @@ class Runner:
         p.write_bytes(res.raw)
         return str(p)
 
-    def fetch_job(self, job, ctx, use_cheap_check=True):
+    FULL_RELOAD_DAYS = 30
+
+    def job_context(self, job, ctx, progress=None):
+        """Контекст одного показателя: последний загруженный период (для дозагрузки только свежих лет)
+        и нужна ли полная перезагрузка (раз в месяц — чтобы поймать пересмотры старых данных)."""
+        jctx = copy.copy(ctx)
+        state = self.store.state(job["id"])
+        try:
+            jctx.last_period = dt.date.fromisoformat(state["last_period"]) if state.get("last_period") else None
+        except ValueError:
+            jctx.last_period = None
+        last_full = self.store.meta_get(f"full:{job['id']}")
+        try:
+            jctx.full_reload = not last_full or (dt.datetime.now() - dt.datetime.fromisoformat(last_full)).days \
+                >= self.FULL_RELOAD_DAYS
+        except ValueError:
+            jctx.full_reload = True
+        jctx.progress = progress
+        return jctx
+
+    def fetch_job(self, job, ctx, use_cheap_check=True, progress=None):
         """Загрузка (в рабочем потоке): ('fetched', FetchResult) | ('no_change', дата) | ('error', exc)."""
         src = sources.get(job["source"])
         params = job.get("params") or {}
         state = self.store.state(job["id"])
-        timeout = int(ctx.settings.get("job_timeout_sec", 600))
+        ctx = self.job_context(job, ctx, progress)
+        timeout = max(int(ctx.settings.get("job_timeout_sec", 600)), int(src.timeout(params) or 0))
         try:
             if use_cheap_check and job.get("schedule", "auto") == "auto" and not src.snapshot \
                     and state.get("source_updated") and state.get("status") not in ("error", "retry", "new", None):
@@ -228,6 +250,9 @@ class Runner:
             out.message = E.human_message(exc)
             out.traceback = getattr(exc, "hub_traceback", "") or "".join(
                 traceback.format_exception(type(exc), exc, exc.__traceback__))
+            if getattr(exc, "raw_text", None):     # страница, на которой не нашлось нужного, — для «Отправить Claude»
+                from .sources.base import FetchResult
+                out.raw_path = self._save_raw(job, FetchResult(raw=exc.raw_text.encode("utf-8"), raw_ext="html"))
             if cat == E.LOGIN:
                 out.status = "login"
             elif cat in E.TRANSIENT and fails < fail_threshold:
@@ -235,7 +260,7 @@ class Runner:
             else:
                 out.status = "error"
             self.store.finish_run(run_id, status=out.status, category=cat, message=out.message,
-                                  traceback=out.traceback[-8000:])
+                                  traceback=out.traceback[-8000:], raw_path=out.raw_path)
             self.store.set_state(job["id"], status=out.status, category=cat, message=out.message,
                                  last_attempt=now.isoformat(timespec="seconds"), fail_count=fails)
             self.log.warning("Показатель %s: %s (%s)", job["id"], out.message, cat)
@@ -310,9 +335,12 @@ class Runner:
             if out.changed:
                 upd["last_change"] = fetched_at
             self.store.set_state(job["id"], **upd)
+            if not getattr(res, "partial", False):
+                self.store.meta_set(f"full:{job['id']}", fetched_at)
+        if not getattr(res, "partial", False):
+            self.store.set_state(job["id"], fetch_rows=sum(1 for o in res.obs if o.value is not None))
         self.store.set_state(job["id"], status=out.status, category=out.category, message=out.message,
                              last_attempt=fetched_at, fail_count=0,
-                             fetch_rows=sum(1 for o in res.obs if o.value is not None),
                              source_updated=str(res.source_updated) if res.source_updated else None,
                              warnings="\n".join(out.warnings) or None)
         self.store.finish_run(run_id, status=out.status, category=out.category, message=out.message,
@@ -397,7 +425,7 @@ class Runner:
                     time.sleep(pause)
                 if progress:
                     progress(f"Загружаю: {job['name']}")
-                kind, payload = self.fetch_job(job, ctx, use_cheap_check=cheap)
+                kind, payload = self.fetch_job(job, ctx, use_cheap_check=cheap, progress=progress)
                 results.put((job, kind, payload))
 
         with ThreadPoolExecutor(max_workers=min(MAX_HOSTS, len(by_host)) or 1) as ex:

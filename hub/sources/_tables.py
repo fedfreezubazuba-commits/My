@@ -328,9 +328,12 @@ def table_to_result(table, spec, prefix, url, today, page_dt=None, page_is_week=
                 continue
             seen.add(key)
             name = f"{table.title} | {full}" if table.title else full
+            dims = ([("Таблица", table.title)] if table.title else []) + [("Строка", label)]
+            if col:
+                dims.append(("Столбец", col))
             res.series.append(SeriesInfo(
                 key=key, name=name[:200], unit=unit, periodicity="week" if per == "week" else "snapshot",
-                code=code, url=url,
+                code=code, url=url, dims=dims,
                 date_rule=("дата отчёта (неделя)" if per == "week" else
                            "дата в строке таблицы" if date_col is not None and date_rule in ("auto", "row")
                            else "дата отчёта на странице" if page_dt else "дата получения")))
@@ -357,6 +360,7 @@ def _history(table, spec, prefix, url, res, unit):
         code = f"{prefix}_{slug(table.title or 't', 10)}_{slug(col_name, 16)}"
         res.series.append(SeriesInfo(key=key, name=(f"{table.title} | {col_name}" if table.title else col_name)[:200],
                                      unit=spec.get("unit", unit), periodicity=periodicity, code=code, url=url,
+                                     dims=([("Таблица", table.title)] if table.title else []) + [("Столбец", col_name)],
                                      date_rule="дата из таблицы → конец периода"))
         for r in rows:
             d = P.parse_date(r[date_col]) if date_col < len(r) else None

@@ -103,6 +103,7 @@ def fetch_page(url, ctx, mode="auto", need=None):
             if need is None or need(text):
                 return text, "requests", final
             err = E.StructureError("На странице не найдено нужное: изменилась вёрстка или страница строится скриптом")
+            err.raw_text = text
         except E.HubError as e:
             err = e
         except Exception as e:  # noqa: BLE001
@@ -129,9 +130,20 @@ def fetch_page(url, ctx, mode="auto", need=None):
     if cat == E.BOT:
         raise E.HubError(E.BOT, "Сайт показывает проверку «я не робот» — откройте его во встроенном браузере")
     if need is not None and not need(text):
+        # вторая попытка — настоящее окно за краем экрана: часть сайтов прячет данные от «безголового» браузера
+        try:
+            text2, final2 = browser.get_html(url, offscreen=True)
+            if need(text2):
+                return text2, "browser", final2
+            text = text2
+        except Exception:  # noqa: BLE001
+            pass
         if looks_like_login(text):
             raise E.LoginRequired("Нужные данные видны только после входа на сайт")
-        raise E.StructureError("На странице не найдено нужное (страница изменилась?)")
+        e = E.StructureError("На странице не найдено нужное: изменилась вёрстка или выбранный элемент "
+                             "больше не находится. Страница сохранена — нажмите «Отправить Claude»")
+        e.raw_text = text
+        raise e
     return text, "browser", final
 
 

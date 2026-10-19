@@ -75,6 +75,17 @@ def make_code(suggested: str, ident: str) -> str:
     return s
 
 
+def series_dims(row) -> list:
+    """Разрезы ряда отдельными полями [(поле, значение)]; для старых рядов — одно поле «Название»."""
+    raw = row["dims"] if "dims" in row.keys() else None
+    if raw:
+        try:
+            return [tuple(x) for x in json.loads(raw)]
+        except ValueError:
+            pass
+    return [("Название", row["name"] or "")]
+
+
 def same_value(a, b) -> bool:
     if a is None or b is None:
         return a is b
@@ -97,6 +108,9 @@ class Store:
         have = {r[1] for r in self.conn.execute("PRAGMA table_info(job_state)")}
         if "fetch_rows" not in have:
             self.conn.execute("ALTER TABLE job_state ADD COLUMN fetch_rows INTEGER")
+        have = {r[1] for r in self.conn.execute("PRAGMA table_info(series)")}
+        if "dims" not in have:
+            self.conn.execute("ALTER TABLE series ADD COLUMN dims TEXT")
 
     def close(self):
         self.conn.close()
@@ -161,10 +175,11 @@ class Store:
         return self.q("SELECT * FROM series ORDER BY job_id, created, rowid")
 
     def update_series_meta(self, code, info):
+        dims = json.dumps(info.dims, ensure_ascii=False) if getattr(info, "dims", None) else None
         with self.tx() as c:
-            c.execute("UPDATE series SET name=?, unit=?, periodicity=?, url=?, date_rule=?, last_seen=?"
+            c.execute("UPDATE series SET name=?, unit=?, periodicity=?, url=?, date_rule=?, last_seen=?, dims=?"
                       " WHERE code=?", (info.name, info.unit, info.periodicity, info.url, info.date_rule,
-                                        now_iso(), code))
+                                        now_iso(), dims, code))
 
     # --- наблюдения ----------------------------------------------------------
     def current(self, code):

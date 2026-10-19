@@ -30,7 +30,7 @@ PICKER_JS = r"""
   const tip = document.createElement('div');
   tip.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1565c0;color:#fff;' +
                       'font:15px Segoe UI,Arial;padding:8px 14px;text-align:center';
-  tip.textContent = 'Хаб данных: щёлкните по нужному числу. Удерживайте Shift и щёлкните — чтобы выбрать всю таблицу.';
+  tip.textContent = 'Хаб данных: щёлкните по нужному числу — или по всему блоку с таблицей (Shift+щелчок — выбрать таблицу целиком).';
   document.documentElement.appendChild(box);
   document.documentElement.appendChild(tip);
   const cssPath = (el) => {
@@ -64,7 +64,7 @@ PICKER_JS = r"""
   const labelBefore = (el) => {
     let s = el.previousElementSibling, p = el.parentElement, n = 0;
     while (n < 4) {
-      while (s) { const t = (s.innerText || '').trim(); if (t && t.length < 80 && !/\d{3}/.test(t)) return t; s = s.previousElementSibling; }
+      while (s) { const t = (s.innerText || '').trim(); if (t && t.length < 80 && !/\d{3}/.test(t) && !/click|нажмите/i.test(t)) return t; s = s.previousElementSibling; }
       if (!p) break; s = p.previousElementSibling; p = p.parentElement; n++;
     }
     return '';
@@ -78,10 +78,14 @@ PICKER_JS = r"""
   document.addEventListener('click', (e) => {
     e.preventDefault(); e.stopPropagation();
     const el = target(e);
+    const txt = (el.innerText || '').trim();
+    // щелчок по блоку, в котором много чисел (таблица, «плитки» со ставками), — это выбор таблицы
+    const nums = (txt.match(/\d[\d\s.,]*/g) || []).length;
+    const block = e.shiftKey || nums > 3;
     window.__hubPick = {
-      kind: e.shiftKey ? 'table' : 'value',
-      selector: cssPath(el), xpath: xPath(el), text: (el.innerText || '').trim().slice(0, 500),
-      label: labelBefore(el), html: e.shiftKey ? el.outerHTML.slice(0, 300000) : '', url: location.href
+      kind: block ? 'table' : 'value',
+      selector: cssPath(el), xpath: xPath(el), text: txt.slice(0, 2000),
+      label: labelBefore(el), html: el.outerHTML.slice(0, 300000), url: location.href
     };
     tip.textContent = 'Выбрано: ' + window.__hubPick.text.slice(0, 80) + ' — можно закрыть это окно.';
     tip.style.background = '#2e7d32';
@@ -114,11 +118,17 @@ class Browser:
         except ImportError:
             return False
 
-    def _launch(self, p, headless):
+    def _launch(self, p, headless, offscreen=False):
         if self.profile is None:
             raise E.HubError(E.INTERNAL, "Не задана рабочая папка для профиля браузера")
         self.profile.mkdir(parents=True, exist_ok=True)
-        kw = {"headless": headless, "locale": "ru-RU", "viewport": {"width": 1280, "height": 900}}
+        from ._web import UA
+        # обычный браузер, а не «робот»: некоторые сайты не показывают данные «безголовому» Chrome
+        args = ["--disable-blink-features=AutomationControlled"]
+        if offscreen:
+            args += ["--window-position=-32000,-32000", "--window-size=1280,900"]
+        kw = {"headless": headless, "locale": "ru-RU", "viewport": {"width": 1280, "height": 900},
+              "user_agent": UA, "args": args}
         exe = os.environ.get("HUB_CHROMIUM")
         if exe:
             kw["executable_path"] = exe
@@ -138,9 +148,11 @@ class Browser:
         from playwright.sync_api import sync_playwright
         return sync_playwright()
 
-    def get_html(self, url, wait_ms=2500, timeout_ms=60000):
+    def get_html(self, url, wait_ms=2500, timeout_ms=60000, offscreen=False):
+        """HTML после выполнения скриптов. offscreen=True — настоящее окно за краем экрана
+        (для сайтов, которые не отдают данные браузеру без окна)."""
         with _lock, self._sync() as p:
-            ctx = self._launch(p, headless=True)
+            ctx = self._launch(p, headless=not offscreen, offscreen=offscreen)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 try:
@@ -152,6 +164,16 @@ class Browser:
                 except Exception:  # noqa: BLE001 — сайты с вечными запросами
                     pass
                 page.wait_for_timeout(wait_ms)
+                # ждём, пока текст страницы перестанет расти (данные подгружаются скриптами)
+                prev, stable, end = -1, 0, time.time() + 20
+                while time.time() < end and stable < 2:
+                    try:
+                        n = page.evaluate("document.body ? document.body.innerText.length : 0")
+                    except Exception:  # noqa: BLE001
+                        n = prev
+                    stable = stable + 1 if n == prev else 0
+                    prev = n
+                    page.wait_for_timeout(700)
                 return page.content(), page.url
             finally:
                 ctx.close()

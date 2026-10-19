@@ -35,7 +35,8 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
         o = max(future, key=lambda x: x.period_end)
         problems.append(f"Дата из будущего: {o.period_end:%d.%m.%Y}")
 
-    if known and checks.get("missing_series", True):
+    partial = getattr(result, "partial", False)    # дозагрузка свежих лет: старые ряды могли не попасть
+    if known and checks.get("missing_series", True) and not partial:
         got = set(codes.values())
         active_before = [r for r in known if store.last_values(r["code"], 1)]
         lost = [r for r in active_before if r["code"] not in got]
@@ -70,6 +71,6 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
 
     prev_rows = state.get("fetch_rows") or 0       # сколько значений вернула прошлая загрузка
     min_ratio = float(checks.get("min_rows_ratio", 0.5))
-    if prev_rows >= 10 and len(values) < prev_rows * min_ratio and not job.get("params", {}).get("partial"):
+    if prev_rows >= 10 and len(values) < prev_rows * min_ratio and not partial:
         problems.append(f"Резко уменьшилось число строк: было {prev_rows}, стало {len(values)}")
     return problems

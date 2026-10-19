@@ -65,39 +65,49 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
     result = {"ok": False, "method": None, "files": [], "packet": str(ppath),
               "formula": formulas.main_formula("КОД_РЯДА", cfg.settings().get("formula_locale", "ru"))}
     errors = []
+    load_hint = ("Чтобы закончить, откройте модель: Данные → Запросы и подключения → правой кнопкой по «Хаб» → "
+                 "«Загрузить в…» → Таблица → «Имеющийся лист» → лист «Хаб», ячейка A1 → ОК. То же для «Хаб_Ряды» "
+                 "(ячейка BH1). Сохраните модель.")
     if use_com:
         try:
             r = com_connect().connect_model(model_path, ppath, paths.model_backups, log=log)
-            result.update(ok=True, method="com", backup=r["backup"],
-                          message=f"Модель «{name}» подключена: добавлен лист «Хаб» с таблицами Хаб и Хаб_Ряды. "
-                                  f"Резервная копия: {r['backup']}")
-            cfg.update_model(name, connected_method="com", connected=dt.date.today().isoformat())
+            if r.get("partial"):
+                result.update(ok=True, method="com_partial", backup=r["backup"],
+                              message=f"Модель «{name}» почти подключена: запросы Хаб и Хаб_Ряды добавлены, но Excel "
+                                      f"не дал хабу самому вывести их на лист. {load_hint}")
+            else:
+                result.update(ok=True, method="com", backup=r["backup"],
+                              message=f"Модель «{name}» подключена: добавлен лист «Хаб» с таблицами Хаб и Хаб_Ряды. "
+                                      f"Резервная копия: {r['backup']}")
+            cfg.update_model(name, connected_method=result["method"], connected=dt.date.today().isoformat())
             return result
         except FileBusy:
             raise
         except Exception as e:  # noqa: BLE001
             errors.append(human_message(e))
-            log(f"Подключение через Excel не удалось: {e}")
+            log(f"Подключение через Excel не удалось: {e!r}\n{getattr(e, 'detail', '')}")
         try:
             target = paths.packets / f"{packet.safe_name(name)} — подключение.xlsx"
             com_connect().make_connection_file(target, ppath, log=log)
             result["files"].append(str(target))
             result.update(ok=True, method="file",
-                          message=(f"Не удалось изменить модель автоматически ({errors[-1]}). "
-                                   f"Создан файл «{target.name}» с готовым листом «Хаб». Откройте его вместе с "
-                                   f"моделью: Данные → Запросы и подключения → выделите три запроса → "
-                                   f"Копировать → в модели вставьте их в панель «Запросы и подключения». "
-                                   f"Подробная инструкция — в файле рядом."))
+                          message=(f"Не удалось изменить модель автоматически ({errors[-1]}). Модель не изменена. "
+                                   f"Создан файл «{target.name}» с готовыми запросами. Откройте его и модель: "
+                                   f"Данные → Запросы и подключения → выделите три запроса → Копировать → в модели "
+                                   f"вставьте их в ту же панель. Подробно — в инструкции рядом."))
         except Exception as e:  # noqa: BLE001
             errors.append(human_message(e))
-            log(f"Файл-подключение не создан: {e}")
+            log(f"Файл-подключение не создан: {e!r}\n{getattr(e, 'detail', '')}")
     instr = paths.packets / f"{packet.safe_name(name)} — как подключить вручную.txt"
     instr.write_text(manual_instructions(name, ppath), encoding="utf-8-sig")
     result["files"].append(str(instr))
     if not result["ok"]:
+        reason = errors[0] if errors else "это не Windows"
         result.update(method="manual",
-                      message=(f"Excel недоступен ({'; '.join(errors) or 'не Windows'}). Посылка для модели готова: "
-                               f"{ppath}. Подключите её вручную по инструкции «{instr.name}» — это один раз и 5 минут."))
+                      message=(f"Автоматически подключить не получилось: {reason}. Модель не изменена.\n\n"
+                               f"Данные для модели уже готовы. Подключите их вручную по инструкции "
+                               f"«{instr.name}» (один раз, около 5 минут) — или нажмите «Проверить связь с Excel» "
+                               f"и отправьте результат Claude, чтобы он поправил автоматическое подключение."))
     cfg.update_model(name, connected_method=result["method"])
     return result
 

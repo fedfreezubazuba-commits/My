@@ -14,6 +14,7 @@ import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 from ..core.errors import human_message
+from .dimlist import add_dim_tab, chosen_years
 from ..sources.cbr_api import CBR, LONG_COLS, SITE, export, series_name
 
 SERVICE_URL = SITE + "/statistics/data-service/"
@@ -70,7 +71,8 @@ class CbrNav(ttk.Frame):
     # --- интерфейс ---------------------------------------------------------
     def _build(self):
         pw = ttk.PanedWindow(self, orient="horizontal")
-        pw.pack(fill="both", expand=True, padx=6, pady=(6, 0))
+        pw.pack(side="top", fill="both", expand=True, padx=6, pady=(6, 0))
+        self._pw = pw
 
         # Левая панель: поиск + дерево
         left = ttk.Frame(pw)
@@ -126,16 +128,14 @@ class CbrNav(ttk.Frame):
         self.site_btn.pack(side="right")
 
         self.nb = ttk.Notebook(right)
-        self.nb.pack(fill="both", expand=True)
-        self.period_tab = ttk.Frame(self.nb, padding=8)
-        self._build_period(self.period_tab)
+        self.nb.pack(side="top", fill="both", expand=True)
         self.desc_tab = ttk.Frame(self.nb, padding=4)
         self._build_desc(self.desc_tab)
         self.preview_tab = ttk.Frame(self.nb)
         self._build_preview(self.preview_tab)
 
         dl = ttk.Frame(right)
-        dl.pack(fill="x", pady=6)
+        dl.pack(side="bottom", fill="x", pady=6)
         ttk.Label(dl, text="Формат:").pack(side="left")
         self.fmt = tk.StringVar(value=self.settings.get("fmt", "xlsx"))
         for v, t in (("xlsx", "Excel (.xlsx)"), ("csv", "CSV — длинная"), ("csv_wide", "CSV — даты × ряды")):
@@ -143,49 +143,26 @@ class CbrNav(ttk.Frame):
         self.sel_var = tk.StringVar()
         ttk.Label(dl, textvariable=self.sel_var, foreground="#555").pack(side="left", padx=10)
         act = ttk.Frame(right)
-        act.pack(fill="x", pady=(0, 6))
+        act.pack(side="bottom", fill="x", pady=(0, 6))
         self.add_btn = ttk.Button(act, text="＋ В обновления", style="Add.TButton", state="disabled",
                                   command=self._add_to_updates)
         self.add_btn.pack(side="right", padx=(6, 0))
         self.dl_btn = ttk.Button(act, text="Скачать файл…", state="disabled", command=self._download)
         self.dl_btn.pack(side="right")
-        ttk.Label(act, text="«＋ В обновления» — хаб будет сам обновлять эти данные и отдавать их в модели",
-                  style="Hint.TLabel").pack(side="left")
+        act.pack_forget()
+        dl.pack_forget()
+        self.nb.pack_forget()
+        act.pack(side="bottom", fill="x", pady=(0, 6))
+        dl.pack(side="bottom", fill="x", pady=6)
+        self.nb.pack(side="top", fill="both", expand=True)
 
         st = ttk.Frame(self)
-        st.pack(fill="x", padx=6, pady=(0, 4))
+        self._pw.pack_forget()
+        st.pack(side="bottom", fill="x", padx=6, pady=(0, 4))
+        self._pw.pack(side="top", fill="both", expand=True, padx=6, pady=(6, 0))
         self.status = tk.StringVar()
         ttk.Label(st, textvariable=self.status).pack(side="left")
         self.pb = ttk.Progressbar(st, mode="indeterminate", length=160)
-
-    def _build_period(self, parent):
-        self.y1 = tk.StringVar()
-        self.y2 = tk.StringVar()
-        row = ttk.Frame(parent)
-        row.pack(anchor="w")
-        ttk.Label(row, text="Годы с").pack(side="left")
-        self.y1_cb = ttk.Combobox(row, textvariable=self.y1, width=7, state="readonly")
-        self.y1_cb.pack(side="left", padx=4)
-        ttk.Label(row, text="по").pack(side="left")
-        self.y2_cb = ttk.Combobox(row, textvariable=self.y2, width=7, state="readonly")
-        self.y2_cb.pack(side="left", padx=4)
-        for v in (self.y1, self.y2):
-            v.trace_add("write", lambda *_a: self._update_counts())
-
-        btns = ttk.Frame(parent)
-        btns.pack(anchor="w", pady=8)
-        ttk.Button(btns, text="Весь ряд", command=lambda: self._set_years(None)).pack(side="left")
-        for n in (1, 3, 5, 10):
-            ttk.Button(btns, text=f"Последние {n}" if n > 1 else "Последний год",
-                       command=lambda n=n: self._set_years(n)).pack(side="left", padx=2)
-
-        self.period_info = tk.StringVar()
-        ttk.Label(parent, textvariable=self.period_info, foreground="#555", justify="left",
-                  wraplength=560).pack(anchor="w", pady=(8, 0))
-        ttk.Label(parent, foreground="#777", justify="left", wraplength=560, text=(
-            "Год — это год отчётного периода. В файле в столбце «Дата» стоит отчётная дата ЦБ: "
-            "для месячных рядов обычно 1-е число следующего месяца (январь 2025 → 01.02.2025), "
-            "для остатков — дата «на 1 число».")).pack(anchor="w", pady=(12, 0))
 
     def _build_desc(self, parent):
         self.desc = tk.Text(parent, wrap="word", relief="flat", font=("Segoe UI", 10),
@@ -359,7 +336,7 @@ class CbrNav(ttk.Frame):
                     self._on_indicator, f"Загрузка разрезов показателя {iid}…")
 
     def _clear_tabs(self):
-        fixed = {str(t) for t in (self.period_tab, self.desc_tab, self.preview_tab)}
+        fixed = {str(t) for t in (self.desc_tab, self.preview_tab)}
         for tab in self.nb.tabs():
             self.nb.forget(tab)
             if tab not in fixed:
@@ -404,29 +381,21 @@ class CbrNav(ttk.Frame):
             self.status.set("За последние годы данных нет — выберите более ранний период")
 
     def _finish_tabs(self, y_from, y_to, per):
-        years = [str(y) for y in range(y_from, y_to + 1)]
-        self.y1_cb.configure(values=years)
-        self.y2_cb.configure(values=years)
-        self.years = years
-        self.nb.add(self.period_tab, text="Период")
+        years = [(y, str(y)) for y in range(y_from, y_to + 1)]
+        self.lists["y"] = add_dim_tab(
+            self.nb, "Год", years, self._update_counts, years=True)
         self.nb.add(self.desc_tab, text="Описание")
         self.nb.add(self.preview_tab, text="Данные")
-        self._set_years(self.settings.get("last_n"))
-        self.period_info.set(f"Ряд доступен с {y_from} по {y_to} год"
-                             + (f"; периодичность: {per}" if per else "") + ".")
         self.nb.select(0)
         self.dl_btn.configure(state="normal")
         self.add_btn.configure(state="normal")
         self._update_counts()
-        self.status.set("Отметьте разрезы и период и нажмите «＋ В обновления» или «Скачать…»")
+        self.status.set(f"Данные с {y_from} по {y_to} год" + (f", {per}" if per else "") +
+                        ". Отметьте нужное и нажмите «＋ В обновления» или «Скачать файл…»")
 
-
-    def _set_years(self, n):
-        if not getattr(self, "years", None):
-            return
-        self.settings["last_n"] = n
-        self.y2.set(self.years[-1])
-        self.y1.set(self.years[0] if not n else self.years[max(0, len(self.years) - n)])
+    def _year_range(self):
+        ys = chosen_years(self.lists["y"]) if "y" in self.lists else []
+        return (ys[0], ys[-1]) if ys else (None, None)
 
     def _set_desc(self, text):
         self.desc.configure(state="normal")
@@ -435,77 +404,24 @@ class CbrNav(ttk.Frame):
         self.desc.configure(state="disabled")
 
     def _add_list_tab(self, key, title, items):
-        tab = ttk.Frame(self.nb, padding=4)
-        self.nb.add(tab, text=title)
-        top = ttk.Frame(tab)
-        top.pack(fill="x")
-        flt = tk.StringVar()
-        ttk.Entry(top, textvariable=flt, width=30).pack(side="left")
-        ttk.Label(top, text="← фильтр списка", foreground="#777").pack(side="left", padx=4)
-        lb_frame = ttk.Frame(tab)
-        lb_frame.pack(fill="both", expand=True, pady=4)
-        lb = tk.Listbox(lb_frame, selectmode="multiple", activestyle="none", exportselection=False)
-        sb = ttk.Scrollbar(lb_frame, command=lb.yview)
-        lb.configure(yscrollcommand=sb.set)
-        lb.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-
-        names = dict(items)
-        all_ids = [k for k, _ in items]
-        chosen = set(all_ids)   # по умолчанию выбрано всё
-        shown = []
-
-        def redraw(*_a):
-            shown.clear()
-            lb.delete(0, "end")
-            s = flt.get().strip().lower()
-            for vid in all_ids:
-                t = str(names[vid]).strip()
-                if s in t.lower():
-                    shown.append(vid)
-                    lb.insert("end", t)
-                    if vid in chosen:
-                        lb.selection_set("end")
-            self._update_counts()
-
-        def on_sel(_e):
-            cur = set(lb.curselection())
-            for i, vid in enumerate(shown):
-                (chosen.add if i in cur else chosen.discard)(vid)
-            self._update_counts()
-
-        def set_all(flag):
-            for vid in shown:
-                (chosen.add if flag else chosen.discard)(vid)
-            redraw()
-
-        btns = ttk.Frame(tab)
-        btns.pack(fill="x")
-        ttk.Button(btns, text="Выбрать видимые", command=lambda: set_all(True)).pack(side="left")
-        ttk.Button(btns, text="Снять видимые", command=lambda: set_all(False)).pack(side="left", padx=4)
-        ttk.Label(btns, text=f"всего значений: {len(all_ids)}", foreground="#777").pack(side="right")
-
-        flt.trace_add("write", redraw)
-        lb.bind("<<ListboxSelect>>", on_sel)
-        self.lists[key] = (chosen, all_ids, tab, title)
-        redraw()
+        self.lists[key] = add_dim_tab(self.nb, title, items, self._update_counts)
 
     def _update_counts(self):
         if not self.cur:
             return
         for key, (chosen, all_ids, tab, title) in self.lists.items():
-            self.nb.tab(tab, text=f"{title} ({len(chosen)}/{len(all_ids)})")
-        if self.y1.get() and self.y2.get() and str(self.period_tab) in self.nb.tabs():
-            self.nb.tab(self.period_tab, text=f"Период ({self.y1.get()}–{self.y2.get()})")
+            if str(tab) in self.nb.tabs():
+                self.nb.tab(tab, text=f"{title[:26]} ({len(chosen)}/{len(all_ids)})")
+        n_years = len(self.lists["y"][0]) if "y" in self.lists else 0
         st = self.cur["struct"]
         if st:
             m1 = self.lists.get("m1", ({None},))[0]
             m2 = self.lists.get("m2", ({None},))[0]
             n = sum(1 for l in st["links"] if (not st["m1"] or l["measure1_id"] in m1)
                     and (not st["m2"] or l["measure2_id"] in m2))
-            self.sel_var.set(f"рядов: {n}")
-        else:
-            self.sel_var.set(f"показателей: {len(self.lists['i'][0])}")
+            self.sel_var.set(f"рядов: {n}, лет: {n_years}")
+        elif "i" in self.lists:
+            self.sel_var.set(f"показателей: {len(self.lists['i'][0])}, лет: {n_years}")
 
     def _open_site(self):
         links = [c.get("link") for c in (self.cur or {}).get("inds", []) if c.get("link")]
@@ -526,9 +442,9 @@ class CbrNav(ttk.Frame):
         if empty:
             messagebox.showwarning("Пустой выбор", "Не выбрано ни одного значения: " + ", ".join(empty))
             return
-        y1, y2 = int(self.y1.get()), int(self.y2.get())
-        if y1 > y2:
-            messagebox.showwarning("Период", "Год начала больше года окончания.")
+        y1, y2 = self._year_range()
+        if y1 is None:
+            messagebox.showwarning("Пустой выбор", "Отметьте хотя бы один год.")
             return
         cid = self.cur["cid"]
         if self.cur["kind"] == "ind":
@@ -604,8 +520,9 @@ class CbrNav(ttk.Frame):
             if ids and st.get(key) and len(ids) <= 3:
                 name += " — " + ", ".join(str(st[key].get(i, i)) for i in ids)
         params = {"category": cid, "indicators": i_ids, "m1": m1, "m2": m2}
-        if self.y1.get():
-            params["y1"] = int(self.y1.get())
+        chosen, all_ids, _t, _n = self.lists["y"]
+        if len(chosen) != len(all_ids):          # отмечены не все годы — грузим с первого отмеченного
+            params["y1"] = self._year_range()[0]
         return params, name
 
     def _add_to_updates(self):

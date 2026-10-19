@@ -127,8 +127,10 @@ class CbrSource(Source):
                 name = " | ".join(p for p in (r["indicator"], r["measure1"], r["measure2"]) if p)
                 rule_text = ("дата ЦБ «1-е число следующего периода» → конец периода"
                              if rule != "as_is" and per not in (P.DAY, P.WEEK) else "дата ЦБ")
+                dims = [("Показатель", r["indicator"])]
+                dims += [(f"Разрез {i}", r[f"measure{i}"]) for i in (1, 2) if r[f"measure{i}"]]
                 seen[key] = SeriesInfo(key=key, name=name, unit=r["unit"] or "", periodicity=per, code=code,
-                                       url=SERVICE_URL, date_rule=rule_text)
+                                       url=SERVICE_URL, date_rule=rule_text, dims=dims)
                 res.series.append(seen[key])
             end, label = cbr_period_end(r["date"], per, rule)
             try:

@@ -14,7 +14,9 @@ from pathlib import Path
 from .. import VERSION
 from . import errors as E
 
-SECRET_KEYS = re.compile(r"(pass(word)?|pwd|token|secret|session|cookie|auth|key|csrf|sid|jwt|bearer)", re.I)
+# имена полей с секретами (поле «key» у показателя — обычное имя, его не трогаем)
+SECRET_KEYS = re.compile(r"^(pass(word)?|passwd|pwd|.*token|.*secret|session(id)?|.*cookies?|auth(orization)?|"
+                         r"api[_-]?key|access[_-]?key|private[_-]?key|csrf.*|sid|jwt|bearer)$", re.I)
 SECRET_PATTERNS = [
     (re.compile(r'(name="(?:struts\.token\.name|token|csrf[^"]*|_token)"[^>]*value=")[^"]*(")', re.I), r"\1***\2"),
     (re.compile(r'((?:token|csrf|session|sid|password|passwd|pwd|secret|api[_-]?key)["\']?\s*[:=]\s*["\']?)[^"\'&\s,;}{]+',

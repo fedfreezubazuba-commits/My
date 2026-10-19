@@ -80,8 +80,17 @@ def test_navigators_with_fake_cbr(app, fakes):
     assert pump(app, 10, until=lambda: app.find.cbr.roots)
     app.find.cbr.select_indicator(18, 37, "Средневзвешенные процентные ставки по вкладам физических лиц в рублях")
     assert pump(app, 10, until=lambda: str(app.find.cbr.add_btn.cget("state")) == "normal")
-    params, name = app.find.cbr.current_params()
-    assert params["category"] == 18 and params["indicators"] == [37]
+    nav = app.find.cbr
+    params, name = nav.current_params()
+    assert params["category"] == 18 and params["indicators"] == [37] and "y1" not in params
+    # годы выбираются списком, как в ЕМИСС: снимаем 2024 → грузим с 2025
+    chosen, all_ids, tab, title = nav.lists["y"]
+    assert title == "Год" and all_ids == [2024, 2025]
+    chosen.discard(2024)
+    nav._update_counts()
+    assert nav.current_params()[0]["y1"] == 2025
+    assert "лет: 1" in nav.sel_var.get()
+    assert nav.nb.tab(tab, "text") == "Год (1/2)"
     app.find.q.set("ставки вклад")
     app.find.search()
     kinds = {app.find.results.item(i, "values")[0] for i in app.find.results.get_children()}
@@ -93,7 +102,7 @@ def test_fedstat_nav_params(app, fakes, tmp_path):
     nav.fs = fakes["fedstat"]
     nav.cat = {"roots": [], "years": {}}
     nav.run_bg(lambda: nav.fs.indicator("31074"), nav._on_indicator, "…")
-    assert pump(app, 5, until=lambda: str(nav.add_btn.cget("state")) == "normal")
+    assert pump(app, 20, until=lambda: str(nav.add_btn.cget("state")) == "normal")
     chosen = nav.dim_lists["0"][0]
     chosen.discard("1558900")
     params, name = nav.current_params()
@@ -154,6 +163,11 @@ def test_settings_examples_and_exports(app, fakes):
     from openpyxl import load_workbook
     wb = load_workbook(path)
     assert wb.sheetnames == ["Данные", "Последние", "Длинная", "Паспорт"]
-    assert wb["Данные"]["C2"].value == "CBR_18_37_m1_2"
+    data = wb["Данные"]
+    assert [data.cell(r, 2).value for r in range(1, 5)] == ["Показатель", "Разрез 1", "Единицы", "Период"]
+    assert data["C4"].value == "CBR_18_37_m1_2" and data["C3"].value == "% годовых"
+    long = [c.value for c in wb["Длинная"][1]]
+    assert long == ["Дата", "Период", "Код", "Показатель", "Разрез 1", "Единицы", "Значение"]
+    assert wb["Длинная"]["E2"].value.startswith("до 1 года")
     files = exports.update_job_files(app.cfg, app.store, app.paths, app.cfg.jobs())
     assert all(v.endswith(".xlsx") for v in files.values())

@@ -21,6 +21,7 @@ class SeriesInfo:
     code: str = ""                # предлагаемый код (латиница, цифры, _)
     url: str = ""
     date_rule: str = ""           # как получена «Дата» (для справочника ряда)
+    dims: list = field(default_factory=list)   # разрезы отдельными полями: [("Регион", "Российская Федерация"), …]
 
 
 @dataclass
@@ -42,6 +43,7 @@ class FetchResult:
     source_updated: str | None = None
     warnings: list = field(default_factory=list)
     unchanged: bool = False       # источник сам знает, что нового нет (например, папка «Входящие» пуста)
+    partial: bool = False         # загружена только свежая часть истории (дозагрузка) — не сравнивать объём
 
     def describe(self) -> str:
         """«3 ряда, месячные, 2010–2025, последнее значение 15,8 % на 30.09.2025»."""
@@ -80,6 +82,9 @@ class Context:
 
     def __init__(self, paths=None, log=None, settings=None, clients=None, browser=None, now=None, dry_run=False):
         self.dry_run = dry_run           # пробная загрузка: ничего не перемещать и не менять
+        self.last_period = None          # последний загруженный период показателя (для дозагрузки)
+        self.full_reload = True          # нужна полная перезагрузка истории
+        self.progress = None             # progress("текст") — что сейчас происходит (для окна)
         self.paths = paths
         self.log = log
         self.settings = settings or {}
@@ -122,3 +127,16 @@ class Source:
 
     def open_url(self, params) -> str:
         return params.get("url") or ""
+
+    def timeout(self, params) -> int:
+        """Сколько секунд можно ждать загрузку (больше — для источников, которые грузят частями)."""
+        return 0
+
+    def say(self, ctx, text):
+        if ctx is not None and getattr(ctx, "progress", None):
+            try:
+                ctx.progress(text)
+            except Exception:  # noqa: BLE001
+                pass
+        if ctx is not None:
+            ctx.info(text)

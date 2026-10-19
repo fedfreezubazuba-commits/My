@@ -165,6 +165,7 @@ class WebValue(Source):
             code = f"{base}_{FIELD_CODES.get(f['key'], slug(f['key'], 12))}"
             res.series.append(SeriesInfo(key=f["key"], name=f.get("name", f["key"]), unit=f.get("unit", ""),
                                          periodicity="snapshot", code=code, url=url,
+                                         dims=[("Показатель", f.get("name", f["key"]))],
                                          date_rule="снимок: дата получения (история строится хабом)"))
             res.obs.append(Obs(key=f["key"], period_end=today, period_label=today.isoformat(), value=value,
                                source_date=via))

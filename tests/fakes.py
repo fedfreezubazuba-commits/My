@@ -70,6 +70,7 @@ class FakeFedstat(Fedstat):
         self.page = (SAMPLES / "fedstat" / "indicator_31074.html").read_bytes()
         self.sdmx = (SAMPLES / "fedstat" / "data_31074.sdmx.xml").read_bytes()
         self.calls = []
+        self.downloads = []
         self.fail = None
 
     def _get(self, url, data=None, retries=4):
@@ -84,12 +85,23 @@ class FakeFedstat(Fedstat):
 
     OKATO = {"1558883": "643", "1558900": "030"}
 
+    max_years = None      # «сервер не справляется», если в запросе больше лет
+
     def filtered(self, data):
-        """Как сервер: только выбранные регионы (измерение 0)."""
+        """Как сервер: только выбранные регионы (измерение 0) и годы (измерение 3)."""
         import re
+        import urllib.error
         chosen = {self.OKATO[v.split("_", 1)[1]] for k, v in data if k == "selectedFilterIds" and v.startswith("0_")}
+        years = {v.split("_", 1)[1] for k, v in data if k == "selectedFilterIds" and v.startswith("3_")}
+        if self.max_years and len(years) > self.max_years:
+            raise urllib.error.HTTPError("https://www.fedstat.ru", 500, "too big", {}, None)
+        self.downloads.append(sorted(years))
         text = self.sdmx.decode("utf-8")
+
         def keep(m):
             okato = re.search(r'concept="s_OKATO" value="(\d+)"', m.group(0)).group(1)
-            return m.group(0) if okato in chosen else ""
+            if okato not in chosen:
+                return ""
+            return re.sub(r"<generic:Obs><generic:Time>(\d{4})</generic:Time>.*?</generic:Obs>",
+                          lambda o: o.group(0) if o.group(1) in years else "", m.group(0), flags=re.S)
         return re.sub(r"<generic:Series>.*?</generic:Series>", keep, text, flags=re.S).encode("utf-8")

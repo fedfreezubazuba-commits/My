@@ -21,6 +21,7 @@ class ModelsTab(ttk.Frame):
                           ("Открыть модель", lambda: self.open_model()),
                           ("Открыть файл с данными", self.open_packet), ("Отключить", self.disconnect)):
             ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(6, 0))
+        ttk.Button(bar, text="Проверить связь с Excel", command=self.diagnose).pack(side="right")
         pw = ttk.PanedWindow(self, orient="vertical")
         pw.pack(fill="both", expand=True, pady=8)
         top, self.tree = W.tree_with_scroll(pw, ("name", "path", "n", "built", "news"),
@@ -122,6 +123,29 @@ class ModelsTab(ttk.Frame):
 
         self.app.bg(work, done, f"Подключаю модель «{name}» (Excel работает в фоне)…",
                     error=lambda e: messagebox.showerror("Подключение модели", M.connect_error_text(e), parent=self))
+
+    def diagnose(self):
+        """Пробует все способы подключения на пустой книге и показывает журнал (модель не трогается)."""
+        def work():
+            from ..excel import com_connect, packet as P
+            test = self.app.paths.cache / "проверка_excel.csv"
+            test.write_bytes(P._csv([["2025-01-31", "2025-01", "TEST_1", "Проверка", "шт", "1.5"]], P.PACKET_COLS))
+            P.series_path(test).write_bytes(P._csv([["TEST_1", "Проверка", "шт", "месячная", "2025-01-31", "1.5",
+                                                     "", "", "", "", "1"]], P.SERIES_COLS))
+            return com_connect.diagnose(test, log=self.app.log.info)
+
+        def done(lines):
+            from ..core import claude_pack
+            text = ("# Проверка связи Хаба с Excel\n\nПрочитай CLAUDE.md. Ниже — журнал попытки подключить запросы "
+                    "Power Query к пустой книге разными способами. Найди рабочий способ и поправь "
+                    "hub/excel/com_connect.py.\n\n```\n" + "\n".join(lines) + "\n```\n")
+            path = claude_pack.save(self.app.paths, text, "проверка_excel")
+            W.copy_to_clipboard(self.app.root, text)
+            W.text_window(self.app.root, "Проверка связи с Excel",
+                          "Результат скопирован в буфер обмена и сохранён в файл:\n" + str(path) +
+                          "\nЕсли подключение модели не работает — вставьте этот текст в сессию Claude.\n\n" +
+                          "\n".join(lines))
+        self.app.bg(work, done, "Проверяю связь с Excel (Excel работает в фоне)…")
 
     def add_series(self):
         m = self.current()

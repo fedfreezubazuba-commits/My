@@ -108,14 +108,29 @@ def picked_value_params(url, pick):
 
 
 def picked_table(url, pick):
-    """Пользователь выбрал таблицу (Shift+щелчок) → такая же таблица среди найденных на всей странице."""
-    page = W.parse_html(pick.get("page_html") or "")
-    tables = T.all_tables(page)
-    frag = T.all_tables(W.parse_html(f"<html><body>{pick.get('html', '')}</body></html>"))
-    if not frag:
-        return None
-    rows = frag[0].rows[:3]
+    """Пользователь выбрал блок с таблицей → такая же таблица среди найденных на всей странице.
+
+    Сначала ищем точное совпадение строк, затем — таблицу, чьи подписи строк больше всего
+    встречаются в тексте выбранного блока. Если ничего похожего нет — None."""
+    page = W.parse_html(pick.get("page_html") or "<html></html>")
+    tables = []
+    for t in T.all_tables(page):
+        try:
+            T.guess_columns(t)
+            tables.append(t)
+        except Exception:  # noqa: BLE001
+            continue
+    frag = T.all_tables(W.parse_html(f"<html><body>{pick.get('html', '')}</body></html>")) if pick.get("html") else []
+    if frag:
+        rows = frag[0].rows[:3]
+        for t in tables:
+            if t.rows[:3] == rows:
+                return t
+    text = " ".join((pick.get("text") or "").split())
+    best, score = None, 0
     for t in tables:
-        if t.rows[:3] == rows:
-            return t
-    return tables[0] if tables else None
+        labels = [r[0] for r in t.rows if r and r[0]]
+        hits = sum(1 for lab in labels if lab in text)
+        if labels and hits / len(labels) >= 0.5 and hits > score:
+            best, score = t, hits
+    return best

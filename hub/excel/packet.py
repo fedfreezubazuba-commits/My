@@ -26,10 +26,14 @@ from pathlib import Path
 
 from ..core import periods as P
 from ..core.errors import FileBusy
+from ..core.store import series_dims
 
 PACKET_COLS = ["Дата", "Период", "Код", "Название", "Единицы", "Значение"]
 SERIES_COLS = ["Код", "Название", "Единицы", "Периодичность", "Последняя дата", "Последнее значение",
-               "Предыдущее значение", "Источник", "Обновлено", "Правило даты", "Порядок"]
+               "Предыдущее значение", "Источник", "Обновлено", "Правило даты", "Порядок",
+               # разрезы отдельными полями (добавлены в конец, чтобы не сдвигать прежние столбцы)
+               "Показатель", "Разрез 1", "Разрез 2", "Разрез 3", "Разрез 4"]
+N_CUTS = 4
 SOURCE_TITLES = {"cbr": "Банк России", "fedstat": "ЕМИСС", "web_value": "Сайт (значение)",
                  "web_table": "Сайт (таблица)", "file_link": "Файл по ссылке", "folder_inbox": "Папка «Входящие»"}
 
@@ -98,8 +102,18 @@ def build(store, codes, jobs_by_id=None):
         src = SOURCE_TITLES.get(s["source"], s["source"] or "")
         srows.append([code, s["name"] or "", s["unit"] or "", P.PERIODICITY_RU.get(s["periodicity"], s["periodicity"] or ""),
                       last["period_end"] if last else "", num(last["value"]) if last else "",
-                      num(prev["value"]) if prev else "", src, updated, s["date_rule"] or "", str(pos)])
+                      num(prev["value"]) if prev else "", src, updated, s["date_rule"] or "", str(pos)]
+                     + cut_values(series_dims(s)))
     return _csv(rows, PACKET_COLS), _csv(srows, SERIES_COLS)
+
+
+def cut_values(dims) -> list:
+    """[показатель, разрез 1…4] для справочника; лишние разрезы складываются в последний."""
+    vals = [v for _k, v in dims]
+    head, cuts = (vals[0] if vals else ""), vals[1:]
+    if len(cuts) > N_CUTS:
+        cuts = cuts[:N_CUTS - 1] + ["; ".join(cuts[N_CUTS - 1:])]
+    return [head] + cuts + [""] * (N_CUTS - len(cuts))
 
 
 def write_if_changed(path: Path, data: bytes) -> bool:

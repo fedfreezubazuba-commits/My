@@ -339,3 +339,38 @@ def test_scenario_layout_changed_red_status_and_claude(offline, workdir):
         assert "Начало последнего сырого ответа" in text
     finally:
         r.close()
+
+
+@pytest.mark.skipif(not os.environ.get("HUB_CHROMIUM"), reason="нужен Chromium (HUB_CHROMIUM)")
+def test_pick_block_on_fearnleys_becomes_table(tmp_path):
+    """Щелчок по блоку «плиток» Fearnleys (как сделал пользователь) — это выбор таблицы, а не одного числа."""
+    pytest.importorskip("playwright")
+    from hub.core.paths import Paths
+    from hub.sources.browser import Browser
+    br = Browser(Paths(tmp_path))
+    url = (WEB / "fearnleys_weekly.html").as_uri()
+
+    def click_grid(p):
+        p.locator("text=MEG/WEST").first.evaluate(
+            "el => el.closest('.grid').dispatchEvent(new MouseEvent('click', {bubbles: true}))")
+    pick = br.pick(url, headless=True, timeout_s=30, on_page=click_grid)
+    assert pick and pick["kind"] == "table"
+    assert "click" not in (pick["label"] or "").lower()
+    t = A.picked_table("https://fearnpulse.com/fearnleys-weekly-report", pick)
+    assert t is not None and t.title.startswith("Dirty")
+
+
+def test_picked_table_by_text_when_html_missing():
+    html = page("fearnleys_weekly.html")
+    labels = ["MEG/WEST", "MEG/Japan", "MEG/Singapore", "WAF/FEAST", "WAF/USAC", "Sidi Kerir/W Med",
+              "N. Afr/Euromed", "UK/Cont", "Caribs/USG"]
+    pick = {"page_html": html, "html": "", "text": " 280' 725 0 ".join(labels)}
+    t = A.picked_table("x", pick)
+    assert t is not None and t.title.startswith("Dirty")
+    assert A.picked_table("x", {"page_html": html, "html": "", "text": "ничего общего"}) is None
+
+
+def test_scrub_keeps_field_key():
+    from hub.core.claude_pack import scrub_obj
+    out = scrub_obj({"fields": [{"key": "price", "name": "x"}], "api_key": "s", "csrf_token": "t"})
+    assert out == {"fields": [{"key": "price", "name": "x"}], "api_key": "***", "csrf_token": "***"}

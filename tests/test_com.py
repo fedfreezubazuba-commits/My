@@ -1,0 +1,205 @@
+"""Подключение модели через COM — на поддельном Excel (настоящего в облаке нет).
+
+Проверяем ход шагов: запасные способы создания таблицы, «частичное» подключение,
+понятное название шага в ошибке и то, что модель без успеха не сохраняется."""
+import sys
+import types
+
+import pytest
+
+
+class COMError(Exception):
+    pass
+
+
+class FakeQueries(list):
+    FastCombine = False
+
+    def Add(self, name, formula):
+        q = types.SimpleNamespace(Name=name, Formula=formula)
+        self.append(q)
+        return q
+
+
+class FakeQT:
+    def __init__(self, ws):
+        self.ws = ws
+        self.WorkbookConnection = types.SimpleNamespace(Name="", OLEDBConnection=types.SimpleNamespace())
+
+    def Refresh(self, background):
+        if self.ws.wb.xl.fail_refresh:
+            raise COMError("refresh")
+
+
+class FakeLO:
+    def __init__(self, ws):
+        self.Name = "Таблица1"
+        self.QueryTable = FakeQT(ws)
+        self.Range = types.SimpleNamespace(Columns=types.SimpleNamespace(Count=3))
+
+
+class FakeListObjects(list):
+    def __init__(self, ws):
+        super().__init__()
+        self.ws = ws
+
+    def __call__(self, name):
+        return next(lo for lo in self if lo.Name == name)
+
+    def Add(self, *args, **kw):
+        mode = self.ws.wb.xl.table_mode
+        if mode == "never" or (mode == "keywords_only" and args):
+            raise COMError((-2147352567, "Ошибка.", (0, None, None, None, 0, -2147024809), None))
+        lo = FakeLO(self.ws)
+        self.append(lo)
+        return lo
+
+
+class FakeWS:
+    def __init__(self, wb, name):
+        self.wb = wb
+        self.Name = name
+        self.ListObjects = FakeListObjects(self)
+        self.Parent = wb
+
+    def Range(self, cell):
+        return cell
+
+
+class FakeSheets(list):
+    @property
+    def Count(self):
+        return len(self)
+
+    def __call__(self, i):
+        return self[i - 1]
+
+    def Add(self, After=None):
+        ws = FakeWS(self.wb, f"Лист{len(self) + 1}")
+        self.append(ws)
+        return ws
+
+
+class FakeWB:
+    def __init__(self, xl):
+        self.xl = xl
+        self.Queries = FakeQueries()
+        self.Worksheets = FakeSheets()
+        self.Worksheets.wb = self
+        self.Worksheets.append(FakeWS(self, "Модель"))
+        self.Connections = []
+        self.saved = False
+
+    def Save(self):
+        self.saved = True
+
+    def Close(self, save=False):
+        pass
+
+
+class FakeXL:
+    def __init__(self, table_mode="ok", fail_refresh=False):
+        self.table_mode = table_mode
+        self.fail_refresh = fail_refresh
+        self.books = []
+        self.Version = "16.0"
+        self.Workbooks = types.SimpleNamespace(Open=self._open, Add=self._open)
+
+    def _open(self, *a, **k):
+        wb = FakeWB(self)
+        self.books.append(wb)
+        return wb
+
+    def Quit(self):
+        pass
+
+
+@pytest.fixture
+def fake_excel(monkeypatch):
+    holder = {}
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.Missing = object()
+    client = types.ModuleType("win32com.client")
+    client.DispatchEx = lambda name: holder["xl"]
+    win32com = types.ModuleType("win32com")
+    win32com.client = client
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+    return holder
+
+
+def model_file(tmp_path):
+    p = tmp_path / "Модель.xlsx"
+    p.write_bytes(b"PK fake")
+    return p
+
+
+@pytest.mark.parametrize("mode", ["ok", "keywords_only"])
+def test_connect_uses_fallback_ways(fake_excel, tmp_path, mode):
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL(mode)
+    r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=lambda m: None)
+    wb = fake_excel["xl"].books[0]
+    assert not r["partial"] and wb.saved
+    assert [q.Name for q in wb.Queries] == ["Хаб_Посылка", "Хаб", "Хаб_Ряды"]
+    hub = next(ws for ws in wb.Worksheets if ws.Name == "Хаб")
+    assert [lo.Name for lo in hub.ListObjects] == ["Хаб", "Хаб_Ряды"]
+    assert wb.Queries.FastCombine is True
+    assert (tmp_path / "bk").exists()
+
+
+def test_connect_partial_when_tables_impossible(fake_excel, tmp_path):
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL("never")
+    steps = []
+    r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=steps.append)
+    assert r["partial"] is True
+    wb = fake_excel["xl"].books[0]
+    assert wb.saved and len(wb.Queries) == 3        # запросы сохранены — осталось «Загрузить в…»
+    assert any("не сработал" in s for s in steps)
+
+
+def test_connect_error_names_step_and_keeps_model(fake_excel, tmp_path, monkeypatch):
+    from hub.core.errors import HubError
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL()
+
+    def broken(*a):
+        raise COMError("bad arg")
+    monkeypatch.setattr(FakeQueries, "Add", broken)
+    with pytest.raises(HubError) as e:
+        com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=lambda m: None)
+    assert "Добавляю запросы Power Query" in str(e.value) and "не изменена" in str(e.value)
+    assert not fake_excel["xl"].books[0].saved
+
+
+def test_models_connect_partial_message(fake_excel, workdir):
+    from hub.core.config import Config
+    from hub.core.paths import Paths
+    from hub.core.store import Store
+    from hub.excel import models
+    fake_excel["xl"] = FakeXL("never")
+    paths = Paths(workdir).ensure()
+    cfg, store = Config(paths), Store(paths.db)
+    f = workdir / "Модель.xlsx"
+    f.write_bytes(b"PK")
+    try:
+        r = models.connect(cfg, store, paths, "Тест", f, log=lambda m: None)
+    finally:
+        store.close()
+    assert r["ok"] and r["method"] == "com_partial" and "Загрузить в" in r["message"]
+
+
+def test_diagnose_reports_each_way(fake_excel, tmp_path):
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL("keywords_only")
+    lines = com_connect.diagnose(tmp_path / "т.csv", log=lambda m: None)
+    text = "\n".join(lines)
+    assert "(по порядку)»: ошибка" in text and "(по именам)»: таблица создана" in text
+
+
+def test_col_letter():
+    from hub.excel.com_connect import col_letter
+    assert [col_letter(n) for n in (1, 26, 27, 60)] == ["A", "Z", "AA", "BH"]
