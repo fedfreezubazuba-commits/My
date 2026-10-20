@@ -193,12 +193,22 @@ class HubApp:
         self.refresh_all()
 
 
+def _callback_error(root):
+    """Ошибка внутри окна (кнопка, обновление списка): без консоли её не видно — сохраняем и показываем."""
+    def handler(exc, val, tb):
+        from ..core.crash import write_report
+        path = write_report("".join(traceback.format_exception(exc, val, tb)), title="Ошибка в окне хаба")
+        try:
+            messagebox.showerror("Хаб данных", f"{E.human_message(val)}\n\nПодробности для Claude сохранены в файле:\n"
+                                              f"{path}", parent=root)
+        except Exception:  # noqa: BLE001
+            pass
+    return handler
+
+
 def main():
-    try:
-        root = tk.Tk()
-    except tk.TclError as e:
-        print("Не удалось открыть окно:", e)
-        return 1
+    root = tk.Tk()
+    root.report_callback_exception = _callback_error(root)
     HubApp(root)
     root.mainloop()
     return 0

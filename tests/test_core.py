@@ -209,3 +209,19 @@ def test_report_html(runner, fakes):
     rep = runner.run(force=True)
     html = rep.path.read_text("utf-8")
     assert "Что обновилось" in html and "Ставки" in html and "Здоровье системы" in html
+
+
+def test_startup_error_is_saved_not_lost(workdir, tmp_path, monkeypatch, capsys):
+    """Окно запускается через pythonw без консоли: ошибка запуска должна попасть в файл."""
+    import sys
+    from hub import __main__ as M
+    from hub.core import crash
+    monkeypatch.setattr(crash, "PROJECT", tmp_path)
+    fake = type(sys)("hub.gui.app")
+    fake.main = lambda: 1 / 0
+    monkeypatch.setitem(sys.modules, "hub.gui.app", fake)
+    assert M.main([]) == 1
+    text = (tmp_path / crash.FILE_NAME).read_text(encoding="utf-8-sig")
+    assert "ZeroDivisionError" in text and "Версия хаба" in text and "пришлите Claude" in text
+    assert "ZeroDivisionError" in capsys.readouterr().err
+    assert (workdir / "logs" / "ошибки запуска.log").exists()

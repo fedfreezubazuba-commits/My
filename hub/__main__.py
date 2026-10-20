@@ -52,8 +52,14 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     if a.cmd in (None, "gui"):
-        from .gui.app import main as gui_main
-        return gui_main()
+        try:
+            from .gui.app import main as gui_main
+            return gui_main()
+        except Exception:  # noqa: BLE001 — окно запускается без консоли: ошибку надо показать
+            import traceback
+            from .core.crash import startup_error
+            startup_error(traceback.format_exc())
+            return 1
 
     from .core.paths import Paths
     paths = Paths()
