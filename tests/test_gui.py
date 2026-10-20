@@ -55,11 +55,17 @@ def test_add_flow_model_and_formula(app, fakes):
     from hub.gui.tab_jobs import FormulaWindow
     app.cfg.add_model("Сбербанк", str(app.paths.root / "Сбербанк.xlsx"))
     d = AddDialog(app, "cbr", {"category": 18, "indicators": [37], "m1": [2]}, "Ставки по вкладам")
-    d.model_vars["Сбербанк"].set(True)
     d.add()
     assert pump(app, 10, until=lambda: "Получено" in d.result.cget("text"))
-    assert "1 ряд" in d.result.cget("text")
-    assert app.store.subscribed("Сбербанк") == ["CBR_18_37_m1_2"]
+    assert "1 ряд" in d.result.cget("text") and "Отдать в модель" in d.result.cget("text")
+    give = [b for b in d.bar.winfo_children() if "Отдать в модель «Сбербанк»" in str(b.cget("text"))]
+    assert give
+    give[0].invoke()                                  # окно «Данные для модели» → сохранить выборку целиком
+    pump(app, 0.5)
+    from hub.gui.dialog_select import SelectionDialog
+    sd = next(w for w in app.root.winfo_children() if isinstance(w, SelectionDialog))
+    sd.save()
+    assert pump(app, 10, until=lambda: app.store.subscribed("Сбербанк") == ["CBR_18_37_m1_2"])
     app.refresh_all()
     assert app.jobs.tree.get_children()
     app.jobs.select(d.job["id"])
@@ -163,13 +169,13 @@ def test_settings_examples_and_exports(app, fakes):
     path = exports.export_job(app.cfg, app.store, app.paths, app.cfg.jobs()[0]["id"])
     from openpyxl import load_workbook
     wb = load_workbook(path)
-    assert wb.sheetnames == ["Данные", "Последние", "Длинная", "Паспорт"]
+    assert wb.sheetnames == ["Данные", "Паспорт"]
     data = wb["Данные"]
-    assert [data.cell(r, 2).value for r in range(1, 5)] == ["Показатель", "Разрез 1", "Единицы", "Период"]
-    assert data["C4"].value == "CBR_18_37_m1_2" and data["C3"].value == "% годовых"
-    long = [c.value for c in wb["Длинная"][1]]
-    assert long == ["Дата", "Период", "Код", "Показатель", "Разрез 1", "Единицы", "Значение"]
-    assert wb["Длинная"]["E2"].value.startswith("до 1 года")
+    head = [c.value for c in data[1]]
+    assert head == ["Дата", "Период", "Показатель", "Разрез 1", "Периодичность", "Единицы", "Код", "Обновлено",
+                    "Значение"]
+    assert data["D2"].value.startswith("до 1 года") and data["G2"].value == "CBR_18_37_m1_2"
+    assert data["A2"].value >= data["A3"].value          # свежие сверху
     files = exports.update_job_files(app.cfg, app.store, app.paths, app.cfg.jobs())
     assert all(v.endswith(".xlsx") for v in files.values())
 
@@ -208,40 +214,48 @@ def test_selection_dialog_extract(app, fakes):
 
 def test_schedule_box_weekly_time_and_release(app):
     from hub.gui.dialog_add import AddDialog
-    from hub.gui.schedule_box import MODES, ReleaseDialog
+    from hub.gui.schedule_box import KINDS, ReleaseDialog, RuleDialog
     from hub.gui.tab_jobs import EditWindow
     d = AddDialog(app, "cbr", {"category": 18, "indicators": [37], "m1": [2]}, "Ставки")
     box = d.sched_box
     assert box.get() == ("auto", [])
-    box.combo.set(dict(MODES)["weekly"])
-    box._mode_changed()
-    box.days[0].set(False)
-    box.days[2].set(True)
-    box.time.set("10:30")
-    pump(app, 0.2)
-    assert box.get()[0] == "weekly:Wed@10:30"
-    assert "среду в 10:30" in box.info.cget("text") and "Ближайшая проверка" in box.info.cget("text")
-    box.time.set("25:00")
+    box.mode.set("rules")
+    box._render()                                   # по умолчанию — понедельник
+    assert box.rules == [("weekly", (0,), (10, 0))]
+    rd = RuleDialog(box, (0, box.rules[0]), box._rule_saved)
+    rd.days[0].set(False)
+    rd.days[2].set(True)
+    rd.time.set("10:30")
     pump(app, 0.1)
-    assert "Непонятное время" in box.info.cget("text")
-    box.time.set("10:30")
-    rd = ReleaseDialog(box, [], box._set_release)
-    rd.text.insert("1.0", "ИПЦ 21.10.2099 19:00\nВВП 18 ноября 2099")
+    assert "среду в 10:30" in rd.preview.cget("text") and "Ближайшие" in rd.preview.cget("text")
+    rd.time.set("25:00")
+    pump(app, 0.1)
+    assert "Непонятное время" in rd.preview.cget("text")
+    rd.time.set("10:30")
     rd.save()
+    q = RuleDialog(box, None, box._rule_saved)          # второе правило: 10-й рабочий день после квартала
+    q.kind.set(dict(KINDS)["quarterly"])
+    q._render()
+    q.q_n.set("10")
+    q.save()
+    assert box.get()[0] == "weekly:Wed@10:30;quarterly:wd10@10:00"
+    assert "Ближайшие проверки" in box.info.cget("text")
+    rel = ReleaseDialog(box, [], box._set_release)
+    rel.text.insert("1.0", "ИПЦ 21.10.2099 19:00\nВВП 18 ноября 2099")
+    rel.save()
     assert box.get()[1] == ["2099-10-21T19:00", "2099-11-18"]
     d.add()
     assert pump(app, 10, until=lambda: "Получено" in d.result.cget("text"))
     job = app.cfg.job(d.job["id"])
-    assert job["schedule"] == "weekly:Wed@10:30" and job["release_dates"] == ["2099-10-21T19:00", "2099-11-18"]
+    assert job["schedule"] == "weekly:Wed@10:30;quarterly:wd10@10:00"
+    assert job["release_dates"] == ["2099-10-21T19:00", "2099-11-18"]
     d.destroy()
     w = EditWindow(app, job["id"])
-    assert w.sched_box.get() == ("weekly:Wed@10:30", ["2099-10-21T19:00", "2099-11-18"])
-    w.sched_box.combo.set(dict(MODES)["workday"])
-    w.sched_box._mode_changed()
-    w.sched_box.work_n.set("5")
+    assert w.sched_box.get() == ("weekly:Wed@10:30;quarterly:wd10@10:00", ["2099-10-21T19:00", "2099-11-18"])
+    w.sched_box.lb.selection_set(1)
+    w.sched_box.del_rule()
     w.save()
-    assert app.cfg.job(job["id"])["schedule"] == "workday:5@10:30"
-
+    assert app.cfg.job(job["id"])["schedule"] == "weekly:Wed@10:30"
 
 def test_overview_survives_huge_problem_list(app):
     """Тысячи замечаний (как у большого показателя ЕМИСС) не должны вешать окно."""
@@ -304,3 +318,25 @@ def test_layout_dialog_saves_choice(app):
     d.apply()
     assert app.cfg.model("М")["layout"] == "wide"
     assert any("Сохранено" in str(a) for _fn, a in app.shown)
+
+
+def test_dimlist_shift_click_selects_range(app):
+    from tkinter import ttk as T
+    from hub.gui.dimlist import add_dim_tab
+    top = tk.Toplevel(app.root)
+    top.geometry("400x400")
+    nb = T.Notebook(top)
+    nb.pack(fill="both", expand=True)
+    entry = add_dim_tab(nb, "Регион", [(str(i), f"Регион {i}") for i in range(10)], lambda: None)
+    pump(app, 0.5)
+    chosen = entry[0]
+    lb = next(w for w in entry[2].winfo_children()[1].winfo_children() if w.winfo_class() == "Listbox")
+    chosen.clear()
+    lb.selection_clear(0, "end")
+    y = lambda i: lb.bbox(i)[1] + 2
+    lb.event_generate("<Button-1>", x=5, y=y(2))
+    lb.selection_set(2)                       # обычный щелчок отмечает строку
+    lb.event_generate("<<ListboxSelect>>")
+    lb.event_generate("<Shift-Button-1>", x=5, y=y(6))
+    pump(app, 0.1)
+    assert chosen == {"2", "3", "4", "5", "6"}

@@ -78,9 +78,25 @@ class JobsTab(ttk.Frame):
                            ("Пауза / продолжить", self.pause), ("Открыть источник", self.open_source),
                            ("Отправить Claude", self.claude), ("Удалить", self.delete)):
             self.ctx.add_command(label=label, command=cmd)
+        self.info = ttk.Label(self, wraplength=1200, justify="left", padding=(2, 6, 2, 0))
+        self.info.pack(fill="x")
         self.hint = ttk.Label(self, style="Hint.TLabel",
-                              text="Двойной щелчок — история показателя. Правая кнопка — все действия.")
-        self.hint.pack(anchor="w", pady=(4, 0))
+                              text="Выделите показатель — здесь появится, что значит его статус и что делать. "
+                                   "Двойной щелчок — история показателя. Правая кнопка — все действия.")
+        self.hint.pack(anchor="w", pady=(2, 0))
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self.explain(), add="+")
+
+    def explain(self):
+        """Под списком: что значит статус выделенного показателя и что делать."""
+        sel = self.tree.selection()
+        job = self.app.cfg.job(sel[0]) if len(sel) == 1 else None
+        if not job:
+            self.info.configure(text="")
+            return
+        st = self.app.store.state(job["id"])
+        status = ST.effective(job, st)
+        self.info.configure(text=f"{job['name']} — {ST.word(status)}. {ST.explain(job, st)}",
+                            foreground=ST.COLORS[ST.color(status)] if ST.color(status) != ST.GREEN else "")
 
     def _context(self, e):
         iid = self.tree.identify_row(e.y)
@@ -124,6 +140,7 @@ class JobsTab(ttk.Frame):
         for iid in sel:
             if self.tree.exists(iid):
                 self.tree.selection_add(iid)
+        self.explain()
 
     def select(self, job_id):
         self.refresh()
@@ -285,13 +302,13 @@ class HistoryWindow(tk.Toplevel):
         self.geometry("1000x620")
         st = app.store.state(job_id)
         info = (f"Расписание: {S.human(job.get('schedule'))}.  Статус: {ST.word(ST.effective(job, st))}. "
-                f"{short(st.get('message') or '', 600)}")
-        if st.get("release_next") or st.get("release_note"):
-            info += ("\nИсточник о сроках: " + (f"следующее обновление {S.fmt_moment(st['release_next'])}. "
-                                                 if st.get("release_next") else "") + (st.get("release_note") or ""))
+                f"{ST.explain(job, st)}")
         if job.get("release_dates"):
             info += "\nГрафик выхода: " + ", ".join(S.fmt_moment(d) for d in job["release_dates"][:6]) + \
                 ("…" if len(job["release_dates"]) > 6 else "")
+        if job["source"] == "fedstat" and not (st.get("release_next") or st.get("release_note")):
+            info += ("\nИсточник о сроках: на странице показателя ЕМИСС срок следующего обновления не нашёлся — "
+                     "хаб оценивает его по тому, когда данные выходили раньше.")
         ttk.Label(self, text=info, padding=10, wraplength=960, justify="left").pack(fill="x")
         if st.get("warnings"):
             ttk.Label(self, text="Замечания: " + short(st["warnings"], 600), padding=(10, 0), style="yellow.TLabel",

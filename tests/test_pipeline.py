@@ -302,3 +302,29 @@ def test_layout_default_and_old_models(runner):
     assert packet.layout(runner.cfg, runner.cfg.model("Новая")) == "wide"
     runner.cfg.update_model("Новая", layout="long")
     assert packet.layout(runner.cfg, runner.cfg.model("Новая")) == "long"
+
+
+def test_expected_date_ignores_discontinued_series(runner):
+    """Товар, который перестали наблюдать в 2017-м, не делает показатель «задерживающимся»."""
+    import datetime as dt
+    from hub.core import schedule as S
+    from hub.sources.base import Obs, SeriesInfo
+    job = runner.cfg.add_job("fedstat", "Цены", {"id": 1})
+    for key, last in (("old", "2017-12-31"), ("live", "2026-08-31")):
+        info = SeriesInfo(key=key, name=key, unit="руб", periodicity="month", code=f"FEDSTAT_1_{key}_M")
+        code = runner.store.assign_code(job, info)
+        o = Obs(key=key, period_end=dt.date.fromisoformat(last), period_label=last[:7], value=1.0)
+        run = runner.store.start_run(job["id"])
+        runner.store.apply(code, runner.store.diff(code, [o]), run, "2026-10-01T10:00:00", initial=True)
+    exp, per = S.expected_next(runner.store, runner.cfg.job(job["id"]))
+    assert per == "month" and exp.date() > dt.date(2026, 9, 30)
+
+
+def test_unparsed_timing_goes_to_claude_pack(runner, fakes):
+    from hub.core import claude_pack
+    fakes["fedstat"].page += ("<table><tr><td>Периодичность публикации</td><td>ежеквартально</td></tr>"
+                              "<tr><td>Ответственный</td><td>Росстат</td></tr></table>").encode("utf-8")
+    _, fs = add_jobs(runner)
+    runner.run(job_ids=[fs["id"]])
+    text = claude_pack.job_package(runner.cfg, runner.store, fs["id"], runner.paths)
+    assert "о сроках обновления" in text and "ежеквартально" in text

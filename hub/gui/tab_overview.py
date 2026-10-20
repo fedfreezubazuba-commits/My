@@ -143,7 +143,7 @@ class OverviewTab(ttk.Frame):
 
 
 def send_claude(app, job_id):
-    text = claude_pack.job_package(app.cfg, app.store, job_id)
+    text = claude_pack.job_package(app.cfg, app.store, job_id, app.paths)
     path = claude_pack.save(app.paths, text, job_id)
     W.copy_to_clipboard(app.root, text)
     messagebox.showinfo("Отправить Claude",

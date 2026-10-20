@@ -123,8 +123,9 @@ CHUNK_CELLS = 20000      # примерно столько значений пр
 
 
 def clean(text) -> str:
-    """«Тонна;^метрическая тонна (1000 кг)» → «Тонна; метрическая тонна (1000 кг)»."""
-    s = str(text or "").replace(";^", "; ").replace("^", " ")
+    """«Тонна;^метрическая тонна (1000 кг)» → «Тонна; метрическая тонна (1000 кг)»; «&laquo;» → «»»."""
+    import html
+    s = html.unescape(str(text or "")).replace(";^", "; ").replace("^", " ")
     return " ".join(s.split())
 
 
@@ -195,6 +196,20 @@ def release_from_page(html, last_end: dt.date | None, periodicity, today: dt.dat
         y, mo = (nxt.year + 1, 1) if nxt.month == 12 else (nxt.year, nxt.month + 1)
         return dt.date(y, mo, min(int(m.group(1)), P.month_end(y, mo).day)).isoformat(), note
     return None, note
+
+
+TIMING_RE = re.compile(r"обновл|срок|периодичн|публикац|актуализ|размещ|предоставлен|график|календар", re.I)
+
+
+def timing_fragments(html, limit=4000) -> str:
+    """Строки страницы, где может говориться о сроках (с соседними строками) — чтобы Claude по ним
+    научил хаб читать срок следующего обновления."""
+    lines = [x.strip() for x in page_text(html).split("\n") if x.strip()]
+    keep = set()
+    for i, line in enumerate(lines):
+        if TIMING_RE.search(line) and len(line) < 400:
+            keep.update(range(max(0, i - 1), min(len(lines), i + 3)))
+    return "\n".join(lines[i][:300] for i in sorted(keep))[:limit]
 
 
 class FedstatSource(Source):
@@ -316,6 +331,9 @@ class FedstatSource(Source):
         last = max((o.period_end for o in dated if per_of.get(o.key) == best), default=None)
         today = (getattr(ctx, "now", None) or dt.datetime.now()).date() if ctx else dt.date.today()
         res.next_release, res.release_note = release_from_page(html, last, best, today)
+        if not res.next_release:
+            res.timing_text = timing_fragments(html)
+
 
     def _download_in_parts(self, fs, ind_id, info, select, years, params, ctx, fresh_token=None):
         """Большие показатели — частями по годам. Размер части подбирается сам: при сбое части она
@@ -323,6 +341,7 @@ class FedstatSource(Source):
         csrf = {"left": 3}
 
         def download(sel):
+            csrf["left"] = 3                  # до трёх новых токенов на каждый запрос
             while True:
                 try:
                     return fs.download(ind_id, "sdmx", sel)
@@ -339,6 +358,12 @@ class FedstatSource(Source):
             return [download(select)]
         limit = int(params.get("chunk_cells") or CHUNK_CELLS)
         per_year = self.cells_per_year(info, select)
+        if per_year > 2 * limit and self._splittable(info, select):
+            # даже один год слишком велик для одного запроса — каждый год ещё и по значениям измерений
+            parts = []
+            for y in years:
+                parts += self._split_year(fs, info, select, y, limit, ctx, download)
+            return parts
         size = max(1, min(len(years), limit // max(per_year, 1)))
         parts, i, fails = [], 0, 0
         while i < len(years):
@@ -366,11 +391,75 @@ class FedstatSource(Source):
                     self.say(ctx, f"ЕМИСС не отдал данные за {label} — пробую частями поменьше ({size} г.)")
                     time.sleep(getattr(fs, "pause", 2) * 2)
                     continue
+                if self._splittable(info, select):
+                    self.say(ctx, f"ЕМИСС не отдал данные даже за {label} — делю год по значениям измерений")
+                    parts += self._split_year(fs, info, select, chunk[0], limit, ctx, download)
+                    i += 1
+                    continue
                 fails += 1
                 if fails >= 2:
                     raise HubError(classify(e), f"ЕМИСС не отдаёт данные даже за один год ({label}): "
                                                 f"{human_message(e)}. Попробуйте позже или выберите меньше значений")
                 time.sleep(getattr(fs, "pause", 2) * 10)
+        return parts
+
+    @staticmethod
+    def _dims(info, select):
+        """{измерение: [значения]} всех измерений, кроме годов (невыбранные — целиком)."""
+        return {fid: list(select.get(fid) or f["values"].keys())
+                for fid, f in info["filters"].items() if fid != YEARS_FILTER}
+
+    def _splittable(self, info, select):
+        return any(len(v) > 1 for v in self._dims(info, select).values())
+
+    def _split_year(self, fs, info, select, year, limit, ctx, download):
+        """Один год по частям: самое большое измерение (регионы, товары…) делится пополам, пока часть
+        не станет посильной для сервера; при сбое части — ещё пополам, вплоть до одного значения."""
+        def est(piece):
+            n = 1
+            for v in piece.values():
+                n *= max(1, len(v))
+            return n
+
+        def halves(piece):
+            fid = max((k for k, v in piece.items() if len(v) > 1), key=lambda k: len(piece[k]))
+            vals = piece[fid]
+            mid = len(vals) // 2
+            return [{**piece, fid: vals[:mid]}, {**piece, fid: vals[mid:]}]
+
+        label = self._year_label(info, [year])
+        queue = [self._dims(info, select)]
+        parts, fails, done = [], 0, 0
+        while queue:
+            piece = queue.pop(0)
+            can_split = any(len(v) > 1 for v in piece.values())
+            if est(piece) > limit and can_split:
+                queue[:0] = halves(piece)
+                continue
+            try:
+                xml = download({**piece, YEARS_FILTER: [year]})
+                if b"<" not in xml[:200]:
+                    raise StructureError("ЕМИСС вернул пустой ответ")
+                parts.append(xml)
+                done += 1
+                fails = 0
+                self.say(ctx, f"ЕМИСС: {label} год загружаю частями — готово частей: {done}, осталось: {len(queue)}+")
+            except StructureError:
+                raise
+            except Exception as e:  # noqa: BLE001 — часть всё ещё велика: дробим дальше
+                code = getattr(e, "code", None)
+                if code and 400 <= code < 500 and code not in (408, 429):
+                    raise
+                if can_split:
+                    queue[:0] = halves(piece)
+                    time.sleep(getattr(fs, "pause", 2) * 2)
+                    continue
+                fails += 1
+                if fails >= 2:
+                    raise HubError(classify(e), f"ЕМИСС не отдаёт данные за {label} даже по одному значению: "
+                                                f"{human_message(e)}. Попробуйте позже")
+                time.sleep(getattr(fs, "pause", 2) * 10)
+                queue.insert(0, piece)
         return parts
 
     @staticmethod

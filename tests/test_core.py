@@ -285,3 +285,51 @@ def test_scheduler_next_run_parsing():
     en = "TaskName: \\Хаб данных — обновление\nNext Run Time: 10/20/2026 1:45:00 PM\nStatus: Ready"
     assert winsched.parse_next_run(en) == "20.10.2026 13:45"
     assert winsched.parse_next_run("Next Run Time: N/A") is None
+
+
+def test_status_explain_plain_words():
+    from hub.core import status as ST
+    job = {"id": "j", "enabled": True}
+    t = ST.explain(job, {"status": "delayed", "expected_next": "2026-10-05T06:00:00"})
+    assert "опаздывает" in t and "05.10.2026" in t and "не ошибка" in t
+    t = ST.explain(job, {"status": "quarantine", "message": "Скачок 80%"})
+    assert "отложены" in t and "Скачок 80%" in t and "Принять" in t
+    t = ST.explain(job, {"status": "updated", "last_value": 101.3, "last_unit": "процент", "last_label": "2026-Q2",
+                         "release_next": "2026-11-20", "release_note": "Срок: 20-го"})
+    assert "101,3 процент за 2026-Q2" in t and "20.11.2026" in t
+    assert "паузе" in ST.explain({"enabled": False}, {})
+
+
+def test_schedule_rules_quarter_year_last_and_several():
+    rules = S.parse_rules("weekly:Mon@10:00;quarterly:wd10@10:00;yearly:03-20@19:00;monthly:last;workday:last@18:00")
+    assert [r[0] for r in rules] == ["weekly", "quarterly", "yearly", "monthly", "workday"]
+    assert S.join_rules(rules) == "weekly:Mon@10:00;quarterly:wd10@10:00;yearly:03-20@19:00;monthly:last;workday:last@18:00"
+    assert S.human("quarterly:wd10@10:00") == "раз в квартал, 10-й рабочий день после окончания квартала в 10:00"
+    assert S.human("yearly:03-20@19:00") == "раз в год, 20 марта в 19:00"
+    assert S.human("weekly:Mon@10:00;monthly:15") == "раз в неделю, в понедельник в 10:00; раз в месяц, 15-го"
+    with pytest.raises(ValueError):
+        S.parse_rules("auto;daily")
+    now = dt.datetime(2026, 10, 20, 12, 0)
+    # 10-й рабочий день после 30.09.2026 — 14.10.2026
+    assert S.last_slot("quarterly", ("wd", 10), now, (10, 0)) == dt.datetime(2026, 10, 14, 10, 0)
+    assert S.last_slot("monthly", "last", now) == dt.datetime(2026, 9, 30, 6, 0)
+    assert S.last_slot("workday", "last", dt.datetime(2026, 6, 1), (18, 0)) == dt.datetime(2026, 5, 29, 18, 0)
+    assert S.last_slot("yearly", (3, 20), now, (19, 0)) == dt.datetime(2026, 3, 20, 19, 0)
+    nxt = S.next_slot("weekly:Mon@10:00;quarterly:wd10@10:00", now, count=3)
+    assert nxt == [dt.datetime(2026, 10, 26, 10), dt.datetime(2026, 11, 2, 10), dt.datetime(2026, 11, 9, 10)]
+    job = {"schedule": "weekly:Fri@10:00;every:48h", "enabled": True}
+    st = {"last_attempt": "2026-10-19T09:00:00"}
+    assert not S.is_due(job, st, now)
+    assert S.is_due(job, st, dt.datetime(2026, 10, 21, 9, 30))      # прошло 48 ч
+    assert S.is_due(job, {"last_attempt": "2026-10-22T09:00:00"}, dt.datetime(2026, 10, 23, 10, 1))
+
+
+def test_schedule_time_is_moscow(monkeypatch):
+    """Компьютер в Екатеринбурге (UTC+5): «в 10:00 по Москве» — это 12:00 по местному времени."""
+    monkeypatch.setattr(S, "_local_offset", lambda moment: dt.timedelta(hours=5))
+    assert S.next_slot("daily@10:00", dt.datetime(2026, 10, 20, 11, 0)) == dt.datetime(2026, 10, 20, 12, 0)
+    job = {"schedule": "daily@10:00", "enabled": True}
+    st = {"last_attempt": "2026-10-20T08:00:00"}
+    assert not S.is_due(job, st, dt.datetime(2026, 10, 20, 11, 59))
+    assert S.is_due(job, st, dt.datetime(2026, 10, 20, 12, 0))
+    assert S.release_moments({"release_dates": ["2026-10-21T19:00"]}) == [dt.datetime(2026, 10, 21, 21, 0)]

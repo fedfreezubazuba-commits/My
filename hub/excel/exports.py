@@ -1,8 +1,8 @@
 """
 Дополнительные выгрузки (раздел 9.5 ТЗ) — не основной путь доставки в модели.
 
-  «Открыть в Excel»  — разовый файл в Выгрузки/ с листами «Данные» (даты × ряды),
-                       «Последние», «Длинная», «Паспорт»; файл сразу открывается.
+  «Открыть в Excel»  — разовый файл в Выгрузки/ с листами «Данные» (строка на значение, все поля
+                       отдельными столбцами, свежие даты сверху) и «Паспорт»; файл сразу открывается.
   Файлы по показателям (настройка, по умолчанию выключена) — постоянный
                        Выгрузки/Показатели/<показатель>.xlsx, обновляется после загрузки.
 """
@@ -31,65 +31,40 @@ def dims_table(store, codes):
 
 
 def _book(store, codes, passport):
+    """Лист «Данные»: строка на значение со всеми полями (свежие даты сверху, фильтр по любому столбцу)
+    и лист «Паспорт»."""
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font
+    from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
 
     bold = Font(bold=True)
-    wrap = Alignment(wrap_text=True, vertical="top")
     wb = Workbook()
     ws = wb.active
     ws.title = "Данные"
     meta = {c: store.series(c) for c in codes}
     dims, fields = dims_table(store, codes)
-    # шапка: по строке на каждый разрез, затем единицы и коды; ниже — даты × ряды
-    for f in fields:
-        ws.append(["", f] + [dims[c].get(f, "") for c in codes])
-    ws.append(["", "Единицы"] + [meta[c]["unit"] for c in codes])
-    ws.append(["Дата", "Период"] + codes)
-    head = len(fields) + 2
-    for d, label, vals in packet.wide(store, codes):
-        ws.append([d, label] + [vals.get(c) for c in codes])
-    for row in ws.iter_rows(max_row=head):
-        for c in row:
-            c.font = bold
-            c.alignment = wrap
-    ws.column_dimensions["A"].width = 12
-    ws.column_dimensions["B"].width = 16
-    for i in range(3, len(codes) + 3):
-        ws.column_dimensions[get_column_letter(i)].width = 22
-    for row in ws.iter_rows(min_row=head + 1, max_col=1):
-        row[0].number_format = "DD.MM.YYYY"
-    ws.freeze_panes = f"C{head + 1}"
-
-    ws = wb.create_sheet("Последние")
-    ws.append(["Код"] + fields + ["Единицы", "Периодичность", "Последний период", "Последнее значение",
-                                  "Предыдущее значение"])
-    for c in codes:
-        last = store.last_values(c, 2)
-        ws.append([c] + [dims[c].get(f, "") for f in fields] +
-                  [meta[c]["unit"], P.PERIODICITY_RU.get(meta[c]["periodicity"], ""),
-                   last[0]["period_label"] if last else "", last[0]["value"] if last else None,
-                   last[1]["value"] if len(last) > 1 else None])
-    for c in ws[1]:
-        c.font = bold
-    for i in range(2, len(fields) + 2):
-        ws.column_dimensions[get_column_letter(i)].width = 30
-    ws.auto_filter.ref = ws.dimensions
-
-    ws = wb.create_sheet("Длинная")
-    ws.append(["Дата", "Период", "Код"] + fields + ["Единицы", "Значение"])
+    ws.append(["Дата", "Период"] + fields + ["Периодичность", "Единицы", "Код", "Обновлено", "Значение"])
+    rows = []
     for c in codes:
         cut = [dims[c].get(f, "") for f in fields]
+        per = P.PERIODICITY_RU.get(meta[c]["periodicity"], meta[c]["periodicity"] or "")
         for o in store.current_rows(c):
-            ws.append([dt.date.fromisoformat(o["period_end"]), o["period_label"], c] + cut +
-                      [meta[c]["unit"], o["value"]])
+            got = (o["fetched_at"] or "")[:10]
+            rows.append([dt.date.fromisoformat(o["period_end"]), o["period_label"]] + cut +
+                        [per, meta[c]["unit"], c, dt.date.fromisoformat(got) if got else None, o["value"]])
+    rows.sort(key=lambda r: r[0], reverse=True)          # последние значения — вверху
+    for r in rows:
+        ws.append(r)
     for c in ws[1]:
         c.font = bold
-    for row in ws.iter_rows(min_row=2, max_col=1):
+    n = len(fields)
+    for row in ws.iter_rows(min_row=2):
         row[0].number_format = "DD.MM.YYYY"
-    for i in range(4, len(fields) + 4):
+        row[n + 5].number_format = "DD.MM.YYYY"
+    ws.column_dimensions["A"].width = 12
+    for i in range(3, n + 3):
         ws.column_dimensions[get_column_letter(i)].width = 30
+    ws.column_dimensions[get_column_letter(n + 5)].width = 26
     ws.auto_filter.ref = ws.dimensions
     ws.freeze_panes = "A2"
 

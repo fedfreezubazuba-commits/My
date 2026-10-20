@@ -29,3 +29,11 @@ def runner(workdir, fakes):
     r = Runner(Paths(workdir), ctx_clients=fakes)
     yield r
     r.close()
+
+
+@pytest.fixture(autouse=True)
+def moscow_computer(monkeypatch):
+    """Расписание задаётся по Москве; в тестах компьютер «стоит» в Москве (в облаке — UTC)."""
+    import datetime as dt
+    from hub.core import schedule
+    monkeypatch.setattr(schedule, "_local_offset", lambda moment: dt.timedelta(hours=3))

@@ -179,3 +179,24 @@ def test_fedstat_csrf_block_refreshes_token(fakes):
     res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883"]}, "years_from": 2023, "chunk_cells": 1},
                                Context(clients=fakes))
     assert len(fs.downloads) >= 2 and res.obs
+
+
+def test_fedstat_splits_a_year_by_dimension_values(fakes, monkeypatch):
+    """Если сервер не отдаёт даже один год, год делится по значениям самого большого измерения."""
+    import hub.sources.fedstat as FS
+    monkeypatch.setattr(FS.time, "sleep", lambda s: None)
+    fs = fakes["fedstat"]
+    fs.max_regions_years = 1                     # за один запрос — только один регион за один год
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883", "1558900"]}, "years_from": 2023},
+                               Context(clients=fakes))
+    regions = {o.key.split("s_OKATO=")[1].split("|")[0] for o in res.obs}
+    assert regions == {"643", "030"}
+    assert all(len(y) == 1 for y in fs.downloads)
+
+
+def test_fedstat_huge_year_is_split_upfront(fakes, monkeypatch):
+    import hub.sources.fedstat as FS
+    monkeypatch.setattr(FS.time, "sleep", lambda s: None)
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883", "1558900"]}, "years_from": 2023,
+                                "chunk_cells": 1}, Context(clients=fakes))
+    assert res.obs and len(fakes["fedstat"].downloads) >= 4      # 2 года × 2 региона

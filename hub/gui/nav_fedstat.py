@@ -11,6 +11,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+from html import unescape      # «&laquo;Строительство&raquo;» в названиях ЕМИСС
 import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
@@ -21,6 +22,10 @@ from .dimlist import add_dim_tab
 SEARCH_LIMIT = 1000
 PREVIEW_ROWS = 1000
 YEARS = "3"
+
+
+
+HUGE = 2_000_000      # больше сочетаний — переспрашиваем: загрузка займёт часы
 
 
 class FedstatNav(ttk.Frame):
@@ -219,7 +224,7 @@ class FedstatNav(ttk.Frame):
 
     def _insert(self, parent, node):
         is_ind = "children" not in node
-        label = node["name"] if is_ind else f"{node.get('code', '')} {node['name']}".strip()
+        label = unescape(node["name"]) if is_ind else f"{node.get('code', '')} {unescape(node['name'])}".strip()
         tags = []
         if node.get("excluded"):
             tags.append("excl")
@@ -259,7 +264,8 @@ class FedstatNav(ttk.Frame):
                     seen.add(n["id"])
                     found += 1
                     iid = self._insert("", n)
-                    self.tree.item(iid, text=f"{n['name']}   ⟨{path[0]}⟩" if path else n["name"])
+                    self.tree.item(iid, text=f"{unescape(n['name'])}   ⟨{unescape(path[0])}⟩" if path
+                                   else unescape(n["name"]))
         walk(self.cat["roots"], [])
         self.status.set(f"Найдено: {found}" + (" (показаны первые)" if found >= SEARCH_LIMIT else ""))
 
@@ -280,7 +286,7 @@ class FedstatNav(ttk.Frame):
         if not node or "children" in node or not node.get("id"):
             return
         ind_id = node["id"]
-        self.title_var.set(node["name"])
+        self.title_var.set(unescape(node["name"]))
         self.sub_var.set(f"ID {ind_id} — загрузка измерений…")
         self.run_bg(lambda: self.fs.indicator(ind_id), self._on_indicator,
                     f"Загрузка измерений показателя {ind_id}…")
@@ -288,7 +294,7 @@ class FedstatNav(ttk.Frame):
     # --- измерения ---------------------------------------------------------
     def _on_indicator(self, info):
         self.info = info
-        self.title_var.set(info["title"])
+        self.title_var.set(unescape(info["title"]))
         self.sub_var.set(f"ID {info['id']}   •   единица: {info['unit'] or '—'}   •   "
                          f"измерений: {len(info['filters'])}")
         self.site_btn.configure(state="normal")
@@ -311,9 +317,9 @@ class FedstatNav(ttk.Frame):
         self.status.set("Отметьте нужные значения и нажмите «＋ В обновления» или «Скачать…»")
 
     def _add_dim_tab(self, fid, f):
-        items = [(vid, f["values"][vid]) for vid in f["values"]]
+        items = [(vid, unescape(f["values"][vid])) for vid in f["values"]]
         before = self.preview_tab if str(self.preview_tab) in self.nb.tabs() else None
-        self.dim_lists[fid] = add_dim_tab(self.nb, f["title"], items, self._update_counts,
+        self.dim_lists[fid] = add_dim_tab(self.nb, unescape(f["title"]), items, self._update_counts,
                                           years=(fid == YEARS), before=before)
 
     def _update_counts(self):
@@ -412,7 +418,7 @@ class FedstatNav(ttk.Frame):
         params = {"id": int(self.info["id"]), "select": select}
         if years_from:
             params["years_from"] = years_from
-        name = self.info["title"] + (" — " + ", ".join(parts[:2]) if parts else "")
+        name = unescape(self.info["title"]) + (" — " + ", ".join(unescape(x) for x in parts[:2]) if parts else "")
         return params, name
 
     def _add_to_updates(self):
@@ -428,9 +434,17 @@ class FedstatNav(ttk.Frame):
         for _fid, (chosen, _a, _t, _n) in self.dim_lists.items():
             total *= max(len(chosen), 1)
         note = "Годы: новые годы будут добавляться сами. Хаб обращается к ЕМИСС бережно — с паузами."
+        if total > HUGE and not messagebox.askyesno(
+                "Очень большой показатель",
+                (f"Отмечено ≈{total:,} сочетаний значений. Часть из них обычно пустая, но загрузка может идти "
+                 "часами (ЕМИСС отдаёт данные небольшими порциями) и занять гигабайты на диске.\n\n"
+                 "Лучше отметить на вкладках слева только нужное — регионы, товары, годы.\n\n"
+                 "Всё равно добавить весь объём?").replace(",", " "), parent=self):
+            return
         if total > 20000:
-            note = (f"Показатель большой (≈{total:,} значений) — хаб загрузит его частями по годам, это может "
-                    f"занять несколько минут. Дальше будут докачиваться только свежие годы.").replace(",", " ")
+            note = (f"Показатель большой (≈{total:,} значений) — хаб загрузит его частями (по годам, а если нужно — "
+                    f"и по регионам/товарам), это может занять от минут до часов. Дальше будут докачиваться "
+                    f"только свежие годы.").replace(",", " ")
         AddDialog(self.app, "fedstat", params, name, note=note)
 
     def select_indicator(self, ind_id, name=""):

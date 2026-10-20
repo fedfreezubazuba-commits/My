@@ -60,7 +60,7 @@ def raw_excerpt(path, limit=6000) -> str:
     return scrub(data.decode("utf-8", "replace")[:limit])
 
 
-def job_package(cfg, store, job_id) -> str:
+def job_package(cfg, store, job_id, paths=None) -> str:
     job = cfg.job(job_id) or next((j for j in cfg.trash() if j["id"] == job_id), {"id": job_id})
     st = store.state(job_id)
     runs = store.runs(job_id, 5)
@@ -101,6 +101,11 @@ def job_package(cfg, store, job_id) -> str:
     excerpt = raw_excerpt(raw_path)
     if excerpt:
         lines += ["", f"## Начало последнего сырого ответа ({Path(raw_path).name})", "```", excerpt, "```"]
+    note = (paths.cache / "сроки" / f"{job_id}.txt") if paths else None
+    if note is not None and note.exists():
+        lines += ["", "## Что страница источника пишет о сроках обновления",
+                  "Хаб не смог разобрать срок следующего обновления (fedstat.release_from_page). Куски страницы:",
+                  "```", scrub(note.read_text(encoding="utf-8"))[:4000], "```"]
     lines += ["", "Пароли, куки и токены из пакета удалены."]
     return "\n".join(lines)
 

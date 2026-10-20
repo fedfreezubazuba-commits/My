@@ -22,7 +22,8 @@ hub/
     config.py      jobs.yaml / models.yaml / settings.yaml / trash.yaml в рабочей папке
     store.py       SQLite: series, observations (state current|old|quarantine|rejected), runs, job_state,
                    subscriptions (постоянный порядок столбцов), model_state, quarantine, meta
-    schedule.py    auto | daily@09:30 | weekly:Mon,Wed@10:30 | monthly:15 | workday:5@10:00 | every:6h;
+    schedule.py    правила через «;»: auto | daily@09:30 | weekly:Mon,Wed@10:30 | monthly:15|last |
+                   workday:5|last | quarterly:wd10 | yearly:03-20 | every:6h; время — московское (to_msk/from_msk);
                    график выхода (release_dates, release_next); ожидаемая дата и «Задерживается»
     workdays.py    производственный календарь РФ (+ «Праздники.txt» в рабочей папке)
     checks.py      проверки перед записью (раздел 12 ТЗ)
@@ -151,6 +152,14 @@ legacy/            исходные навигаторы пользовател�
   «Убрать» — `cfg.unsubscribe_codes` одной записью; ряды из «Отдельных рядов» не заносятся в `exclude`
   (раньше это прятало ряды выборок; разовая починка — `fix_054` в `packet.model_plan`). ЕМИСС «CSRF
   блокировка» → свежая страница показателя и повтор (`fedstat.fetch` → `fresh_token`).
+
+- **0.5.5**: расписание — список правил (`parse_rules`, окно `gui/schedule_box.py`: RuleDialog,
+  ReleaseDialog). `expected_next` смотрит только на «живые» ряды (последний период не старше одного
+  периода от самого свежего) и одним запросом (`store.last_period_ends`). `status.explain` — что значит
+  статус (панель под «Мои показатели», «История»). ЕМИСС: если год не грузится или > 2×CHUNK_CELLS —
+  `_split_year` делит по самому большому измерению; несчитанный срок → `FetchResult.timing_text` →
+  `cache/сроки/<job>.txt` → «Отправить Claude». В тестах компьютер «в Москве» (`conftest.moscow_computer`).
+  «＋ В обновления» больше не подписывает модели — после загрузки кнопки «Отдать в модель».
 
 ## Категории ошибок
 

@@ -106,6 +106,11 @@ class JobOutcome:
         return bool(self.new_periods or self.revisions)
 
 
+def timing_note_path(paths, job_id):
+    """Куски страницы источника о сроках обновления (если хаб не смог их разобрать) — для «Отправить Claude»."""
+    return paths.cache / "сроки" / f"{job_id}.txt"
+
+
 class RunReport:
     def __init__(self):
         self.started = dt.datetime.now()
@@ -283,6 +288,10 @@ class Runner:
         out.warnings = list(res.warnings)
         if res.next_release or res.release_note:     # срок следующего обновления, который сообщил источник
             self.store.set_state(job["id"], release_next=res.next_release, release_note=res.release_note or None)
+        if getattr(res, "timing_text", ""):            # срок не разобрали — сохраняем куски страницы для Claude
+            note = timing_note_path(self.paths, job["id"])
+            note.parent.mkdir(parents=True, exist_ok=True)
+            note.write_text(res.timing_text, encoding="utf-8")
         out.raw_path = self._save_raw(job, res)
         initial = not self.store.series_of_job(job["id"]) or initial_hint
         codes = {s.key: self.store.peek_code(job["id"], s.key) or s.code for s in res.series}

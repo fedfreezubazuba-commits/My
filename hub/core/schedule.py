@@ -1,12 +1,16 @@
 """
 Расписание показателей (раздел 10 ТЗ).
 
-Строка расписания в jobs.yaml (время после «@» необязательно, по умолчанию 06:00):
+Строка расписания в jobs.yaml — одно или несколько правил через «;» (время после «@» — московское,
+необязательно, по умолчанию 06:00):
   auto                — по мере выхода данных (по умолчанию)
   daily@09:30         — каждый день
   weekly:Wed          — по дням недели: weekly:Mon,Wed,Fri@10:00 (Mon..Sun или пн..вс)
   monthly:15@12:00    — раз в месяц в указанное число
+  monthly:last        — в последний день месяца; workday:last — в последний рабочий день
   workday:5@10:00     — в N-й рабочий день месяца (по производственному календарю, workdays.py)
+  quarterly:wd10@10:00 — 10-й рабочий день после окончания квартала (quarterly:d25 — 25-й календарный)
+  yearly:03-20@19:00  — раз в год, 20 марта
   every:6h            — каждые N часов
 
 График выхода (необязательно, в дополнение к расписанию): job["release_dates"] — даты и время,
@@ -71,7 +75,8 @@ def _weekday(word):
 
 
 def parse(schedule):
-    """→ (вид, параметр, время (часы, минуты) или None)."""
+    """Одно правило → (вид, параметр, время (часы, минуты) по Москве или None).
+    Несколько правил через «;» разбирает parse_rules."""
     s = (schedule or "auto").strip().lower().replace(" ", "")
     at = None
     if "@" in s:
@@ -87,12 +92,19 @@ def parse(schedule):
         if not days:
             raise ValueError("Не выбраны дни недели")
         return "weekly", days, at
-    m = re.fullmatch(r"monthly:(\d{1,2})", s)
-    if m and 1 <= int(m.group(1)) <= 31:
-        return "monthly", int(m.group(1)), at
-    m = re.fullmatch(r"workday:(\d{1,2})", s)
-    if m and 1 <= int(m.group(1)) <= 23:
-        return "workday", int(m.group(1)), at
+    m = re.fullmatch(r"(monthly|workday):(\d{1,2}|last)", s)
+    if m:
+        kind, n = m.group(1), m.group(2)
+        if n == "last":
+            return kind, "last", at
+        if 1 <= int(n) <= (31 if kind == "monthly" else 23):
+            return kind, int(n), at
+    m = re.fullmatch(r"quarterly:(wd|d)(\d{1,3})", s)
+    if m and 1 <= int(m.group(2)) <= 90:
+        return "quarterly", (m.group(1), int(m.group(2))), at
+    m = re.fullmatch(r"yearly:(\d{1,2})-(\d{1,2})", s)
+    if m and 1 <= int(m.group(1)) <= 12 and 1 <= int(m.group(2)) <= 31:
+        return "yearly", (int(m.group(1)), int(m.group(2))), at
     m = re.fullmatch(r"every:(\d+)h", s)
     if m and int(m.group(1)) >= 1:
         if at:
@@ -101,12 +113,25 @@ def parse(schedule):
     raise ValueError(f"Непонятное расписание «{schedule}»")
 
 
+def parse_rules(schedule) -> list:
+    """«weekly:Mon@10:00;monthly:15@12:00» → [(вид, параметр, время), …]; «auto» → [("auto", None, None)]."""
+    parts = [x for x in str(schedule or "auto").split(";") if x.strip()] or ["auto"]
+    rules = [parse(x) for x in parts]
+    if len(rules) > 1 and any(r[0] == "auto" for r in rules):
+        raise ValueError("«Автоматически» нельзя сочетать с другими правилами")
+    return rules
+
+
 def make(kind, arg=None, at=None) -> str:
-    """Обратно в строку для jobs.yaml."""
+    """Правило обратно в строку для jobs.yaml."""
     if kind == "weekly":
         s = "weekly:" + ",".join(WEEKDAY_EN[d] for d in sorted(arg))
     elif kind in ("monthly", "workday"):
         s = f"{kind}:{arg}"
+    elif kind == "quarterly":
+        s = f"quarterly:{arg[0]}{arg[1]}"
+    elif kind == "yearly":
+        s = f"yearly:{arg[0]:02d}-{arg[1]:02d}"
     elif kind == "every":
         return f"every:{arg}h"
     else:
@@ -114,8 +139,15 @@ def make(kind, arg=None, at=None) -> str:
     return s + (f"@{at[0]:02d}:{at[1]:02d}" if at and kind != "auto" else "")
 
 
-def human(schedule) -> str:
-    kind, arg, at = parse(schedule)
+def join_rules(rules) -> str:
+    return ";".join(make(*r) for r in rules) or "auto"
+
+
+MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября",
+              "октября", "ноября", "декабря"]
+
+
+def human_rule(kind, arg, at) -> str:
     t = f" в {at[0]:02d}:{at[1]:02d}" if at else ""
     if kind == "auto":
         return "автоматически"
@@ -124,14 +156,23 @@ def human(schedule) -> str:
     if kind == "weekly":
         if len(arg) == 1:
             return f"раз в неделю, в {WEEKDAY_RU[arg[0]]}" + t
-        if arg == (0, 1, 2, 3, 4):
+        if tuple(arg) == (0, 1, 2, 3, 4):
             return "по будням" + t
         return "по дням: " + ", ".join(WEEKDAY_SHORT[d] for d in arg) + t
     if kind == "monthly":
-        return f"раз в месяц, {arg}-го" + t
+        return ("раз в месяц, в последний день" if arg == "last" else f"раз в месяц, {arg}-го") + t
     if kind == "workday":
-        return f"{arg}-й рабочий день месяца" + t
+        return ("в последний рабочий день месяца" if arg == "last" else f"{arg}-й рабочий день месяца") + t
+    if kind == "quarterly":
+        what = "рабочий день" if arg[0] == "wd" else "день"
+        return f"раз в квартал, {arg[1]}-й {what} после окончания квартала" + t
+    if kind == "yearly":
+        return f"раз в год, {arg[1]} {MONTHS_GEN[arg[0] - 1]}" + t
     return f"каждые {arg} ч"
+
+
+def human(schedule) -> str:
+    return "; ".join(human_rule(*r) for r in parse_rules(schedule))
 
 
 def _at(day: dt.date, at) -> dt.datetime:
@@ -143,8 +184,15 @@ def _prev_month(y, m):
     return (y, m - 1) if m > 1 else (y - 1, 12)
 
 
+def _quarter_slot(year, q, arg):
+    """N-й (рабочий) день после окончания квартала q (1..4) года year."""
+    end = P.quarter_end(year, q)
+    kind, n = arg
+    return workdays.add_workdays(end, n) if kind == "wd" else end + dt.timedelta(days=n)
+
+
 def last_slot(kind, arg, now: dt.datetime, at=None) -> dt.datetime:
-    """Последний момент «пора проверять», не позже now."""
+    """Последний момент «пора проверять», не позже now (все времена — в одном поясе)."""
     today = _at(now.date(), at)
     if kind in ("daily", "auto"):
         return today if now >= today else today - dt.timedelta(days=1)
@@ -155,27 +203,77 @@ def last_slot(kind, arg, now: dt.datetime, at=None) -> dt.datetime:
             if slot.weekday() in days and slot <= now:
                 return slot
         raise ValueError(arg)
-    if kind == "monthly":
+    if kind in ("monthly", "workday"):
         def slot_in(y, m):
-            return _at(dt.date(y, m, min(arg, P.month_end(y, m).day)), at)
+            if kind == "monthly":
+                day = P.month_end(y, m).day if arg == "last" else min(arg, P.month_end(y, m).day)
+                return _at(dt.date(y, m, day), at)
+            if arg == "last":
+                d = P.month_end(y, m)
+                while not workdays.is_workday(d):
+                    d -= dt.timedelta(days=1)
+                return _at(d, at)
+            return _at(workdays.nth_workday(y, m, arg), at)
         slot = slot_in(now.year, now.month)
         return slot if slot <= now else slot_in(*_prev_month(now.year, now.month))
-    if kind == "workday":
-        slot = _at(workdays.nth_workday(now.year, now.month, arg), at)
-        return slot if slot <= now else _at(workdays.nth_workday(*_prev_month(now.year, now.month), arg), at)
+    if kind == "quarterly":
+        cands = [_at(_quarter_slot(y, q, arg), at) for y in (now.year - 1, now.year) for q in (1, 2, 3, 4)]
+        return max(c for c in cands if c <= now)
+    if kind == "yearly":
+        def slot_in(y):
+            mon, day = arg
+            return _at(dt.date(y, mon, min(day, P.month_end(y, mon).day)), at)
+        slot = slot_in(now.year)
+        return slot if slot <= now else slot_in(now.year - 1)
     raise ValueError(kind)
 
 
-def next_slot(schedule, now: dt.datetime) -> dt.datetime | None:
-    """Следующая плановая проверка (для подсказки в окне); None для auto и every."""
-    kind, arg, at = parse(schedule)
-    if kind in ("auto", "every"):
-        return None
-    for days in range(0, 70):
-        cand = _at(now.date() + dt.timedelta(days=days), at)
-        if cand > now and last_slot(kind, arg, cand, at) == cand:
-            return cand
-    return None
+# --- время по Москве ----------------------------------------------------------
+MSK = dt.timedelta(hours=3)       # Москва — UTC+3 круглый год
+
+
+def _local_offset(moment: dt.datetime) -> dt.timedelta:
+    try:
+        return moment.astimezone().utcoffset() or dt.timedelta(0)
+    except (OverflowError, OSError, ValueError):
+        return dt.timedelta(0)
+
+
+def to_msk(local: dt.datetime) -> dt.datetime:
+    return local - _local_offset(local) + MSK
+
+
+def from_msk(msk: dt.datetime) -> dt.datetime:
+    return msk - MSK + _local_offset(msk)
+
+
+def last_rule_slot(rule, now_local: dt.datetime) -> dt.datetime:
+    """Последний момент проверки по правилу (время правила — московское), в местном времени компьютера."""
+    kind, arg, at = rule
+    return from_msk(last_slot(kind, arg, to_msk(now_local), at))
+
+
+def next_slot(schedule, now: dt.datetime, count=1):
+    """Ближайшие плановые проверки по местному времени (для подсказок); None/[] для auto и every."""
+    rules = [r for r in parse_rules(schedule) if r[0] not in ("auto", "every")]
+    out = []
+    probe = now
+    for _ in range(count):
+        best = None
+        for kind, arg, at in rules:
+            for days in range(0, 400):
+                cand_msk = _at(to_msk(probe).date() + dt.timedelta(days=days), at)
+                cand = from_msk(cand_msk)
+                if cand > probe and last_slot(kind, arg, cand_msk, at) == cand_msk:
+                    best = cand if best is None or cand < best else best
+                    break
+        if best is None:
+            break
+        out.append(best)
+        probe = best
+    if count == 1:
+        return out[0] if out else None
+    return out
 
 
 # --- график выхода -----------------------------------------------------------
@@ -193,10 +291,11 @@ def parse_moment(text) -> dt.datetime | None:
 
 
 def release_moments(job, state=None) -> list[dt.datetime]:
+    """Моменты выхода данных по местному времени (в графике время московское)."""
     out = [parse_moment(x) for x in job.get("release_dates") or []]
     if state and state.get("release_next"):
         out.append(parse_moment(state["release_next"]))
-    return sorted({x for x in out if x})
+    return sorted({from_msk(x) for x in out if x})
 
 
 TIME_RE = re.compile(r"(?<![\d.:])([01]?\d|2[0-3])[:.]([0-5]\d)(?![\d.])")
@@ -295,11 +394,15 @@ def is_due(job, state, now: dt.datetime, snapshot=False, periodicity=None) -> bo
         return now >= last_attempt + dt.timedelta(minutes=backoff_minutes(fails))
     if _release_due(job, state, now, last_attempt):
         return True
-    kind, arg, at = parse(job.get("schedule"))
-    if kind == "every":
-        return now - last_attempt >= dt.timedelta(hours=arg)
-    if kind != "auto":
-        return last_attempt < last_slot(kind, arg, now, at)
+    rules = parse_rules(job.get("schedule"))
+    if rules[0][0] != "auto":
+        for kind, arg, at in rules:
+            if kind == "every":
+                if now - last_attempt >= dt.timedelta(hours=arg):
+                    return True
+            elif last_attempt < last_rule_slot((kind, arg, at), now):
+                return True
+        return False
     if snapshot:
         return last_attempt < last_slot("daily", None, now)
     expected = _dt(state.get("expected_next"))
@@ -319,17 +422,19 @@ def expected_next(store, job) -> tuple[dt.datetime | None, str | None]:
     """(ожидаемая дата новых данных, периодичность самого частого ряда).
     Если есть график выхода — ближайшая дата из него после последних новых данных."""
     best, best_per = None, None
+    ends = store.last_period_ends(job["id"])
+    by_per = {}
     for s in store.series_of_job(job["id"]):
-        per = s["periodicity"]
-        if per not in P.ORDER:
-            continue
-        last = store.last_values(s["code"], 1)
-        if not last:
-            continue
-        last_end = dt.date.fromisoformat(last[0]["period_end"])
-        nxt = P.next_period_end(per, last_end)
-        lag = lag_days(job["source"], per, store.new_period_lags(s["code"]))
-        exp = dt.datetime.combine(nxt + dt.timedelta(days=lag), dt.time(SLOT_HOUR))
+        if s["periodicity"] in P.ORDER and ends.get(s["code"]):
+            by_per.setdefault(s["periodicity"], []).append((dt.date.fromisoformat(ends[s["code"]]), s["code"]))
+    for per, items in by_per.items():
+        # ряды, которые давно перестали обновляться (товар исключили из наблюдения), срок не определяют:
+        # берём самый свежий период этой периодичности и опоздания нескольких «живых» рядов
+        newest = max(e for e, _c in items)
+        live = [c for e, c in items if e >= newest - dt.timedelta(days=P.typical_days(per))]
+        lags = [x for c in live[:20] for x in store.new_period_lags(c)]
+        lag = lag_days(job["source"], per, lags)
+        exp = dt.datetime.combine(P.next_period_end(per, newest) + dt.timedelta(days=lag), dt.time(SLOT_HOUR))
         if best is None or exp < best:
             best, best_per = exp, per
     state = store.state(job["id"])

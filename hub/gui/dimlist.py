@@ -71,8 +71,26 @@ def add_dim_tab(nb, title, items, on_change, years=False, before=None, note=""):
     if note:
         ttk.Label(tab, text=note, foreground="#777", wraplength=560, justify="left").pack(anchor="w", pady=(4, 0))
 
+    anchor = {"i": None}
+
+    def click(e):
+        anchor["i"] = lb.nearest(e.y)
+
+    def shift_click(e):
+        """Shift+щелчок — как в Windows: всё от прошлого щелчка до этого становится как прошлое значение."""
+        i = lb.nearest(e.y)
+        a = anchor["i"] if anchor["i"] is not None and anchor["i"] < lb.size() else i
+        on = lb.selection_includes(a) if a != i else True
+        lo, hi = sorted((a, i))
+        (lb.selection_set if on else lb.selection_clear)(lo, hi)
+        anchor["i"] = i
+        on_sel(None)
+        return "break"
+
     flt.trace_add("write", redraw)
     lb.bind("<<ListboxSelect>>", on_sel)
+    lb.bind("<Button-1>", click)
+    lb.bind("<Shift-Button-1>", shift_click)
     entry = (chosen, all_ids, tab, title)
     tab.after_idle(redraw)
     return entry

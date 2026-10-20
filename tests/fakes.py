@@ -86,6 +86,7 @@ class FakeFedstat(Fedstat):
     OKATO = {"1558883": "643", "1558900": "030"}
 
     max_years = None      # «сервер не справляется», если в запросе больше лет
+    max_regions_years = None   # … или больше сочетаний «регион × год»
 
     def filtered(self, data):
         """Как сервер: только выбранные регионы (измерение 0) и годы (измерение 3)."""
@@ -94,6 +95,8 @@ class FakeFedstat(Fedstat):
         chosen = {self.OKATO[v.split("_", 1)[1]] for k, v in data if k == "selectedFilterIds" and v.startswith("0_")}
         years = {v.split("_", 1)[1] for k, v in data if k == "selectedFilterIds" and v.startswith("3_")}
         if self.max_years and len(years) > self.max_years:
+            raise urllib.error.HTTPError("https://www.fedstat.ru", 500, "too big", {}, None)
+        if self.max_regions_years and len(chosen) * len(years) > self.max_regions_years:
             raise urllib.error.HTTPError("https://www.fedstat.ru", 500, "too big", {}, None)
         self.downloads.append(sorted(years))
         text = self.sdmx.decode("utf-8")

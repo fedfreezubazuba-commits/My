@@ -268,6 +268,12 @@ class Store:
         return self.q("SELECT * FROM observations WHERE code=? AND state='current' ORDER BY period_end DESC LIMIT ?",
                       (code, n))
 
+    def last_period_ends(self, job_id) -> dict:
+        """{код: последний период} всех рядов показателя одним запросом."""
+        return {r["code"]: r["e"] for r in self.q(
+            "SELECT o.code, MAX(o.period_end) AS e FROM observations o JOIN series s ON s.code=o.code "
+            "WHERE s.job_id=? AND o.state='current' GROUP BY o.code", (job_id,))}
+
     def new_period_lags(self, code, limit=12):
         """Сколько дней проходит от конца периода до появления данных (по реальным обновлениям)."""
         rows = self.q("SELECT period_end, MIN(fetched_at) AS f FROM observations WHERE code=? AND was_new=1"

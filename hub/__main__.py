@@ -131,7 +131,7 @@ def main(argv=None):
             return 0
         if a.cmd == "claude":
             from .core import claude_pack
-            text = claude_pack.job_package(runner.cfg, runner.store, a.id)
+            text = claude_pack.job_package(runner.cfg, runner.store, a.id, runner.paths)
             p = claude_pack.save(paths, text, a.id)
             _out(text)
             _out(f"\nСохранено: {p}")
