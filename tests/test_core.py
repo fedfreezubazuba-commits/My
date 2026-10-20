@@ -265,3 +265,11 @@ def test_locked_database_gives_clear_message(tmp_path):
     finally:
         ST.sqlite3.connect = old
         c.execute("ROLLBACK")
+
+
+def test_check_problems_are_grouped_and_units_normalized():
+    from hub.core.checks import summary, unit_key
+    assert unit_key("Тонна;^метрическая тонна (1000 кг)") == unit_key("Тонна; метрическая тонна (1000 кг)")
+    assert unit_key("руб.") != unit_key("тыс. руб.")
+    many = summary("Сменились единицы", [f"«ряд {i}»" for i in range(5000)])
+    assert "5000 рядов" in many and len(many) < 300

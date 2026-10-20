@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from ..core import claude_pack, overview, status as ST, winsched
+from ..core.overview import short
 from ..core.base_fmt import fmt, fmt_date
 from ..excel.models import models_with_new_data
 from . import widgets as W
@@ -77,12 +78,10 @@ class OverviewTab(ttk.Frame):
             ttk.Label(inner, text=stale, style="yellow.TLabel").pack(anchor="w")
         if probs:
             self._section(inner, "Проблемы")
-            for p in probs:
-                self._problem_row(inner, p)
+            self._problem_rows(inner, probs)
         if delayed:
             self._section(inner, "Задерживаются (это не ошибка)")
-            for p in delayed:
-                self._problem_row(inner, p)
+            self._problem_rows(inner, delayed)
 
         self._section(inner, "Новые данные за неделю")
         ups = overview.recent_updates(cfg, store)
@@ -110,6 +109,15 @@ class OverviewTab(ttk.Frame):
     @staticmethod
     def _section(parent, title):
         ttk.Label(parent, text=title, style="Title.TLabel").pack(anchor="w", pady=(14, 4))
+
+    MAX_ROWS = 40
+
+    def _problem_rows(self, parent, items):
+        for p in items[:self.MAX_ROWS]:
+            self._problem_row(parent, p)
+        if len(items) > self.MAX_ROWS:
+            ttk.Label(parent, text=f"…и ещё {len(items) - self.MAX_ROWS} — все на вкладке «Мои показатели».",
+                      style="Muted.TLabel").pack(anchor="w")
 
     def _problem_row(self, parent, p):
         row = ttk.Frame(parent, padding=(0, 3))
@@ -143,29 +151,46 @@ def send_claude(app, job_id):
 
 
 def review_quarantine(app, qid, job):
+    """Отложенные данные показателя. Если отложенных загрузок несколько, решение касается всех сразу."""
     import json
+    MAX_REASONS, MAX_ROWS = 12, 2000
     w = tk.Toplevel(app.root)
     w.title(f"Проверьте данные: {job['name']}")
-    w.geometry("820x520")
-    q = app.store.q1("SELECT * FROM quarantine WHERE id=?", (qid,))
+    w.geometry("820x560")
+    qids = [r["id"] for r in app.store.pending_quarantine(job["id"])] or [qid]
+    q = app.store.q1("SELECT * FROM quarantine WHERE id=?", (qids[-1],))
     reasons = json.loads(q["reasons"] or "[]") if q else []
     ttk.Label(w, text="Новые данные отложены, потому что:", style="Title.TLabel", padding=(10, 10, 10, 2)).pack(anchor="w")
-    for r in reasons:
-        ttk.Label(w, text="• " + r, padding=(16, 0)).pack(anchor="w")
+    for r in reasons[:MAX_REASONS]:
+        ttk.Label(w, text="• " + short(r, 400), padding=(16, 0), wraplength=780, justify="left").pack(anchor="w")
+    if len(reasons) > MAX_REASONS:
+        ttk.Label(w, text=f"…и ещё {len(reasons) - MAX_REASONS} замечаний", padding=(16, 0),
+                  style="Muted.TLabel").pack(anchor="w")
+    if len(qids) > 1:
+        ttk.Label(w, text=f"Отложенных загрузок: {len(qids)} — решение применится ко всем.", padding=(16, 4),
+                  style="Muted.TLabel").pack(anchor="w")
     frame, tree = W.tree_with_scroll(w, ("name", "label", "old", "new"), ("Ряд", "Период", "Было", "Стало"),
                                      {"name": 380, "label": 90, "old": 110, "new": 110})
     frame.pack(fill="both", expand=True, padx=10, pady=8)
-    for r in app.store.quarantine_rows(qid):
-        cur = app.store.current(r["code"]).get(r["period_end"])
-        tree.insert("", "end", values=(r["name"], r["period_label"], fmt(cur[0]) if cur else "—", fmt(r["value"])))
+    shown = 0
+    for one in qids:
+        for r in app.store.quarantine_rows(one):
+            if shown >= MAX_ROWS:
+                break
+            cur = app.store.current(r["code"]).get(r["period_end"])
+            tree.insert("", "end", values=(r["name"], r["period_label"], fmt(cur[0]) if cur else "—", fmt(r["value"])))
+            shown += 1
+    if shown >= MAX_ROWS:
+        ttk.Label(w, text=f"Показаны первые {MAX_ROWS} значений.", padding=(10, 0), style="Muted.TLabel").pack(anchor="w")
     bar = ttk.Frame(w, padding=10)
     bar.pack(fill="x")
 
     def decide(accept):
-        if accept:
-            app.store.accept_quarantine(qid)
-        else:
-            app.store.reject_quarantine(qid)
+        for one in qids:
+            if accept:
+                app.store.accept_quarantine(one)
+            else:
+                app.store.reject_quarantine(one)
         if not app.store.pending_quarantine(job["id"]):
             app.store.set_state(job["id"], status="updated" if accept else "unchanged", category=None,
                                 message="Данные приняты" if accept else "Данные отклонены")

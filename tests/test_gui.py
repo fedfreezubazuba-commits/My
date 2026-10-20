@@ -241,3 +241,25 @@ def test_schedule_box_weekly_time_and_release(app):
     w.sched_box.work_n.set("5")
     w.save()
     assert app.cfg.job(job["id"])["schedule"] == "workday:5@10:30"
+
+
+def test_overview_survives_huge_problem_list(app):
+    """Тысячи замечаний (как у большого показателя ЕМИСС) не должны вешать окно."""
+    import time as T
+    huge = "; ".join(f"Сменились единицы у «ряд {i}»: было «Тонна;^т», стало «Тонна; т»" for i in range(3000))
+    for i in range(120):
+        j = app.cfg.add_job("cbr", f"Показатель {i}", {"category": 18, "indicators": [37]})
+        run = app.store.start_run(j["id"])
+        for _ in range(3):
+            app.store.new_quarantine(j["id"], run, [huge])
+        app.store.set_state(j["id"], status="quarantine", message=huge)
+    t = T.time()
+    app.overview.refresh()
+    pump(app, 0.3)
+    assert T.time() - t < 10
+    texts = [w.cget("text") for w in app.overview.body.inner.winfo_children() if w.winfo_class() == "TLabel"]
+    assert any("ещё 80" in x for x in texts)
+    from hub.gui.tab_overview import review_quarantine
+    first = app.cfg.jobs()[0]
+    review_quarantine(app, app.store.pending_quarantine(first["id"])[-1]["id"], first)
+    pump(app, 0.2)

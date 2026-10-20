@@ -108,6 +108,7 @@ class HubApp:
     def _on_tab(self):
         tab = self.nb.nametowidget(self.nb.select())
         if hasattr(tab, "refresh"):
+            self._stage(f"заполняю вкладку «{self.nb.tab(tab, 'text').strip()}»")
             tab.refresh()
 
     def show(self, tab):

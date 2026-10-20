@@ -15,6 +15,12 @@ class Problem:
         self.qid = qid
 
 
+def short(text, limit=300) -> str:
+    """Длинный текст (например, замечания по тысячам рядов) не должен вешать окно."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
 def problems(cfg, store) -> list[Problem]:
     out = []
     states = store.states()
@@ -24,8 +30,12 @@ def problems(cfg, store) -> list[Problem]:
         if s not in ST.PROBLEM:
             continue
         if s == "quarantine":
-            for q in store.pending_quarantine(job["id"]):
-                out.append(Problem(job, st, "review", "Посмотреть", st.get("message") or "Данные отложены", q["id"]))
+            pend = store.pending_quarantine(job["id"])
+            if pend:       # одна строка на показатель, даже если отложенных загрузок несколько
+                text = short(st.get("message") or "Данные отложены")
+                if len(pend) > 1:
+                    text += f" (отложено загрузок: {len(pend)})"
+                out.append(Problem(job, st, "review", "Посмотреть", text, pend[-1]["id"]))
             continue
         if s == "delayed":
             out.append(Problem(job, st, None, "", "Источник опаздывает с публикацией. Хаб проверяет каждый день."))
@@ -36,7 +46,7 @@ def problems(cfg, store) -> list[Problem]:
                  "browser": "Открыть в браузере", "review": "Посмотреть"}.get(action, "")
         if s == "retry":
             label, action = "Повторить сейчас", "retry"
-        out.append(Problem(job, st, action, label, f"{st.get('message') or what}. {todo}."))
+        out.append(Problem(job, st, action, label, short(f"{st.get('message') or what}. {todo}.")))
     return out
 
 

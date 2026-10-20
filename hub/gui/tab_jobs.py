@@ -6,6 +6,7 @@ from tkinter import messagebox, simpledialog, ttk
 from .. import sources
 from ..core import schedule as S
 from ..core import status as ST
+from ..core.overview import short
 from ..core.base_fmt import fmt, fmt_date
 from ..core.periods import PERIODICITY_RU
 from ..excel import exports, formulas
@@ -282,7 +283,7 @@ class HistoryWindow(tk.Toplevel):
         self.geometry("1000x620")
         st = app.store.state(job_id)
         info = (f"Расписание: {S.human(job.get('schedule'))}.  Статус: {ST.word(ST.effective(job, st))}. "
-                f"{st.get('message') or ''}")
+                f"{short(st.get('message') or '', 600)}")
         if st.get("release_next") or st.get("release_note"):
             info += ("\nИсточник о сроках: " + (f"следующее обновление {S.fmt_moment(st['release_next'])}. "
                                                  if st.get("release_next") else "") + (st.get("release_note") or ""))
@@ -291,7 +292,7 @@ class HistoryWindow(tk.Toplevel):
                 ("…" if len(job["release_dates"]) > 6 else "")
         ttk.Label(self, text=info, padding=10, wraplength=960, justify="left").pack(fill="x")
         if st.get("warnings"):
-            ttk.Label(self, text="Замечания: " + st["warnings"], padding=(10, 0), style="yellow.TLabel",
+            ttk.Label(self, text="Замечания: " + short(st["warnings"], 600), padding=(10, 0), style="yellow.TLabel",
                       wraplength=960).pack(fill="x")
         pw = ttk.PanedWindow(self, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=10, pady=6)
@@ -311,7 +312,7 @@ class HistoryWindow(tk.Toplevel):
         rf2.pack(fill="x", padx=10, pady=(0, 10))
         for r in app.store.runs(job_id, 30):
             runs.insert("", "end", values=(fmt_date(r["started"]), ST.word(r["status"]), r["new_periods"] or 0,
-                                           r["revisions"] or 0, r["message"] or ""))
+                                           r["revisions"] or 0, short(r["message"] or "", 300)))
         kids = self.series.get_children()
         if kids:
             self.series.selection_set(kids[0])

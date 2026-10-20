@@ -8,6 +8,22 @@ import math
 from .base_fmt import fmt
 
 
+SHOW = 3      # сколько примеров показывать, если замечание касается многих рядов
+
+
+def unit_key(unit) -> str:
+    """Единицы без оформления: «Тонна;^метрическая» и «Тонна; метрическая» — одно и то же."""
+    return " ".join(str(unit or "").replace("^", " ").replace(";", "; ").lower().split())
+
+
+def summary(what, items) -> str:
+    """Одно замечание на много рядов: «Сменились единицы у 1250 рядов, например: …»."""
+    if len(items) == 1:
+        return f"{what} у {items[0]}"
+    head = "; ".join(items[:SHOW])
+    return f"{what} у {len(items)} рядов, например: {head}" + ("…" if len(items) > SHOW else "")
+
+
 def run_checks(job, result, store, codes, today=None) -> list[str]:
     """Список проблем (понятным языком). Пустой список — всё в порядке.
 
@@ -45,14 +61,18 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
             problems.append(f"Исчезли ряды ({len(lost)}): {names}" + ("…" if len(lost) > 3 else ""))
 
     by_code = {r["code"]: r for r in known}
+    changed = []
     for s in result.series:
         code = codes.get(s.key)
         old = by_code.get(code)
-        if old is not None and (old["unit"] or "") and (s.unit or "") and old["unit"].strip() != s.unit.strip():
-            problems.append(f"Сменились единицы у «{s.name}»: было «{old['unit']}», стало «{s.unit}»")
+        if old is not None and unit_key(old["unit"]) and unit_key(s.unit) and unit_key(old["unit"]) != unit_key(s.unit):
+            changed.append(f"«{s.name}»: было «{old['unit']}», стало «{s.unit}»")
+    if changed:
+        problems.append(summary("Сменились единицы", changed))
 
     jump = checks.get("max_jump_pct")
     if jump:
+        jumps = []
         for s in result.series:
             code = codes.get(s.key)
             if not code:
@@ -65,9 +85,10 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
             for o in newer:
                 pct = abs(o.value - prev) / abs(prev) * 100
                 if pct > float(jump):
-                    problems.append(f"Скачок {pct:.0f}% у «{s.name}»: было {fmt(prev)}, стало {fmt(o.value)}"
-                                    f" (порог {jump}%)")
+                    jumps.append(f"{pct:.0f}% у «{s.name}»: было {fmt(prev)}, стало {fmt(o.value)}")
                     break
+        if jumps:
+            problems.append(summary(f"Скачок больше {jump}%", jumps))
 
     prev_rows = state.get("fetch_rows") or 0       # сколько значений вернула прошлая загрузка
     min_ratio = float(checks.get("min_rows_ratio", 0.5))
