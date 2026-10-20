@@ -143,12 +143,15 @@ def test_codes():
 
 
 def test_formulas():
-    ru = dict(formulas.variants("CBR_18_37_m1_2", "ru"))
+    ru = dict(formulas.variants("CBR_18_37_m1_2", "ru", layout="wide"))
     assert "=ПРОСМОТРX($A10; Хаб[Дата]; Хаб[CBR_18_37_m1_2])" in ru.values()
     assert '=ПРОСМОТРX("CBR_18_37_m1_2"; Хаб_Ряды[Код]; Хаб_Ряды[Последнее значение])' in ru.values()
-    en = formulas.variants("X", "en")
+    en = formulas.variants("X", "en", layout="wide")
     assert en[0][1] == "=XLOOKUP($A10, Хаб[Дата], Хаб[X])"
     assert any("SUMIFS" in f for _, f in en) and any("INDEX" in f for _, f in en)
+    flat = formulas.variants("X", "ru")              # плоская таблица — по умолчанию
+    assert flat[0][1] == '=СУММЕСЛИМН(Хаб[Значение]; Хаб[Код]; "X"; Хаб[Дата]; $A10)'
+    assert all("Хаб[X]" not in f for _, f in flat)
 
 
 def test_packet_number_format():
@@ -271,5 +274,14 @@ def test_check_problems_are_grouped_and_units_normalized():
     from hub.core.checks import summary, unit_key
     assert unit_key("Тонна;^метрическая тонна (1000 кг)") == unit_key("Тонна; метрическая тонна (1000 кг)")
     assert unit_key("руб.") != unit_key("тыс. руб.")
+    assert unit_key("-") == unit_key("—") == ""
     many = summary("Сменились единицы", [f"«ряд {i}»" for i in range(5000)])
     assert "5000 рядов" in many and len(many) < 300
+
+
+def test_scheduler_next_run_parsing():
+    ru = "Папка: \\\nИмя узла: PC\nИмя задачи: \\Хаб данных — обновление\nВремя следующего запуска: 20.10.2026 10:45:00\n"
+    assert winsched.parse_next_run(ru) == "20.10.2026 10:45"
+    en = "TaskName: \\Хаб данных — обновление\nNext Run Time: 10/20/2026 1:45:00 PM\nStatus: Ready"
+    assert winsched.parse_next_run(en) == "20.10.2026 13:45"
+    assert winsched.parse_next_run("Next Run Time: N/A") is None

@@ -116,6 +116,9 @@ def sdmx_series(xml_bytes):
     return out
 
 
+VALUE_KIND = "Вид значения"
+PLAIN_KIND = "значение за период"        # у рядов без пояснения («нарастающим итогом…» и т.п.)
+
 CHUNK_CELLS = 20000      # примерно столько значений просим за один запрос (дальше размер подбирается сам)
 
 
@@ -268,6 +271,11 @@ class FedstatSource(Source):
         # download() снова читает страницу показателя — отдаём ему уже прочитанную
         orig = fs.indicator
         fs.indicator = lambda _id: info
+
+        def fresh_token():
+            """«CSRF блокировка»: токен со страницы устарел — читаем страницу заново (как делал исходный клиент)."""
+            new = orig(ind_id)
+            fs.indicator = lambda _id: new
         warnings = []
         partial = False
         try:
@@ -281,7 +289,7 @@ class FedstatSource(Source):
                 recent = [v for v in years if int(info["filters"][YEARS_FILTER]["values"][v].strip()[:4]) >= last.year - 1]
                 if recent and len(recent) < len(years):
                     years, partial = recent, True
-            parts = self._download_in_parts(fs, ind_id, info, select, years, params, ctx)
+            parts = self._download_in_parts(fs, ind_id, info, select, years, params, ctx, fresh_token)
         finally:
             fs.indicator = orig
         res = FetchResult(url=self.open_url(params), raw=parts[-1] if parts else b"", raw_ext="xml",
@@ -309,12 +317,26 @@ class FedstatSource(Source):
         today = (getattr(ctx, "now", None) or dt.datetime.now()).date() if ctx else dt.date.today()
         res.next_release, res.release_note = release_from_page(html, last, best, today)
 
-    def _download_in_parts(self, fs, ind_id, info, select, years, params, ctx):
+    def _download_in_parts(self, fs, ind_id, info, select, years, params, ctx, fresh_token=None):
         """Большие показатели — частями по годам. Размер части подбирается сам: при сбое части она
         делится пополам (вплоть до одного года), после удачи — следующая часть вдвое больше."""
+        csrf = {"left": 3}
+
+        def download(sel):
+            while True:
+                try:
+                    return fs.download(ind_id, "sdmx", sel)
+                except Exception as e:  # noqa: BLE001
+                    if "CSRF" not in str(e) or not fresh_token or csrf["left"] <= 0:
+                        raise
+                    csrf["left"] -= 1
+                    self.say(ctx, "ЕМИСС попросил обновить страницу показателя — обновляю и повторяю")
+                    time.sleep(getattr(fs, "pause", 2) * 2)
+                    fresh_token()
+
         if not years:
             self.say(ctx, f"ЕМИСС: выгружаю показатель {ind_id}")
-            return [fs.download(ind_id, "sdmx", select)]
+            return [download(select)]
         limit = int(params.get("chunk_cells") or CHUNK_CELLS)
         per_year = self.cells_per_year(info, select)
         size = max(1, min(len(years), limit // max(per_year, 1)))
@@ -326,7 +348,7 @@ class FedstatSource(Source):
                 self.say(ctx, f"ЕМИСС: показатель большой (≈{per_year * len(years):,} значений), загружаю частями: "
                               f"{label}".replace(",", " "))
             try:
-                xml = fs.download(ind_id, "sdmx", {**select, YEARS_FILTER: chunk})
+                xml = download({**select, YEARS_FILTER: chunk})
                 if b"<" not in xml[:200]:
                     raise StructureError("ЕМИСС вернул пустой ответ")
                 parts.append(xml)
@@ -383,7 +405,10 @@ class FedstatSource(Source):
                                                   if d in varying and d not in unit_dims]
                 if note and (len(kinds_seen) > 1 or kind in ("MC", "S", "SY")):
                     parts.append(note)
-                    dims.append(("Вид значения", note))
+                    dims.append((VALUE_KIND, note))
+                elif len(kinds_seen) > 1:
+                    # поле есть у всех рядов — иначе в выборке нельзя отметить «только обычные значения»
+                    dims.append((VALUE_KIND, PLAIN_KIND))
                 ei = clean(attrs.get("EI") or "")
                 unit = ei if ei not in ("", "-", "—") else (clean(key_names[unit_dims[0]]) if unit_dims else
                                                           clean(info.get("unit") or ""))

@@ -72,6 +72,9 @@ def _csv(rows, cols) -> bytes:
     return ("﻿" + buf.getvalue()).encode("utf-8")
 
 
+MISSING = "(не указано)"      # поле есть у других рядов показателя, а у этого нет
+
+
 def series_fields(row) -> dict:
     """Поля ряда для выборок: разрезы + «Периодичность»."""
     d = dict(series_dims(row))
@@ -79,8 +82,17 @@ def series_fields(row) -> dict:
     return d
 
 
+def field_value(fields: dict, name):
+    """Значение поля; у рядов ЕМИСС, загруженных до версии 0.5.4, «Вид значения» был только у
+    «нарастающим итогом» — остальные считаем обычными значениями за период."""
+    if name in fields:
+        return fields[name]
+    from ..sources.fedstat import PLAIN_KIND, VALUE_KIND
+    return PLAIN_KIND if name == VALUE_KIND else MISSING
+
+
 def matches(fields: dict, filters: dict) -> bool:
-    return all(fields.get(k) in set(v) for k, v in (filters or {}).items())
+    return all(field_value(fields, k) in set(v) for k, v in (filters or {}).items())
 
 
 def selection_codes(store, sel) -> list[str]:
@@ -117,6 +129,12 @@ def model_plan(cfg, store, model):
             add(selection_codes(store, sel), None if win == ("", "") else win)
     add([c for c in model.get("series", []) if store.series(c)], None)
     excl = set(model.get("exclude", []))
+    if excl and not model.get("fix_054"):
+        # в 0.5.3 «Убрать» у «Отдельных рядов» заносил ряды в исключения, и они пропадали из выборок
+        chosen = {c for sel in model.get("selections", []) for c in selection_codes(store, sel)}
+        cfg.unexclude(model["name"], chosen)
+        cfg.update_model(model["name"], fix_054=True)
+        excl -= chosen
     wanted = [c for c in dict.fromkeys(wanted) if c not in excl]
     return store.sync_subscriptions(model["name"], wanted), windows
 
@@ -133,17 +151,40 @@ def in_window(period_end: str, window) -> bool:
     return (not a or period_end >= a) and (not b or period_end <= b)
 
 
-def build(store, codes, windows=None):
-    """(байты посылки, байты справочника) для списка кодов в порядке столбцов.
+FLAT_HEAD = ["Дата", "Период", "Показатель"]
+FLAT_TAIL = ["Периодичность", "Единицы", "Источник", "Код", "Обновлено", "Значение"]
+EXCEL_ROWS = 1_048_575       # больше строк лист Excel не вмещает
+
+
+def table_path(packet: Path) -> Path:
+    """Плоская таблица (строка на значение со всеми полями) — рядом с посылкой."""
+    return packet.with_name(packet.stem + " — таблица.csv")
+
+
+def flat_columns(rows_dims) -> list:
+    """Столбцы полей плоской таблицы: все поля рядов модели по порядку появления (без «Показатель»).
+    Поле с именем служебного столбца получает приписку «(поле)»."""
+    names = []
+    for dims in rows_dims:
+        for k, _v in dims[1:] if dims and dims[0][0] == "Показатель" else dims:
+            k = k if k not in FLAT_HEAD + FLAT_TAIL else f"{k} (поле)"
+            if k not in names:
+                names.append(k)
+    return names
+
+
+def build(store, codes, windows=None, flat=False):
+    """(байты посылки, байты справочника[, байты плоской таблицы]) для списка кодов в порядке столбцов.
 
     windows — {код: (с, по)}: модель получает только этот период ряда (выжимка)."""
     windows = windows or {}
-    rows, srows = [], []
+    rows, srows, picked = [], [], []
     for pos, code in enumerate(codes, 1):
         s = store.series(code)
         if not s:
             continue
         obs = [o for o in store.current_rows(code) if in_window(o["period_end"], windows.get(code))]
+        picked.append((s, obs))
         for o in obs:
             rows.append([o["period_end"], o["period_label"] or "", code, s["name"] or "", s["unit"] or "", num(o["value"])])
         last = obs[-1] if obs else None
@@ -154,7 +195,28 @@ def build(store, codes, windows=None):
                       last["period_end"] if last else "", num(last["value"]) if last else "",
                       num(prev["value"]) if prev else "", src, updated, s["date_rule"] or "", str(pos)]
                      + cut_values(series_dims(s)))
-    return _csv(rows, PACKET_COLS), _csv(srows, SERIES_COLS)
+    if not flat:
+        return _csv(rows, PACKET_COLS), _csv(srows, SERIES_COLS)
+    return _csv(rows, PACKET_COLS), _csv(srows, SERIES_COLS), flat_table(picked)
+
+
+def flat_table(picked) -> bytes:
+    """Строка на значение: Дата, Период, Показатель, поля ряда, Периодичность, Единицы, Источник, Код,
+    Обновлено, Значение."""
+    dims_of = [series_dims(s) for s, _obs in picked]
+    cols = flat_columns(dims_of)
+    out = []
+    for (s, obs), dims in zip(picked, dims_of):
+        head = dims[0][1] if dims and dims[0][0] == "Показатель" else (s["name"] or "")
+        vals = {(k if k not in FLAT_HEAD + FLAT_TAIL else f"{k} (поле)"): v
+                for k, v in (dims[1:] if dims and dims[0][0] == "Показатель" else dims)}
+        fields = [vals.get(c, "") for c in cols]
+        per = P.PERIODICITY_RU.get(s["periodicity"], s["periodicity"] or "")
+        src = SOURCE_TITLES.get(s["source"], s["source"] or "")
+        for o in obs:
+            out.append([o["period_end"], o["period_label"] or "", head] + fields
+                       + [per, s["unit"] or "", src, s["code"], (o["fetched_at"] or "")[:10], num(o["value"])])
+    return _csv(out, FLAT_HEAD + cols + FLAT_TAIL)
 
 
 def cut_values(dims) -> list:
@@ -195,11 +257,12 @@ def rebuild(cfg, store, paths, models=None, log=None) -> dict:
         if not m.get("active", True):
             continue
         codes, windows = model_plan(cfg, store, m)
-        packet, series = build(store, codes, windows)
+        packet, series, table = build(store, codes, windows, flat=True)
         path = packet_path(paths, m["name"])
         try:
             changed = write_if_changed(path, packet)
             changed_s = write_if_changed(series_path(path), series)
+            changed_t = write_if_changed(table_path(path), table)
         except FileBusy as e:
             out[m["name"]] = f"busy: {e}"
             store.set_model_state(m["name"], last_error=str(e))
@@ -211,9 +274,26 @@ def rebuild(cfg, store, paths, models=None, log=None) -> dict:
               "packet_hash": hashlib.sha1(packet).hexdigest()}
         if changed:
             kw["packet_changed_at"] = now
+        n_rows = table.count(b"\n") - 1
+        if n_rows > EXCEL_ROWS and layout(cfg, m) == "long":
+            kw["last_error"] = (f"В модели «{m['name']}» {n_rows:,} строк — больше, чем вмещает лист Excel. "
+                                "Сузьте выборку (меньше рядов или период короче).").replace(",", " ")
         store.set_model_state(m["name"], **kw)
-        out[m["name"]] = "changed" if (changed or changed_s) else "same"
+        out[m["name"]] = "changed" if (changed or changed_s or changed_t) else "same"
     return out
+
+
+LAYOUTS = {"long": "строки: каждое значение — отдельная строка со всеми полями",
+           "wide": "столбцы: каждый ряд — отдельный столбец, даты по строкам"}
+
+
+def layout(cfg, model) -> str:
+    """Вид таблицы «Хаб» в модели: long (плоская, по умолчанию) или wide (ряды по столбцам)."""
+    model = model or {}
+    if not model.get("layout") and model.get("connected_method"):
+        return "wide"          # подключена до версии 0.5.4 — в книге таблица по столбцам
+    lay = model.get("layout") or cfg.settings().get("table_layout") or "long"
+    return lay if lay in LAYOUTS else "long"
 
 
 def wide(store, codes):

@@ -14,8 +14,8 @@ from ..core.errors import FileBusy, HubError, human_message
 from . import formulas, mcode, packet
 
 
-def manual_instructions(model_name, packet_path) -> str:
-    q = dict(mcode.queries(packet_path))
+def manual_instructions(model_name, packet_path, layout="long") -> str:
+    q = dict(mcode.queries(packet_path, layout=layout))
     return f"""Как подключить модель «{model_name}» к Хабу вручную
 =====================================================
 
@@ -38,7 +38,7 @@ def manual_instructions(model_name, packet_path) -> str:
 8. Сохраните модель. Дальше данные обновляются кнопкой «Данные → Обновить всё»
    и при каждом открытии файла.
 
-Пример формулы: {formulas.main_formula("КОД_РЯДА")}
+Пример формулы: {formulas.main_formula("КОД_РЯДА", layout=layout)}
 
 --- Хаб_Посылка -------------------------------------------------
 {q["Хаб_Посылка"]}
@@ -60,10 +60,11 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
     else:
         cfg.update_model(name, path=str(model_path), active=True)
     model = cfg.model(name)
+    lay = packet.layout(cfg, model)
     packet.rebuild(cfg, store, paths, models=[model], log=None)
     ppath = packet.packet_path(paths, name)
     result = {"ok": False, "method": None, "files": [], "packet": str(ppath),
-              "formula": formulas.main_formula("КОД_РЯДА", cfg.settings().get("formula_locale", "ru"))}
+              "formula": formulas.main_formula("КОД_РЯДА", cfg.settings().get("formula_locale", "ru"), lay)}
     errors = []
     load_hint = ("Чтобы закончить, откройте модель: Данные → Запросы и подключения → правой кнопкой по «Хаб» → "
                  "«Загрузить в…» → Таблица → «Имеющийся лист» → лист «Хаб», ячейка A1 → ОК. То же для «Хаб_Ряды» "
@@ -71,7 +72,7 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
     if use_com:
         try:
             prefer = cfg.settings().get("excel_way") or None
-            r = com_connect().connect_model(model_path, ppath, paths.model_backups, log=log, prefer=prefer)
+            r = com_connect().connect_model(model_path, ppath, paths.model_backups, log=log, prefer=prefer, layout=lay)
             if r.get("way"):
                 cfg.update_settings(excel_way=r["way"])     # в следующий раз начнём с того, что сработало
             if r.get("partial"):
@@ -82,7 +83,8 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
                 result.update(ok=True, method="com", backup=r["backup"],
                               message=f"Модель «{name}» подключена: добавлен лист «Хаб» с таблицами Хаб и Хаб_Ряды. "
                                       f"Резервная копия: {r['backup']}")
-            cfg.update_model(name, connected_method=result["method"], connected=dt.date.today().isoformat())
+            cfg.update_model(name, connected_method=result["method"], connected=dt.date.today().isoformat(),
+                             layout=lay)
             return result
         except FileBusy:
             raise
@@ -91,7 +93,7 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
             log(f"Подключение через Excel не удалось: {e!r}\n{getattr(e, 'detail', '')}")
         try:
             target = paths.packets / f"{packet.safe_name(name)} — подключение.xlsx"
-            com_connect().make_connection_file(target, ppath, log=log)
+            com_connect().make_connection_file(target, ppath, log=log, layout=lay)
             result["files"].append(str(target))
             result.update(ok=True, method="file",
                           message=(f"Не удалось изменить модель автоматически ({errors[-1]}). Модель не изменена. "
@@ -102,7 +104,7 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
             errors.append(human_message(e))
             log(f"Файл-подключение не создан: {e!r}\n{getattr(e, 'detail', '')}")
     instr = paths.packets / f"{packet.safe_name(name)} — как подключить вручную.txt"
-    instr.write_text(manual_instructions(name, ppath), encoding="utf-8-sig")
+    instr.write_text(manual_instructions(name, ppath, lay), encoding="utf-8-sig")
     result["files"].append(str(instr))
     if not result["ok"]:
         reason = errors[0] if errors else "это не Windows"

@@ -31,11 +31,17 @@ def query_names(ascii_names=False) -> dict:
     return dict(ASCII_NAMES) if ascii_names else {k: k for k in ASCII_NAMES}
 
 
-def queries(packet_path, ascii_names=False) -> list[tuple[str, str]]:
+# вид таблицы «Хаб»: long — строка на значение (по умолчанию), wide — ряд на столбец
+HUB_TEMPLATE = {"long": "Хаб_строки.m", "wide": "Хаб.m"}
+
+
+def queries(packet_path, ascii_names=False, layout="long") -> list[tuple[str, str]]:
     """[(имя запроса, M-код)] для подключения модели."""
     names = query_names(ascii_names)
     out = []
     for name, f in QUERIES:
+        if name == "Хаб":
+            f = HUB_TEMPLATE.get(layout, HUB_TEMPLATE["long"])
         code = render(f, packet_path)
         if ascii_names:
             code = code.replace("Хаб_Посылка", names["Хаб_Посылка"])

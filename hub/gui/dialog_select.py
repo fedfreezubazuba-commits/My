@@ -159,9 +159,13 @@ class SelectionDialog(tk.Toplevel):
         for tab in self.nb.tabs():
             self.nb.forget(tab)
         self.fields.clear()
+        names = []                  # поля всех рядов: у части рядов поля может не быть
+        for _r, f in self.rows:
+            names += [k for k in f if k not in names]
         values = {}
         for _r, f in self.rows:
-            for k, v in f.items():
+            for k in names:
+                v = packet.field_value(f, k)
                 values.setdefault(k, [])
                 if v not in values[k]:
                     values[k].append(v)
@@ -214,7 +218,7 @@ class SelectionDialog(tk.Toplevel):
         points = sum(v[0] for v in stats.values())
         for r in hit[:300]:
             f = packet.series_fields(r)
-            label = " | ".join(str(v) for k, v in f.items() if k in self.fields) or r["name"]
+            label = " | ".join(str(packet.field_value(f, k)) for k in self.fields) or r["name"]
             st = stats.get(r["code"])
             last = f"{fmt(st[1])} за {st[2]}" if st else "нет данных в периоде"
             self.preview.insert("", "end", values=(label, last))
@@ -253,6 +257,7 @@ class SelectionDialog(tk.Toplevel):
         sel = {"id": (self.edit or {}).get("id"), "job": self.job["id"], "name": self.name.get().strip()
                or self.auto_name(flt), "filters": flt, "from": a, "to": b}
         self.app.cfg.save_selection(self.model_name, sel)
+        self.app.cfg.unexclude(self.model_name, [r["code"] for r, f in self.rows if packet.matches(f, flt)])
         self.close()
         if self.on_done:
             self.on_done()

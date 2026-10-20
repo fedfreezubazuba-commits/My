@@ -13,7 +13,8 @@ SHOW = 3      # сколько примеров показывать, если �
 
 def unit_key(unit) -> str:
     """Единицы без оформления: «Тонна;^метрическая» и «Тонна; метрическая» — одно и то же."""
-    return " ".join(str(unit or "").replace("^", " ").replace(";", "; ").lower().split())
+    u = " ".join(str(unit or "").replace("^", " ").replace(";", "; ").lower().split())
+    return "" if u.strip(" -–—.") == "" else u      # «-» — единицы не были указаны, это не смена
 
 
 def summary(what, items) -> str:

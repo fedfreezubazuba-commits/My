@@ -263,3 +263,44 @@ def test_overview_survives_huge_problem_list(app):
     first = app.cfg.jobs()[0]
     review_quarantine(app, app.store.pending_quarantine(first["id"])[-1]["id"], first)
     pump(app, 0.2)
+
+
+def test_remove_thousands_of_loose_series_fast(app, fakes):
+    """«Убрать» у «Отдельных рядов» на тысячи рядов: одна запись файла, ряды выборки не теряются."""
+    import time as T
+    job = app.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883", "1558900"]}})
+    r = app.runner()
+    r.run(force=True)
+    r.close()
+    app.cfg.add_model("М", str(app.paths.root / "М.xlsx"))
+    codes = [s["code"] for s in app.store.series_of_job(job["id"])]
+    app.cfg.save_selection("М", {"job": job["id"], "name": "Выборка", "filters": {}, "from": "", "to": ""})
+    models = app.cfg.models()
+    models[0]["series"] = codes + [f"OLD_{i}" for i in range(3000)]
+    app.cfg.save_models(models)
+    app.models.refresh()
+    app.models.tree.selection_set("М")
+    app.models.show_series()
+    loose = next(g for g, k in app.models.groups.items() if k[0] == "codes")
+    assert "3004 рядов" in app.models.series.item(loose, "text")
+    app.models.series.selection_set(loose)
+    t = T.time()
+    app.models.remove_series()
+    assert T.time() - t < 3
+    m = app.cfg.model("М")
+    assert m["series"] == [] and m["exclude"] == []
+    assert pump(app, 10, until=lambda: not app.tasks)
+    assert app.store.subscribed("М") == codes      # ряды выборки на месте
+
+
+
+def test_layout_dialog_saves_choice(app):
+    from hub.gui.tab_models import LayoutDialog
+    app.cfg.add_model("М", str(app.paths.root / "М.xlsx"))
+    app.models.refresh()
+    d = LayoutDialog(app.models, app.cfg.model("М"))
+    assert d.var.get() == "long"
+    d.var.set("wide")
+    d.apply()
+    assert app.cfg.model("М")["layout"] == "wide"
+    assert any("Сохранено" in str(a) for _fn, a in app.shown)

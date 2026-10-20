@@ -44,9 +44,14 @@ class SettingsTab(ttk.Frame):
         row("Язык формул", lf)
 
         self.auto = tk.BooleanVar()
-        self.auto_chk = ttk.Checkbutton(g, text=f"Обновлять в фоне ({winsched.EVERY_TEXT}) и при входе в Windows",
+        af = ttk.Frame(g)
+        self.auto_chk = ttk.Checkbutton(af, text=f"Обновлять в фоне ({winsched.EVERY_TEXT}) и при входе в Windows",
                                         variable=self.auto, command=self.toggle_auto)
-        row("Автообновление", self.auto_chk)
+        self.auto_chk.pack(side="left")
+        ttk.Button(af, text="Открыть Планировщик заданий", command=winsched.open_scheduler).pack(side="left", padx=8)
+        row("Автообновление", af,
+            f"Задача называется «{winsched.TASK_NAME}» и лежит прямо в «Библиотеке планировщика заданий» "
+            "(слева вверху списка). Если её не видно — нажмите F5.")
 
         for key, label, hint in (
                 ("notifications", "Показывать уведомления Windows", "Только когда есть новые данные в моделях или проблемы."),

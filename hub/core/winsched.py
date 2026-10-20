@@ -111,6 +111,36 @@ def enable() -> tuple[bool, str]:
     return True, f"Автообновление включено: {EVERY_TEXT} и при входе в Windows"
 
 
+def parse_next_run(text) -> str | None:
+    """Время следующего запуска из вывода «schtasks /Query /FO LIST» (подписи зависят от языка Windows,
+    поэтому берём первую дату со временем)."""
+    import re
+    m = re.search(r"(\d{1,2})([./])(\d{1,2})[./](\d{4}),?\s+(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?", text or "")
+    if not m:
+        return None
+    a, sep, b, y, h, mi, ampm = m.groups()
+    day, mon = (int(b), int(a)) if sep == "/" else (int(a), int(b))     # 10/20/2026 — американский порядок
+    h = int(h) % 12 + (12 if ampm and ampm.lower() == "pm" else 0) if ampm else int(h)
+    return f"{day:02d}.{mon:02d}.{y} {h:02d}:{mi}"
+
+
+def status() -> tuple[bool | None, str | None]:
+    """(есть ли задача, время следующего запуска «ДД.ММ.ГГГГ ЧЧ:ММ» или None); (None, None) — не Windows."""
+    if not IS_WINDOWS:
+        return None, None
+    r = _run(["schtasks", "/Query", "/TN", TASK_NAME, "/FO", "LIST"])
+    if r.returncode != 0:
+        return False, None
+    return True, parse_next_run(r.stdout)
+
+
+def open_scheduler():
+    """Открыть «Планировщик заданий» Windows."""
+    if IS_WINDOWS:
+        import os
+        os.startfile("taskschd.msc")       # noqa: S606
+
+
 def upgrade() -> bool:
     """Задача, созданная прежней версией (раз в час), пересоздаётся с новым интервалом."""
     if not IS_WINDOWS:

@@ -228,6 +228,8 @@ class FormulaWindow(tk.Toplevel):
     def __init__(self, app, codes, model=None):
         super().__init__(app.root)
         self.app = app
+        from ..excel.packet import layout
+        self.layout = layout(app.cfg, model)
         self.title("Формула для модели")
         self.geometry("900x520")
         if not codes:
@@ -261,7 +263,7 @@ class FormulaWindow(tk.Toplevel):
         for w in self.body.winfo_children():
             w.destroy()
         code = next(c for c, t in self.items if t == self.code.get())
-        for title, f in formulas.variants(code, self.locale.get()):
+        for title, f in formulas.variants(code, self.locale.get(), layout=self.layout):
             ttk.Label(self.body, text=title, style="Muted.TLabel").pack(anchor="w", pady=(6, 0))
             row = ttk.Frame(self.body)
             row.pack(fill="x")

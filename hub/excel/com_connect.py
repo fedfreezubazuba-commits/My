@@ -81,14 +81,14 @@ def _excel(log):
     return xl
 
 
-def _add_queries(wb, packet_path, log, ascii_names=False):
+def _add_queries(wb, packet_path, log, ascii_names=False, layout="long"):
     """Добавить (или обновить) три запроса хаба. Запросы другого набора имён удаляются."""
     other = set(mcode.query_names(not ascii_names).values()) - set(mcode.query_names(ascii_names).values())
     for q in list(wb.Queries):
         if q.Name in other:
             log(f"Удаляю запрос {q.Name} (другой набор имён)")
             q.Delete()
-    for name, code in mcode.queries(packet_path, ascii_names):
+    for name, code in mcode.queries(packet_path, ascii_names, layout):
         existing = None
         for q in wb.Queries:
             if q.Name == name:
@@ -288,7 +288,7 @@ def _try_ways(ws, query_name, cell, log, ways):
     return None, None, errors
 
 
-def _load_tables(wb, ws, packet_path, log, prefer=None):
+def _load_tables(wb, ws, packet_path, log, prefer=None, layout="long"):
     """Вывести запросы Хаб и Хаб_Ряды таблицами на лист. Перебирает окружения и способы;
     возвращает {'visible', 'ascii', 'way'} того, что сработало (чтобы в следующий раз начать с него)."""
     hub_lo = _existing_table(ws, "Хаб")
@@ -315,7 +315,7 @@ def _load_tables(wb, ws, packet_path, log, prefer=None):
         for visible, ascii_names in variants:
             log(f"Пробую: {variant_title(visible, ascii_names)}")
             _set_visible(wb, visible, log)
-            _add_queries(wb, packet_path, log, ascii_names)
+            _add_queries(wb, packet_path, log, ascii_names, layout)
             names = mcode.query_names(ascii_names)
             lo, way, errors = _try_ways(ws, names["Хаб"], "A1", log, ways)
             all_errors += errors
@@ -335,7 +335,7 @@ def _load_tables(wb, ws, packet_path, log, prefer=None):
     finally:
         _set_visible(wb, False, log)
     # ничего не сработало: оставляем запросы с русскими именами — по ним написана инструкция
-    _add_queries(wb, packet_path, log, False)
+    _add_queries(wb, packet_path, log, False, layout)
     raise StepError("создать таблицу Хаб", "; ".join(all_errors[-5:]))
 
 
@@ -357,13 +357,13 @@ def _step(name, fn, *args, log):
         raise StepError(name, e)
 
 
-def _fill(wb, packet_path, log, prefer=None):
-    _step("Добавляю запросы Power Query", _add_queries, wb, packet_path, log, log=log)
+def _fill(wb, packet_path, log, prefer=None, layout="long"):
+    _step("Добавляю запросы Power Query", _add_queries, wb, packet_path, log, False, layout, log=log)
     ws = _step("Готовлю лист «Хаб»", _sheet, wb, log, log=log)
-    return ws, _load_tables(wb, ws, packet_path, log, prefer)
+    return ws, _load_tables(wb, ws, packet_path, log, prefer, layout)
 
 
-def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None) -> dict:
+def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None, layout="long") -> dict:
     """Подключить модель. Возвращает {'backup', 'steps', 'partial', 'way'}.
 
     partial=True — запросы добавлены и модель сохранена, но таблицы на лист загрузить не удалось:
@@ -390,7 +390,7 @@ def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None) 
     try:
         wb = _step(f"Открываю модель {model_path.name}", lambda: xl.Workbooks.Open(str(model_path), 0, False), log=say)
         try:
-            _ws, way = _fill(wb, packet_path, say, prefer)
+            _ws, way = _fill(wb, packet_path, say, prefer, layout)
         except StepError as e:
             if not e.step.startswith(("создать таблицу", "обновить таблицу")):
                 raise
@@ -512,7 +512,7 @@ def diagnose(packet_path, log=print) -> list[str]:
     return out
 
 
-def make_connection_file(target: Path, packet_path, log=print) -> Path:
+def make_connection_file(target: Path, packet_path, log=print, layout="long") -> Path:
     """Запасной путь: отдельная книга «<модель> — подключение.xlsx» с листом «Хаб» и запросами."""
     target = Path(target)
     xl = _excel(log)
@@ -520,7 +520,7 @@ def make_connection_file(target: Path, packet_path, log=print) -> Path:
     try:
         wb = xl.Workbooks.Add()
         try:
-            _fill(wb, packet_path, log)
+            _fill(wb, packet_path, log, None, layout)
         except StepError as e:
             if not e.step.startswith(("создать таблицу", "обновить таблицу")):
                 raise

@@ -244,16 +244,32 @@ class Config:
             self.save_models(models)
 
     def unsubscribe_code(self, model_name, code):
+        self.unsubscribe_codes(model_name, [code], exclude=True)
+
+    def unsubscribe_codes(self, model_name, codes, exclude=False):
+        """Убрать ряды из модели одной записью файла (рядов могут быть тысячи).
+        exclude=True — ряд не отдавать, даже если он входит в выборку или «весь показатель»."""
+        drop = set(codes)
         with _lock:
             models = self.models()
             m = next((x for x in models if x["name"] == model_name), None)
             if not m:
                 raise KeyError(model_name)
-            if code in m["series"]:
-                m["series"].remove(code)
-            if code not in m["exclude"]:
-                m["exclude"].append(code)
+            m["series"] = [c for c in m["series"] if c not in drop]
+            if exclude:
+                have = set(m["exclude"])
+                m["exclude"] += [c for c in dict.fromkeys(codes) if c not in have]
             self.save_models(models)
+
+    def unexclude(self, model_name, codes):
+        """Снова отдавать ряды (например, их явно выбрали в выборке)."""
+        back = set(codes)
+        with _lock:
+            models = self.models()
+            m = next((x for x in models if x["name"] == model_name), None)
+            if m and back & set(m.get("exclude", [])):
+                m["exclude"] = [c for c in m["exclude"] if c not in back]
+                self.save_models(models)
 
     # --- выборки: какие ряды показателя и за какой период получает модель ---------
     def save_selection(self, model_name, sel: dict) -> dict:

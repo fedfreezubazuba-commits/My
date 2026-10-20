@@ -23,6 +23,7 @@ class ModelsTab(ttk.Frame):
         more = ttk.Menubutton(bar, text="Ещё ▾")
         menu = tk.Menu(more, tearoff=False)
         for text, cmd in (("Открыть модель", lambda: self.open_model()), ("Открыть файл с данными", self.open_packet),
+                          ("Вид таблицы «Хаб»…", self.choose_layout),
                           ("Проверить связь с Excel", self.diagnose), ("Отключить модель", self.disconnect)):
             menu.add_command(label=text, command=cmd)
         more["menu"] = menu
@@ -105,27 +106,35 @@ class ModelsTab(ttk.Frame):
                 groups.append((("job", job_id), f"Весь показатель: {jobs[job_id]['name']}{note}", codes))
         if m.get("series"):
             groups.append((("codes", None), "Отдельные ряды", list(m["series"])))
-        total = 0
+        self.group_codes = {}
         for gi, (key, title, codes) in enumerate(groups):
-            codes = [c for c in codes if c not in excl]
-            total += len(codes)
+            if key[0] != "codes":
+                codes = [c for c in codes if c not in excl]
             giid = f"g{gi}"
             self.groups[giid] = key
+            self.group_codes[giid] = codes
             tree.insert("", "end", iid=giid, text=f"{title}  ({len(codes)} рядов)", open=len(codes) <= 30)
-            fields = {c: packet.series_fields(store.series(c)) for c in codes[:2000] if store.series(c)}
-            varying = {k for f in fields.values() for k in f
-                       if len({str(g.get(k)) for g in fields.values()}) > 1}
-            for c in codes[:2000]:
-                s = store.series(c)
+            shown = codes[:self.SHOW_ROWS]
+            rows = {c: store.series(c) for c in shown}
+            fields = {c: packet.series_fields(r) for c, r in rows.items() if r}
+            names = list(dict.fromkeys(k for f in fields.values() for k in f))
+            varying = [k for k in names if len({str(packet.field_value(f, k)) for f in fields.values()}) > 1]
+            for c in shown:
+                s = rows.get(c)
                 f = fields.get(c, {})
-                label = " | ".join(str(v) for k, v in f.items() if k in varying) or (s["name"] if s else c)
+                label = " | ".join(str(packet.field_value(f, k)) for k in varying) or (s["name"] if s else c)
                 last = store.last_values(c, 1)
                 iid = f"{giid}|{c}"
                 self.code_of[iid] = c
                 tree.insert(giid, "end", iid=iid, text=label, values=(
                     order.get(c, ""), c, last[0]["period_label"] if last else "—",
                     fmt(last[0]["value"]) if last else "—"))
+            if len(codes) > len(shown):
+                tree.insert(giid, "end", iid=f"{giid}|more", text=f"…и ещё {len(codes) - len(shown)} рядов "
+                            "(показаны первые)", values=("", "", "", ""))
         self.caption.configure(text=f"Что получает модель «{m['name']}» — рядов: {len(order)}")
+
+    SHOW_ROWS = 500          # в списке группы — не больше стольких рядов (иначе окно долго строится)
 
     def selected_codes(self):
         out = []
@@ -133,7 +142,7 @@ class ModelsTab(ttk.Frame):
             if iid in self.code_of:
                 out.append(self.code_of[iid])
             elif iid in self.groups:
-                out += [self.code_of[c] for c in self.series.get_children(iid)]
+                out += self.group_codes.get(iid, [])
         return list(dict.fromkeys(out))
 
     # --- действия ------------------------------------------------------------
@@ -147,10 +156,12 @@ class ModelsTab(ttk.Frame):
                                       initialvalue=Path(path).stem)
         if not name:
             return
+        self._run_connect(name, path)
+
+    def _run_connect(self, name, path):
         from ..excel.com_connect import is_file_open
         if is_file_open(Path(path)):
-            messagebox.showwarning("Модель открыта", "Закройте модель в Excel и нажмите «Подключить модель» ещё раз.",
-                                   parent=self)
+            messagebox.showwarning("Модель открыта", "Закройте модель в Excel и повторите.", parent=self)
             return
 
         def work():
@@ -172,6 +183,26 @@ class ModelsTab(ttk.Frame):
 
         self.app.bg(work, done, f"Подключаю модель «{name}» (Excel работает в фоне)…",
                     error=lambda e: messagebox.showerror("Подключение модели", M.connect_error_text(e), parent=self))
+
+    def choose_layout(self):
+        m = self.current()
+        if m:
+            LayoutDialog(self, m)
+
+    def apply_layout(self, m, lay):
+        self.app.cfg.update_model(m["name"], layout=lay)
+        self._rebuild()
+        if m.get("connected_method") in ("com", "com_partial") and Path(m["path"]).exists():
+            if messagebox.askyesno("Вид таблицы", f"Перестроить таблицу «Хаб» в модели «{m['name']}» сейчас?\n\n"
+                                                  "Хаб откроет модель в фоне (перед этим сделает резервную копию), "
+                                                  "поменяет запрос «Хаб» и сохранит модель. Модель должна быть "
+                                                  "закрыта. Формулы, которые ссылаются на старые столбцы таблицы "
+                                                  "«Хаб», придётся переписать (кнопка «Формула» подскажет новые).",
+                                   parent=self):
+                self._run_connect(m["name"], m["path"])
+        else:
+            messagebox.showinfo("Вид таблицы", "Сохранено. Вид применится, когда вы подключите модель "
+                                               "(«＋ Подключить модель»).", parent=self)
 
     def diagnose(self):
         """Пробует все способы подключения на пустой книге и показывает журнал (модель не трогается)."""
@@ -234,6 +265,7 @@ class ModelsTab(ttk.Frame):
                                              "исчезнут из таблицы Хаб после обновления модели — проверьте, что на них "
                                              "нет формул. Продолжить?", parent=self):
             return
+        loose, excluded = [], []       # всё одной записью файла: рядов могут быть тысячи
         for iid in chosen:
             if iid in self.groups:
                 kind, ident = self.groups[iid]
@@ -242,10 +274,15 @@ class ModelsTab(ttk.Frame):
                 elif kind == "job":
                     self.app.cfg.unsubscribe_job(m["name"], ident)
                 else:
-                    for c in [self.code_of[x] for x in self.series.get_children(iid)]:
-                        self.app.cfg.unsubscribe_code(m["name"], c)
+                    loose += self.group_codes.get(iid, [])
             elif iid in self.code_of and self.series.parent(iid) not in chosen:
-                self.app.cfg.unsubscribe_code(m["name"], self.code_of[iid])
+                parent = self.groups.get(self.series.parent(iid), ("codes", None))
+                # ряд из «Отдельных рядов» просто убираем; из выборки — помечаем «не отдавать»
+                (loose if parent[0] == "codes" else excluded).append(self.code_of[iid])
+        if loose:
+            self.app.cfg.unsubscribe_codes(m["name"], loose)
+        if excluded:
+            self.app.cfg.unsubscribe_codes(m["name"], excluded, exclude=True)
         self._rebuild()
 
     def _rebuild(self):
@@ -270,7 +307,7 @@ class ModelsTab(ttk.Frame):
         if not m:
             return
         codes = self.selected_codes() or self.app.store.subscribed(m["name"])
-        FormulaWindow(self.app, codes[:500])
+        FormulaWindow(self.app, codes[:500], model=m)
 
     def open_excel(self):
         """Разовый файл с выбранными рядами (или всеми рядами модели) — для просмотра."""
@@ -313,3 +350,45 @@ class ModelsTab(ttk.Frame):
                                      parent=self):
             M.disconnect(self.app.cfg, m["name"])
             self.refresh()
+
+
+class LayoutDialog(tk.Toplevel):
+    """Вид таблицы «Хаб» в модели: строки (плоская) или столбцы."""
+
+    EXAMPLES = {
+        "long": "Дата        Период   Показатель   Регион              Товар     Единицы  Код   Обновлено   Значение\n"
+                "31.01.2024  2024-01  Средние цены Московская область  Пшеница   руб./т   …     19.10.2026  15 200\n"
+                "31.01.2024  2024-01  Средние цены Московская область  Кукуруза  руб./т   …     19.10.2026  12 400",
+        "wide": "Дата        Период   FEDSTAT_…_1   FEDSTAT_…_2\n"
+                "31.01.2024  2024-01  15 200        12 400\n"
+                "(названия рядов, регион и товар — в соседней таблице Хаб_Ряды)",
+    }
+
+    def __init__(self, tab, model):
+        super().__init__(tab.app.root)
+        from ..excel import packet as P
+        self.tab, self.model = tab, model
+        self.title(f"Вид таблицы «Хаб» — {model['name']}")
+        self.transient(tab.app.root)
+        f = ttk.Frame(self, padding=16)
+        f.pack(fill="both", expand=True)
+        self.var = tk.StringVar(value=P.layout(tab.app.cfg, model))
+        titles = {"long": "Строки — каждое значение отдельной строкой со всеми полями (рекомендуется)",
+                  "wide": "Столбцы — каждый ряд отдельным столбцом, даты по строкам"}
+        for key in ("long", "wide"):
+            ttk.Radiobutton(f, text=titles[key], value=key, variable=self.var).pack(anchor="w", pady=(8, 2))
+            ttk.Label(f, text=self.EXAMPLES[key], font=("Consolas", 9), style="Muted.TLabel",
+                      justify="left").pack(anchor="w", padx=24)
+        ttk.Label(f, style="Hint.TLabel", wraplength=720, justify="left", text=(
+            "Строки удобны для фильтров, сводных таблиц и СУММЕСЛИМН по любому полю. Excel вмещает до 1 млн строк — "
+            "для больших выборок сузьте период или число рядов.")).pack(anchor="w", pady=(10, 0))
+        bar = ttk.Frame(f)
+        bar.pack(fill="x", pady=(14, 0))
+        ttk.Button(bar, text="Применить", style="Accent.TButton", command=self.apply).pack(side="right")
+        ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="right", padx=8)
+        W.center(self, tab.app.root)
+
+    def apply(self):
+        lay = self.var.get()
+        self.destroy()
+        self.tab.apply_layout(self.model, lay)

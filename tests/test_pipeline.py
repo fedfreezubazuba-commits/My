@@ -167,9 +167,15 @@ def test_m_template_has_no_hardcoded_columns(runner):
     for name, code in mcode.queries("C:/MarketData/Для моделей/М.csv"):
         assert mcode.check_syntax(code) == [], name
         assert "CBR_" not in code and "FEDSTAT_" not in code
-    hub = dict(mcode.queries("x.csv"))["Хаб"]
+    for lay in ("long", "wide"):
+        for name, code in mcode.queries("x.csv", layout=lay):
+            assert mcode.check_syntax(code) == [], (lay, name)
+    hub = dict(mcode.queries("x.csv", layout="wide"))["Хаб"]
     assert "Table.Pivot(" in hub and "List.Distinct(" in hub and '"en-US"' in hub
     assert "Хаб_Посылка" in hub and "error Error.Record" in hub
+    flat = dict(mcode.queries("x.csv"))["Хаб"]
+    assert "— таблица.csv" in flat and '"en-US"' in flat and "Table.ColumnNames" in flat
+    assert "Table.Pivot(" not in flat
 
 
 def test_m_syntax_checker_catches_errors():
@@ -235,3 +241,64 @@ def test_scheduled_empty_pass_is_cheap(runner, monkeypatch):
     runner.store.meta_set("packets_built", "2000-01-01T00:00:00")
     runner.run(scheduled=True)
     assert calls == [1]                               # раз в час посылки всё же пересобираются
+
+
+def test_selection_by_field_missing_in_some_series(runner):
+    """«Вид значения» есть только у рядов «нарастающим итогом» (старые данные): остальные — «значение за период»."""
+    import json
+    from hub.sources.base import SeriesInfo
+    job = runner.cfg.add_job("fedstat", "Цены", {"id": 1})
+    for key, dims in (("a", [("Товар", "Кукуруза")]),
+                      ("b", [("Товар", "Кукуруза"), ("Вид значения", "нарастающим итогом с начала года")])):
+        code = runner.store.assign_code(job, SeriesInfo(key=key, name=key, unit="руб", periodicity="month",
+                                                        code=f"FEDSTAT_1_{key}_M", dims=dims))
+        runner.store.update_series_meta(code, SeriesInfo(key=key, name=key, unit="руб", periodicity="month",
+                                                         code=code, dims=dims))
+    sel = {"job": job["id"], "filters": {"Вид значения": ["значение за период"]}}
+    assert packet.selection_codes(runner.store, sel) == ["FEDSTAT_1_a_M"]
+    assert json.loads(runner.store.series("FEDSTAT_1_b_M")["dims"])[-1][0] == "Вид значения"
+
+
+def test_old_exclusions_do_not_hide_selection(runner):
+    from hub.excel import packet
+    job = runner.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883"]}})
+    runner.run(force=True)
+    codes = [s["code"] for s in runner.store.series_of_job(job["id"])]
+    runner.cfg.add_model("М", "C:/m.xlsx")
+    runner.cfg.save_selection("М", {"job": job["id"], "name": "В", "filters": {}, "from": "", "to": ""})
+    runner.cfg.unsubscribe_codes("М", codes, exclude=True)      # как после «Убрать» в 0.5.3
+    assert packet.model_plan(runner.cfg, runner.store, runner.cfg.model("М"))[0] == codes
+    assert runner.cfg.model("М")["exclude"] == []
+
+
+def test_flat_table_has_all_fields_and_value_last(runner):
+    """Плоская таблица: строка на значение, все поля ряда отдельными столбцами, значение — последним."""
+    cbr, fs = add_jobs(runner)
+    runner.cfg.add_model("М", "C:/m.xlsx")
+    runner.cfg.save_selection("М", {"job": fs["id"], "name": "В", "filters": {"Периодичность": ["месячная"]},
+                                     "from": "2024-01-01", "to": ""})
+    runner.cfg.subscribe("М", job_id=cbr["id"])
+    runner.run(force=True)
+    p = packet.packet_path(runner.paths, "М")
+    rows = read_packet(packet.table_path(p))
+    head = rows[0]
+    assert head[:3] == ["Дата", "Период", "Показатель"] and head[-1] == "Значение"
+    assert head[-6:] == ["Периодичность", "Единицы", "Источник", "Код", "Обновлено", "Значение"]
+    region = "Классификатор объектов административно-территориального деления (ОКАТО)"
+    assert region in head
+    fed = [dict(zip(head, r)) for r in rows[1:] if r[head.index("Код")].startswith("FEDSTAT")]
+    assert fed and all(r["Дата"] >= "2024-01-01" for r in fed)
+    assert {r[region] for r in fed} == {"Российская Федерация"} and fed[0]["Периодичность"] == "месячная"
+    assert fed[0]["Обновлено"][:2] == "20" and float(fed[0]["Значение"]) > 0
+    cb = [dict(zip(head, r)) for r in rows[1:] if r[head.index("Код")].startswith("CBR")]
+    assert cb and cb[0][region] == "" and cb[0]["Источник"] == "Банк России"
+    assert len(rows) - 1 == len(read_packet(p)) - 1          # те же значения, что в посылке
+
+
+def test_layout_default_and_old_models(runner):
+    runner.cfg.add_model("Новая", "C:/a.xlsx")
+    assert packet.layout(runner.cfg, runner.cfg.model("Новая")) == "long"
+    runner.cfg.update_model("Новая", connected_method="com")          # подключена до 0.5.4 — по столбцам
+    assert packet.layout(runner.cfg, runner.cfg.model("Новая")) == "wide"
+    runner.cfg.update_model("Новая", layout="long")
+    assert packet.layout(runner.cfg, runner.cfg.model("Новая")) == "long"

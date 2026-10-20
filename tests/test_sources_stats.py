@@ -154,3 +154,28 @@ def test_fedstat_fetch_reads_release_from_same_page(fakes):
                                Context(clients=fakes))
     assert res.next_release == "2099-11-20"
     assert len([u for u, d in fakes["fedstat"].calls if d is None]) == 1     # лишних запросов нет
+
+
+def test_fedstat_csrf_block_refreshes_token(fakes):
+    """Сервер принимает токен один раз: на следующий запрос — «CSRF блокировка», хаб берёт новый токен."""
+    fs = fakes["fedstat"]
+    state = {"n": 0, "token": "SYNTHETICTOKEN123"}
+    orig_get, orig_filtered = fs._get, fs.filtered
+
+    def page_get(url, data=None, retries=4):
+        if "/indicator/" in url and "downloadData" not in url:
+            fs.calls.append((url, data))
+            return "text/html", fs.page.replace(b"SYNTHETICTOKEN123", state["token"].encode())
+        return orig_get(url, data, retries)
+
+    def filtered(data):
+        if ("token", state["token"]) not in data:
+            return b"<html><body>CSRF \xd0\xb1\xd0\xbb\xd0\xbe\xd0\xba\xd0\xb8\xd1\x80\xd0\xbe\xd0\xb2\xd0\xba\xd0\xb0</body></html>"
+        state["n"] += 1
+        state["token"] = f"TOKEN{state['n']}"
+        return orig_filtered(data)
+
+    fs._get, fs.filtered = page_get, filtered
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883"]}, "years_from": 2023, "chunk_cells": 1},
+                               Context(clients=fakes))
+    assert len(fs.downloads) >= 2 and res.obs
