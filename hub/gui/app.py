@@ -21,8 +21,9 @@ from . import widgets as W
 
 
 class HubApp:
-    def __init__(self, root):
+    def __init__(self, root, watch=None):
         self.root = root
+        self.watch = watch
         root.title(f"{APP_NAME}")
         root.geometry("1320x820")
         root.minsize(980, 620)
@@ -30,14 +31,20 @@ class HubApp:
         self.q = queue.Queue()
         self.tasks = 0
         self.clients = {}       # подмена сетевых клиентов (тесты)
+        self._stage("открываю рабочую папку и базу данных")
         self.open_paths()
+        self._stage("строю вкладки")
         self._build()
         root.after(100, self._poll)
         if not self.cfg.settings().get("first_run_done") or not is_configured():
             root.after(300, self.first_run)
         else:
-            root.after(200, self.refresh_all)
+            root.after(200, lambda: (self._stage("заполняю списки"), self.refresh_all()))
         threading.Thread(target=self._upgrade_task, daemon=True).start()
+
+    def _stage(self, text):
+        if self.watch:
+            self.watch.stage = text
 
     @staticmethod
     def _upgrade_task():
@@ -207,8 +214,12 @@ def _callback_error(root):
 
 
 def main():
+    from ..core.crash import StartupWatch
+    watch = StartupWatch()
+    watch.stage = "создаю окно"
     root = tk.Tk()
     root.report_callback_exception = _callback_error(root)
-    HubApp(root)
+    HubApp(root, watch)
+    root.after(2500, watch.ready.set)     # окно отвечает — сторож больше не нужен
     root.mainloop()
     return 0

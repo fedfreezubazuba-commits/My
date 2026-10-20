@@ -55,10 +55,12 @@ def main(argv=None):
         try:
             from .gui.app import main as gui_main
             return gui_main()
-        except Exception:  # noqa: BLE001 — окно запускается без консоли: ошибку надо показать
+        except Exception as exc:  # noqa: BLE001 — окно запускается без консоли: ошибку надо показать
             import traceback
             from .core.crash import startup_error
-            startup_error(traceback.format_exc())
+            from .core.errors import HubError
+            human = f"{exc}\n\n" if isinstance(exc, HubError) else ""
+            startup_error(human + traceback.format_exc())
             return 1
 
     from .core.paths import Paths

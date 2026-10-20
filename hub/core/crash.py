@@ -9,6 +9,8 @@ import datetime as dt
 import os
 import platform
 import sys
+import threading
+import traceback
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[2]
@@ -50,12 +52,12 @@ def write_report(details: str, title="Хаб данных не запустил�
     return path
 
 
-def startup_error(details: str) -> Path:
+def startup_error(details: str, title="Хаб данных не смог запуститься") -> Path:
     """Сохранить, открыть в Блокноте и показать окно-сообщение (в Windows)."""
-    path = write_report(details)
+    path = write_report(details, title=title)
     if sys.stderr is not None:            # запуск из консоли («Запуск с проверкой.bat») — текст виден сразу
         try:
-            print(f"Хаб данных не смог запуститься. Подробности: {path}\n\n{details}", file=sys.stderr)
+            print(f"{title}. Подробности: {path}\n\n{details}", file=sys.stderr, flush=True)
         except Exception:  # noqa: BLE001
             pass
     if os.name == "nt":
@@ -66,8 +68,34 @@ def startup_error(details: str) -> Path:
         try:
             import ctypes
             ctypes.windll.user32.MessageBoxW(
-                None, "Хаб данных не смог запуститься.\n\nПодробности открыты в Блокноте и сохранены в файле:\n"
+                None, f"{title}.\n\nПодробности открыты в Блокноте и сохранены в файле:\n"
                       f"{path}\n\nСкопируйте этот текст и пришлите Claude.", "Хаб данных", 0x10)
         except Exception:  # noqa: BLE001
             pass
     return path
+
+
+class StartupWatch:
+    """Сторож запуска: если окно не стало отвечать за N секунд (программа где-то зависла), записывает,
+    на каком шаге и в каком месте кода она стоит, — тот же файл «Ошибка запуска.txt»."""
+
+    def __init__(self, seconds=40):
+        self.seconds = seconds
+        self.stage = "запуск"
+        self.ready = threading.Event()
+        threading.Thread(target=self._watch, name="сторож запуска", daemon=True).start()
+
+    def _watch(self):
+        if self.ready.wait(self.seconds):
+            return
+        me = threading.get_ident()
+        main = threading.main_thread().ident
+        names = {t.ident: t.name for t in threading.enumerate()}
+        parts = []
+        for tid, frame in sys._current_frames().items():
+            if tid == me:
+                continue
+            head = names.get(tid, str(tid)) + (" (главный)" if tid == main else "")
+            parts.append(f"--- поток {head} ---\n" + "".join(traceback.format_stack(frame)))
+        startup_error(f"Окно не открылось за {self.seconds} с. Шаг: {self.stage}\n\n" + "\n".join(parts),
+                      title="Хаб данных завис при запуске")

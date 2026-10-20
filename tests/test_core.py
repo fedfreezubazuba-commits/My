@@ -225,3 +225,43 @@ def test_startup_error_is_saved_not_lost(workdir, tmp_path, monkeypatch, capsys)
     assert "ZeroDivisionError" in text and "Версия хаба" in text and "пришлите Claude" in text
     assert "ZeroDivisionError" in capsys.readouterr().err
     assert (workdir / "logs" / "ошибки запуска.log").exists()
+
+
+def test_startup_watch_reports_hang(tmp_path, monkeypatch, capsys):
+    import threading
+    import time
+    from hub.core import crash
+    monkeypatch.setattr(crash, "PROJECT", tmp_path)
+    stop = threading.Event()
+    w = crash.StartupWatch(seconds=0.3)
+    w.stage = "открываю базу данных"
+    stop.wait(1.0)                       # главный поток «завис»
+    text = (tmp_path / crash.FILE_NAME).read_text(encoding="utf-8-sig")
+    assert "завис" in text and "открываю базу данных" in text and "(главный)" in text
+    assert "test_startup_watch_reports_hang" in text      # видно место в коде
+    w2 = crash.StartupWatch(seconds=0.3)
+    w2.ready.set()
+    (tmp_path / crash.FILE_NAME).unlink()
+    time.sleep(0.5)
+    assert not (tmp_path / crash.FILE_NAME).exists()
+
+
+def test_locked_database_gives_clear_message(tmp_path):
+    import sqlite3
+    from hub.core import store as ST
+    from hub.core.errors import HubError
+    db = tmp_path / "hub.sqlite"
+    ST.Store(db).close()
+    c = sqlite3.connect(db)
+    c.execute("ALTER TABLE job_state DROP COLUMN release_note")    # как база прошлой версии
+    c.commit()
+    c.isolation_level = None
+    c.execute("BEGIN IMMEDIATE")                                    # другая копия программы пишет в базу
+    old = ST.sqlite3.connect
+    ST.sqlite3.connect = lambda *a, **k: old(*a, **{**k, "timeout": 0.2})
+    try:
+        with pytest.raises(HubError, match="занята другой копией"):
+            ST.Store(db)
+    finally:
+        ST.sqlite3.connect = old
+        c.execute("ROLLBACK")

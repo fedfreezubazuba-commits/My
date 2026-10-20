@@ -99,10 +99,18 @@ class Store:
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(self.path, timeout=60, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self.conn.commit()
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.executescript(SCHEMA)
+            self._migrate()
+            self.conn.commit()
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower():
+                raise
+            from .errors import FILE_BUSY, HubError
+            raise HubError(FILE_BUSY, "База данных хаба занята другой копией программы — например, идёт фоновое "
+                                      "обновление или зависла прошлая попытка запуска. Перезагрузите компьютер "
+                                      "(или подождите несколько минут) и запустите хаб снова.", detail=str(e))
 
     def _migrate(self):
         """Новые столбцы в старых базах (база пользователя никогда не пересоздаётся)."""

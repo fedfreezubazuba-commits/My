@@ -11,7 +11,14 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 ".venv\Scripts\python.exe" --version
+tasklist /FI "IMAGENAME eq pythonw.exe" 2>nul | find /I "pythonw.exe" >nul && (
+  echo.
+  echo Уже работают другие копии хаба ^(pythonw.exe^): фоновое обновление или зависшие прошлые запуски.
+  echo Если окно хаба так и не откроется — перезагрузите компьютер и запустите этот файл снова.
+  echo.
+)
 echo Запускаю хаб. Пока окно хаба открыто, это окно не закрывайте.
+echo Если через минуту окно хаба не появится, здесь появится текст о том, где программа остановилась.
 echo.
 ".venv\Scripts\python.exe" -X faulthandler -m hub
 echo.
