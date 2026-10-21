@@ -179,12 +179,19 @@ class Browser:
                 ctx.close()
 
     def login(self, url, timeout_s=900):
-        """Окно для входа. Возвращается, когда пользователь закрыл окно (или через 15 минут)."""
+        """Окно для входа (или для проверки «я не робот»). Возвращается, когда пользователь закрыл окно
+        (или через 15 минут): {"cookies": [...], "user_agent": "..."} — чтобы хаб мог ходить на сайт и без
+        браузера (ЕМИСС). Пароли не читаются и не сохраняются — только куки сайта, как в самом браузере."""
+        got = {"cookies": [], "user_agent": ""}
         with _lock, self._sync() as p:
             ctx = self._launch(p, headless=False)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                try:
+                    got["user_agent"] = page.evaluate("navigator.userAgent")
+                except Exception:  # noqa: BLE001
+                    pass
                 end = time.time() + timeout_s
                 while time.time() < end and any(not pg.is_closed() for pg in ctx.pages):
                     for pg in ctx.pages:
@@ -192,12 +199,17 @@ class Browser:
                             pg.evaluate(LOGIN_BANNER_JS)
                         except Exception:  # noqa: BLE001 — страница грузится или закрыта
                             pass
+                    try:
+                        got["cookies"] = ctx.cookies(url)
+                    except Exception:  # noqa: BLE001
+                        pass
                     time.sleep(1)
             finally:
                 try:
                     ctx.close()
                 except Exception:  # noqa: BLE001
                     pass
+        return got
 
     def pick(self, url, timeout_s=600, headless=False, on_page=None):
         """Окно выбора элемента. Возвращает словарь с выбором или None, если окно закрыли."""

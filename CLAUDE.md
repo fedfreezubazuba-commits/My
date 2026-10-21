@@ -34,6 +34,7 @@ hub/
     overview.py    данные для «Обзора»
     notify.py      уведомления Windows (PowerShell), на Linux — только журнал
     claude_pack.py «Отправить Claude» (с вычисткой секретов)
+    hostblock.py   пауза по сайту при 403/429/капче: 1→3→12→24 ч (meta host_block:<host>), баннер на «Обзоре»
     crash.py       ошибка запуска окна (pythonw без консоли) → «Ошибка запуска.txt» в папке программы,
                    Блокнот + окно-сообщение; ошибки в обработчиках окна — report_callback_exception
     winsched.py    задача планировщика Windows (XML через schtasks)
@@ -161,9 +162,21 @@ legacy/            исходные навигаторы пользовател�
   `cache/сроки/<job>.txt` → «Отправить Claude». В тестах компьютер «в Москве» (`conftest.moscow_computer`).
   «＋ В обновления» больше не подписывает модели — после загрузки кнопки «Отдать в модель».
 
+- **0.5.6 — ЕМИСС бережно**: токен ЕМИСС одноразовый (каждый POST его расходует) — `fedstat.fetch` отдаёт
+  уже прочитанную страницу только первой выгрузке (`one_shot`), дальше `download()` читает страницу сам, как
+  исходный клиент (в 0.3–0.5.5 токен переиспользовался → «CSRF блокировка» на каждой части → лишние
+  запросы → 403 на всё). Заголовки браузера `BROWSER_HEADERS` (на «голые» запросы ЕМИСС может отвечать 403),
+  куки после проверки во встроенном браузере — `cache/cookies/www.fedstat.ru.json` (`load_cookies`, пишет
+  `tab_overview.open_site_check`). `CHUNK_CELLS` 200 тыс. (ЕМИСС советуют ≤ 500 тыс. строк на запрос),
+  больше `MAX_REQUESTS` (150) выгрузок — `HubError(TOO_BIG)` без единого запроса. Runner: `blocking(exc)`
+  (403/429/BOT) → `hostblock.block`, остальные показатели сайта в этом проходе не трогаются, `due_jobs`
+  пропускает сайт на паузе, статус `blocked`; удача — `hostblock.clear`. Карантин: окно
+  `tab_overview.review_quarantine` (объяснения `checks.explain`, выключение проверки `checks.switch_off`,
+  решение в фоне, `store.accept_quarantine` пакетом).
+
 ## Категории ошибок
 
-`errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, internal.
+`errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.
 Адаптер поднимает `StructureError` при непонятном ответе, `LoginRequired` — когда нужен вход.
 Остальное классифицирует `errors.classify`. Временные (network, rate_limit, file_busy) повторяются с
 паузой 15 мин → 30 → … → 6 ч; после `fail_threshold` (3) сбоев подряд статус красный.

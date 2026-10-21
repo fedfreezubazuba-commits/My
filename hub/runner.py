@@ -22,6 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import VERSION, sources
 from .core import errors as E
+from .core import hostblock as HB
 from .core import schedule as S
 from .core.checks import run_checks
 from .core.config import Config
@@ -89,7 +90,7 @@ class Lock:
 class JobOutcome:
     def __init__(self, job):
         self.job = job
-        self.status = None          # updated | unchanged | waiting | quarantine | error | retry | login
+        self.status = None          # updated | unchanged | waiting | quarantine | error | retry | login | blocked
         self.category = None
         self.message = ""
         self.new_periods = []       # [(код, подпись, значение)]
@@ -100,10 +101,18 @@ class JobOutcome:
         self.traceback = ""
         self.run_id = None
         self.raw_path = None
+        self.blocked = None         # (сайт, пауза до) — сайт не пускает хаб
 
     @property
     def changed(self):
         return bool(self.new_periods or self.revisions)
+
+
+def blocking(exc) -> bool:
+    """Сайт не пускает хаб (403, 429, проверка «я не робот») — пауза по всему сайту (hostblock).
+    503 «сайт перегружен» — обычный временный сбой."""
+    code = getattr(exc, "code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    return E.classify(exc) == E.BOT or code == 429
 
 
 def timing_note_path(paths, job_id):
@@ -153,6 +162,8 @@ class Runner:
                 src = sources.get(job["source"])
             except KeyError:
                 continue
+            if HB.until(self.store, src.host(job.get("params") or {}), now):
+                continue                     # сайт не пускает хаб — пауза по всему сайту
             st = self.store.state(job["id"])
             exp, per = S.expected_next(self.store, job)
             if S.is_due(job, st, now, snapshot=src.snapshot, periodicity=per):
@@ -258,8 +269,16 @@ class Runner:
             if getattr(exc, "raw_text", None):     # страница, на которой не нашлось нужного, — для «Отправить Claude»
                 from .sources.base import FetchResult
                 out.raw_path = self._save_raw(job, FetchResult(raw=exc.raw_text.encode("utf-8"), raw_ext="html"))
+            if blocking(exc):
+                host = sources.get(job["source"]).host(job.get("params") or {})
+                till = HB.block(self.store, host, out.message)
+                out.blocked = (host, till)
+                out.message = (f"{out.message}. Хаб не будет обращаться к сайту {HB.title(host)} до "
+                               f"{till:%H:%M %d.%m} и попробует сам")
             if cat == E.LOGIN:
                 out.status = "login"
+            elif out.blocked:
+                out.status = "blocked"
             elif cat in E.TRANSIENT and fails < fail_threshold:
                 out.status = "retry"
             else:
@@ -286,6 +305,7 @@ class Runner:
 
         res = payload
         out.warnings = list(res.warnings)
+        HB.clear(self.store, sources.get(job["source"]).host(job.get("params") or {}))   # сайт снова пускает
         if res.next_release or res.release_note:     # срок следующего обновления, который сообщил источник
             self.store.set_state(job["id"], release_next=res.next_release, release_note=res.release_note or None)
         if getattr(res, "timing_text", ""):            # срок не разобрали — сохраняем куски страницы для Claude
@@ -449,6 +469,8 @@ class Runner:
                     progress(f"Загружаю: {job['name']}")
                 kind, payload = self.fetch_job(job, ctx, use_cheap_check=cheap, progress=progress)
                 results.put((job, kind, payload))
+                if kind == "error" and blocking(payload):
+                    break        # сайт не пускает — остальные показатели этого сайта не трогаем
 
         with ThreadPoolExecutor(max_workers=min(MAX_HOSTS, len(by_host)) or 1) as ex:
             futures = [ex.submit(host_worker, h, js) for h, js in by_host.items()]

@@ -235,14 +235,23 @@ class Store:
                            1 if (is_new and not initial) else 0, qid))
 
     def accept_quarantine(self, qid):
-        rows = self.q("SELECT * FROM observations WHERE qid=? AND state='quarantine' ORDER BY id", (qid,))
+        """Принять отложенные значения (их могут быть сотни тысяч — одним пакетом)."""
+        rows = self.q("SELECT code, period_end FROM observations WHERE qid=? AND state='quarantine'", (qid,))
         with self.tx() as c:
-            for r in rows:
-                c.execute("UPDATE observations SET state='old' WHERE code=? AND period_end=? AND state='current'",
-                          (r["code"], r["period_end"]))
-                c.execute("UPDATE observations SET state='current', fetched_at=? WHERE id=?", (now_iso(), r["id"]))
+            c.executemany("UPDATE observations SET state='old' WHERE code=? AND state='current' AND period_end=?",
+                          [(r["code"], r["period_end"]) for r in rows])
+            c.execute("UPDATE observations SET state='current', fetched_at=? WHERE qid=? AND state='quarantine'",
+                      (now_iso(), qid))
             c.execute("UPDATE quarantine SET status='accepted', decided=? WHERE id=?", (now_iso(), qid))
         return len(rows)
+
+    def quarantine_counts(self, qid) -> tuple[int, int]:
+        """(новых периодов, изменённых значений) в отложенной загрузке."""
+        r = self.q1("SELECT SUM(CASE WHEN EXISTS (SELECT 1 FROM observations c WHERE c.code=o.code "
+                    "AND c.state='current' AND c.period_end=o.period_end) THEN 0 ELSE 1 END) AS n_new, COUNT(*) AS n "
+                    "FROM observations o WHERE o.qid=? AND o.state='quarantine'", (qid,))
+        n_new = r["n_new"] or 0
+        return n_new, (r["n"] or 0) - n_new
 
     def reject_quarantine(self, qid):
         with self.tx() as c:

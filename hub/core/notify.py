@@ -63,6 +63,11 @@ def message_for(report) -> tuple[str, str] | None:
         parts.append(f"Новые данные в моделях: {names}")
     if bad:
         parts.append(f"Требует внимания: {len(bad)}")
+    from .hostblock import title
+    for o in report.outcomes:
+        if getattr(o, "blocked", None):
+            host, till = o.blocked
+            parts.append(f"{title(host)} временно не пускает хаб — пауза до {till:%H:%M}. Подробности на «Обзоре»")
     if not parts:
         return None
     return "Хаб данных", ". ".join(parts)

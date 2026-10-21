@@ -11,13 +11,14 @@ STATUSES = {
     "retry": ("Сбой, повторю позже", YELLOW),
     "error": ("Ошибка", RED),
     "login": ("Нужен вход", RED),
+    "blocked": ("Сайт не пускает — пауза", YELLOW),
     "paused": ("На паузе", GREY),
     "quarantine": ("Карантин", YELLOW),
 }
 
 COLORS = {GREEN: "#2e7d32", YELLOW: "#c77700", RED: "#c62828", GREY: "#757575", BLUE: "#1565c0"}
 DOTS = {GREEN: "●", YELLOW: "●", RED: "●", GREY: "○", BLUE: "●"}
-PROBLEM = {"delayed", "error", "login", "quarantine", "retry"}
+PROBLEM = {"delayed", "error", "login", "quarantine", "retry", "blocked"}
 
 
 def word(status) -> str:
@@ -64,6 +65,10 @@ def explain(job, state) -> str:
         "quarantine": f"Новые данные отложены и в модели не попали: {msg or what}. Проверьте их: "
                       "«Ещё ▾ → Принять / отклонить отложенные данные» (или «Посмотреть» на «Обзоре»).",
         "paused": "На паузе — хаб не проверяет этот показатель. Включить: «Пауза / продолжить».",
+        "blocked": f"{msg or what}. Так бывает, если к сайту было много запросов, — обычно ограничение снимается "
+                   "само через несколько часов. Делать ничего не нужно. Если на «Обзоре» сайт по-прежнему на паузе, "
+                   "можно нажать там «Открыть сайт»: если сайт покажет проверку «я не робот» — пройдите её и закройте "
+                   "окно, хаб сразу попробует снова.",
     }.get(s, msg)
     if st.get("release_next") or st.get("release_note"):
         text += " Источник о сроках: " + "; ".join(x for x in (

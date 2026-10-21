@@ -101,6 +101,9 @@ class Config:
             j.setdefault("enabled", True)
             j.setdefault("checks", {})
             j.setdefault("tags", [])
+            if "&" in j.get("name", ""):        # «&laquo;Строительство&raquo;» из старых названий ЕМИСС
+                import html
+                j["name"] = html.unescape(j["name"])
         return jobs
 
     def job(self, job_id) -> dict | None:

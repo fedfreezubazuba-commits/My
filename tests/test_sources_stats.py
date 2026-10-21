@@ -200,3 +200,54 @@ def test_fedstat_huge_year_is_split_upfront(fakes, monkeypatch):
     res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883", "1558900"]}, "years_from": 2023,
                                 "chunk_cells": 1}, Context(clients=fakes))
     assert res.obs and len(fakes["fedstat"].downloads) >= 4      # 2 года × 2 региона
+
+
+def test_fedstat_token_is_single_use_no_wasted_requests(fakes):
+    """Токен одноразовый: перед каждой выгрузкой — свежая страница, ни одного отказа «CSRF блокировка»."""
+    fs = fakes["fedstat"]
+    state = {"n": 0, "token": "SYNTHETICTOKEN123", "blocked": 0}
+    orig_get, orig_filtered = fs._get, fs.filtered
+
+    def page_get(url, data=None, retries=4):
+        if "/indicator/" in url and "downloadData" not in url:
+            fs.calls.append((url, data))
+            return "text/html", fs.page.replace(b"SYNTHETICTOKEN123", state["token"].encode())
+        return orig_get(url, data, retries)
+
+    def filtered(data):
+        if ("token", state["token"]) not in data:
+            state["blocked"] += 1
+            return b"<html><body>CSRF</body></html>"
+        state["n"] += 1
+        state["token"] = f"TOKEN{state['n']}"
+        return orig_filtered(data)
+
+    fs._get, fs.filtered = page_get, filtered
+    res = get("fedstat").fetch({"id": 31074, "select": {"0": ["1558883"]}, "years_from": 2023, "chunk_cells": 1},
+                               Context(clients=fakes))
+    assert res.obs and state["n"] >= 2 and state["blocked"] == 0
+
+
+def test_fedstat_refuses_too_many_requests(fakes, monkeypatch):
+    import hub.sources.fedstat as FS
+    from hub.core.errors import TOO_BIG, HubError
+    monkeypatch.setattr(FS, "MAX_REQUESTS", 2)
+    with pytest.raises(HubError) as e:
+        get("fedstat").fetch({"id": 31074, "years_from": 2000, "chunk_cells": 1}, Context(clients=fakes))
+    assert e.value.category == TOO_BIG and "меньше" in str(e.value)
+    assert not fakes["fedstat"].downloads                     # ни одной выгрузки не сделано
+
+
+def test_fedstat_browser_headers_and_saved_cookies(tmp_path):
+    import json
+    from hub.core.paths import Paths
+    paths = Paths(tmp_path).ensure()
+    (paths.cache / "cookies").mkdir(parents=True, exist_ok=True)
+    (paths.cache / "cookies" / "www.fedstat.ru.json").write_text(json.dumps(
+        {"user_agent": "Браузер-хаба", "cookies": [{"name": "guard", "value": "ok", "domain": ".fedstat.ru",
+                                                    "path": "/", "expires": -1}]}), encoding="utf-8")
+    fs = get("fedstat").client(Context(paths=paths))
+    heads = dict(fs.op.addheaders)
+    assert heads["User-Agent"] == "Браузер-хаба" and "ru-RU" in heads["Accept-Language"]
+    jar = next(h.cookiejar for h in fs.op.handlers if hasattr(h, "cookiejar"))
+    assert [c.name for c in jar] == ["guard"]

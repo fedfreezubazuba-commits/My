@@ -340,3 +340,72 @@ def test_dimlist_shift_click_selects_range(app):
     lb.event_generate("<Shift-Button-1>", x=5, y=y(6))
     pump(app, 0.1)
     assert chosen == {"2", "3", "4", "5", "6"}
+
+
+def test_blocked_site_banner_and_site_check(app, monkeypatch):
+    import json
+    from hub.core import hostblock as HB
+    app.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883"]}})
+    HB.block(app.store, "www.fedstat.ru", "Сайт временно не пускает хаб")
+    app.overview.refresh()
+    pump(app, 0.2)
+
+    def texts(w):
+        out = []
+        for c in w.winfo_children():
+            if c.winfo_class() in ("TLabel", "TButton"):
+                out.append(str(c.cget("text")))
+            out += texts(c)
+        return out
+    all_text = " ".join(texts(app.overview.body.inner))
+    assert "Сайт временно не пускает хаб" in all_text and "ЕМИСС (fedstat.ru)" in all_text
+    assert "Открыть сайт" in all_text and "Попробовать сейчас" in all_text
+
+    class FakeBrowser:
+        def available(self):
+            return True
+
+        def login(self, url):
+            assert url == "https://www.fedstat.ru/"
+            return {"cookies": [{"name": "guard", "value": "1", "domain": ".fedstat.ru", "path": "/"}],
+                    "user_agent": "Chrome"}
+    monkeypatch.setattr(app, "browser", lambda: FakeBrowser())
+    ran = []
+    monkeypatch.setattr(app, "update_jobs", lambda ids=None, **k: ran.append(ids))
+    app.overview.site_check("www.fedstat.ru")
+    assert pump(app, 5, until=lambda: ran)
+    saved = json.loads((app.paths.cache / "cookies" / "www.fedstat.ru.json").read_text(encoding="utf-8"))
+    assert saved["cookies"][0]["name"] == "guard"
+    assert HB.until(app.store, "www.fedstat.ru") is None and len(ran[0]) == 1
+
+
+def test_quarantine_decision_window(app, fakes):
+    """Окно отложенных данных: объяснение, кнопки видны, решение в фоне, понятный итог, «не откладывать»."""
+    from hub.gui.tab_overview import review_quarantine
+    job = app.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]},
+                          checks={"max_jump_pct": 20})
+    r = app.runner()
+    r.run(force=True)
+    fakes["cbr"].add_month(37, 2, "2025-11-01", 95.0)          # скачок с 19 до 95
+    r.run(force=True)
+    r.close()
+    assert app.store.state(job["id"])["status"] == "quarantine"
+    qid = app.store.pending_quarantine(job["id"])[0]["id"]
+    review_quarantine(app, qid, app.cfg.job(job["id"]))
+    pump(app, 0.3)
+    w = next(x for x in app.root.winfo_children() if isinstance(x, tk.Toplevel) and "Отложенные" in x.title())
+
+    def walk(x):
+        yield x
+        for c in x.winfo_children():
+            yield from walk(c)
+    texts = " ".join(str(c.cget("text")) for c in walk(w) if c.winfo_class() in ("TLabel", "TButton", "TCheckbutton"))
+    assert "Что случилось" in texts and "резко изменилось" in texts and "Новых значений: 1" in texts
+    accept = next(c for c in walk(w) if c.winfo_class() == "TButton" and "Принять" in str(c.cget("text")))
+    assert accept.winfo_ismapped()                              # кнопка видна
+    box = next(c for c in walk(w) if c.winfo_class() == "TCheckbutton")
+    box.invoke()                                                # больше не откладывать из-за скачков
+    accept.invoke()
+    assert pump(app, 10, until=lambda: any("данные приняты" in str(a) for _f, a in app.shown))
+    assert app.store.state(job["id"])["status"] == "updated" and not app.store.pending_quarantine(job["id"])
+    assert "max_jump_pct" not in (app.cfg.job(job["id"]).get("checks") or {})

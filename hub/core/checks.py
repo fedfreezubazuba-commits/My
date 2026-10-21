@@ -68,7 +68,7 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
         old = by_code.get(code)
         if old is not None and unit_key(old["unit"]) and unit_key(s.unit) and unit_key(old["unit"]) != unit_key(s.unit):
             changed.append(f"«{s.name}»: было «{old['unit']}», стало «{s.unit}»")
-    if changed:
+    if changed and checks.get("units", True):
         problems.append(summary("Сменились единицы", changed))
 
     jump = checks.get("max_jump_pct")
@@ -86,13 +86,45 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
             for o in newer:
                 pct = abs(o.value - prev) / abs(prev) * 100
                 if pct > float(jump):
-                    jumps.append(f"{pct:.0f}% у «{s.name}»: было {fmt(prev)}, стало {fmt(o.value)}")
+                    jumps.append(f"«{s.name}»: было {fmt(prev)}, стало {fmt(o.value)} (на {pct:.0f}%)")
                     break
         if jumps:
             problems.append(summary(f"Скачок больше {jump}%", jumps))
 
     prev_rows = state.get("fetch_rows") or 0       # сколько значений вернула прошлая загрузка
     min_ratio = float(checks.get("min_rows_ratio", 0.5))
-    if prev_rows >= 10 and len(values) < prev_rows * min_ratio and not partial:
+    if min_ratio and prev_rows >= 10 and len(values) < prev_rows * min_ratio and not partial:
         problems.append(f"Резко уменьшилось число строк: было {prev_rows}, стало {len(values)}")
     return problems
+
+
+# вид замечания → (пояснение простыми словами, как больше не откладывать из-за него)
+KINDS = [
+    ("Сменились единицы", "Источник поменял единицы измерения. Чаще всего это просто уточнение подписи "
+                          "(«-» → «Тонна»), но если сменился масштаб (рубли → тысячи рублей), числа в моделях "
+                          "изменятся в разы.", "units", False),
+    ("Скачок", "Значение резко изменилось по сравнению с прошлым. Это может быть реальное событие на рынке — "
+               "или ошибка источника.", "max_jump_pct", None),
+    ("Исчезли ряды", "В ответе источника не оказалось части рядов, которые раньше были.", "missing_series", False),
+    ("Резко уменьшилось", "Источник прислал гораздо меньше данных, чем обычно.", "min_rows_ratio", 0),
+    ("Значение не число", "Часть значений не похожа на числа.", None, None),
+    ("Дата из будущего", "У части значений дата в будущем.", None, None),
+]
+
+
+def explain(reason) -> tuple[str, str | None, object]:
+    """(пояснение, ключ проверки, значение «не проверять») для замечания проверки."""
+    for prefix, text, key, off in KINDS:
+        if reason.startswith(prefix):
+            return text, key, off
+    return "", None, None
+
+
+def switch_off(job_checks: dict, key, off) -> dict:
+    """Настройки проверок показателя с выключенной проверкой key."""
+    out = dict(job_checks or {})
+    if off is None:
+        out.pop(key, None)
+    else:
+        out[key] = off
+    return out

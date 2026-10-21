@@ -21,7 +21,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from ..core import periods as P
-from ..core.errors import HubError, StructureError, classify, human_message
+from ..core.errors import TOO_BIG, HubError, StructureError, classify, human_message
 from .base import FetchResult, Obs, SeriesInfo, Source
 from .fedstat_api import BACKSLASH_U, BASE, Fedstat
 
@@ -119,7 +119,43 @@ def sdmx_series(xml_bytes):
 VALUE_KIND = "Вид значения"
 PLAIN_KIND = "значение за период"        # у рядов без пояснения («нарастающим итогом…» и т.п.)
 
-CHUNK_CELLS = 20000      # примерно столько значений просим за один запрос (дальше размер подбирается сам)
+CHUNK_CELLS = 200000     # примерно столько значений просим за один запрос (ЕМИСС советуют не больше 500 тыс.)
+MAX_REQUESTS = 150       # больше выгрузок за раз — слишком большой выбор: ЕМИСС начинает отказывать всем запросам
+BROWSER_HEADERS = [
+    ("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/124.0 Safari/537.36"),
+    ("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
+    ("Accept-Language", "ru-RU,ru;q=0.9,en;q=0.5"),
+]
+
+
+def load_cookies(fs, ctx):
+    """Куки, сохранённые после того как пользователь прошёл проверку сайта во встроенном браузере."""
+    import http.cookiejar
+    import json
+    paths = getattr(ctx, "paths", None) if ctx else None
+    if not paths:
+        return
+    f = paths.cache / "cookies" / "www.fedstat.ru.json"
+    if not f.exists():
+        return
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except ValueError:
+        return
+    for h in fs.op.handlers:
+        jar = getattr(h, "cookiejar", None)
+        if jar is None:
+            continue
+        for c in data.get("cookies", []):
+            jar.set_cookie(http.cookiejar.Cookie(
+                0, c["name"], c["value"], None, False, c.get("domain", ".fedstat.ru"),
+                True, c.get("domain", "").startswith("."), c.get("path", "/"), True, bool(c.get("secure")),
+                int(c["expires"]) if c.get("expires", -1) and c.get("expires", -1) > 0 else None,
+                False, None, None, {}))
+    if data.get("user_agent"):           # куки защиты привязаны к браузеру — представляемся им же
+        fs.op.addheaders = [(k, v) for k, v in fs.op.addheaders if k != "User-Agent"] + \
+            [("User-Agent", data["user_agent"])]
 
 
 def clean(text) -> str:
@@ -217,7 +253,13 @@ class FedstatSource(Source):
     title = "ЕМИСС (Росстат)"
 
     def client(self, ctx):
-        return (ctx.clients.get("fedstat") if ctx else None) or Fedstat()
+        fs = ctx.clients.get("fedstat") if ctx else None
+        if fs is None:
+            fs = Fedstat()
+            # обычные заголовки браузера: на «голые» запросы ЕМИСС может отвечать «доступ запрещён» (403)
+            fs.op.addheaders = list(BROWSER_HEADERS)
+            load_cookies(fs, ctx)
+        return fs
 
     def host(self, params):
         return "www.fedstat.ru"
@@ -283,14 +325,19 @@ class FedstatSource(Source):
             info = fs.indicator(ind_id)
         finally:
             fs._get = orig_get
-        # download() снова читает страницу показателя — отдаём ему уже прочитанную
+        # Токен ЕМИСС одноразовый: каждая выгрузка его расходует. Первой выгрузке отдаём уже прочитанную
+        # страницу, следующим download() читает страницу сам — как исходный клиент.
         orig = fs.indicator
-        fs.indicator = lambda _id: info
+        first = {"info": info}
+
+        def one_shot(_id):
+            got = first.pop("info", None)
+            return got if got is not None else orig(_id)
+        fs.indicator = one_shot
 
         def fresh_token():
-            """«CSRF блокировка»: токен со страницы устарел — читаем страницу заново (как делал исходный клиент)."""
-            new = orig(ind_id)
-            fs.indicator = lambda _id: new
+            """«CSRF блокировка» — токен уже израсходован: следующая выгрузка прочитает страницу заново."""
+            first.pop("info", None)
         warnings = []
         partial = False
         try:
@@ -341,7 +388,7 @@ class FedstatSource(Source):
         csrf = {"left": 3}
 
         def download(sel):
-            csrf["left"] = 3                  # до трёх новых токенов на каждый запрос
+            csrf["left"] = 1                  # «CSRF блокировка» — один повтор со свежей страницей
             while True:
                 try:
                     return fs.download(ind_id, "sdmx", sel)
@@ -358,6 +405,12 @@ class FedstatSource(Source):
             return [download(select)]
         limit = int(params.get("chunk_cells") or CHUNK_CELLS)
         per_year = self.cells_per_year(info, select)
+        need = -(-per_year * len(years) // limit)
+        if need > MAX_REQUESTS and not params.get("allow_huge"):
+            raise HubError(TOO_BIG, f"Выбрано слишком много данных: ≈{per_year * len(years):,} сочетаний значений — "
+                                    f"это около {need} запросов к ЕМИСС. Столько запросов подряд сайт не выдерживает "
+                                    f"и начинает отказывать во всём. Отметьте меньше регионов, товаров или лет"
+                                    .replace(",", " "))
         if per_year > 2 * limit and self._splittable(info, select):
             # даже один год слишком велик для одного запроса — каждый год ещё и по значениям измерений
             parts = []

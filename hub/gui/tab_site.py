@@ -265,17 +265,20 @@ class SiteTab(ttk.Frame):
 
     def login_for_job(self, job):
         """Кнопка «Войти на сайт» с «Обзора» для показателя со статусом «Нужен вход»."""
+        from .. import sources
+        from ..core import hostblock
+        from .tab_overview import open_site_check
         p = job.get("params", {})
-        url = p.get("url") or p.get("page_url")
+        src = sources.get(job["source"])
+        url = p.get("url") or p.get("page_url") or src.open_url(p)      # у ЕМИСС ссылки в параметрах нет
         if not url:
             return
-        br = self._browser()
-        if not br:
-            return
+        host = src.host(p)
 
-        def done(_r):
+        def done():
+            hostblock.lift(self.app.store, host)
             self.app.update_jobs([job["id"]])
-        self.app.bg(lambda: br.login(url), done, "Жду, пока вы войдёте на сайт…")
+        open_site_check(self.app, host, url, on_done=done)
 
     def claude(self):
         url = self.url.get().strip()

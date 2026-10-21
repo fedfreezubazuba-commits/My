@@ -21,6 +21,15 @@ def short(text, limit=300) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
+def _host_paused(store, job) -> bool:
+    from .. import sources
+    from . import hostblock
+    try:
+        return bool(hostblock.until(store, sources.get(job["source"]).host(job.get("params") or {})))
+    except KeyError:
+        return False
+
+
 def problems(cfg, store) -> list[Problem]:
     out = []
     states = store.states()
@@ -29,6 +38,8 @@ def problems(cfg, store) -> list[Problem]:
         s = ST.effective(job, st)
         if s not in ST.PROBLEM:
             continue
+        if s == "blocked" and _host_paused(store, job):
+            continue                 # про сайт на паузе — отдельный блок на «Обзоре»
         if s == "quarantine":
             pend = store.pending_quarantine(job["id"])
             if pend:       # одна строка на показатель, даже если отложенных загрузок несколько
@@ -43,7 +54,10 @@ def problems(cfg, store) -> list[Problem]:
         cat = st.get("category") or E.INTERNAL
         what, todo, action = E.CATEGORIES.get(cat, E.CATEGORIES[E.INTERNAL])
         label = {"retry": "Повторить", "claude": "Отправить Claude", "login": "Войти на сайт",
-                 "browser": "Открыть в браузере", "review": "Посмотреть"}.get(action, "")
+                 "browser": "Открыть сайт", "review": "Посмотреть",
+                 "reselect": "Выбрать заново"}.get(action, "")
+        if action == "reselect" and job.get("source") != "fedstat":
+            label, action = "", None
         if s == "retry":
             label, action = "Повторить сейчас", "retry"
         out.append(Problem(job, st, action, label, short(f"{st.get('message') or what}. {todo}.")))

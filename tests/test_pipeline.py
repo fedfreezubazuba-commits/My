@@ -328,3 +328,26 @@ def test_unparsed_timing_goes_to_claude_pack(runner, fakes):
     runner.run(job_ids=[fs["id"]])
     text = claude_pack.job_package(runner.cfg, runner.store, fs["id"], runner.paths)
     assert "о сроках обновления" in text and "ежеквартально" in text
+
+
+def test_blocked_site_pauses_whole_host(runner, fakes):
+    """403 от ЕМИСС: остальные показатели сайта не трогаем, пауза 1 ч → 3 ч; удача снимает паузу."""
+    import datetime as dt
+    import urllib.error
+    from hub.core import hostblock as HB
+    from hub.core import notify
+    a = runner.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883"]}})
+    runner.cfg.add_job("fedstat", "Зарплата 2", {"id": 31074, "select": {"0": ["1558900"]}})
+    fakes["fedstat"].fail = urllib.error.HTTPError("https://www.fedstat.ru", 403, "Forbidden", {}, None)
+    rep = runner.run(force=True)
+    assert [o.status for o in rep.outcomes] == ["blocked"]          # второй показатель не запрашивался
+    till = HB.until(runner.store, "www.fedstat.ru")
+    assert till and dt.timedelta(minutes=55) < till - dt.datetime.now() <= dt.timedelta(minutes=60)
+    assert "до " in rep.outcomes[0].message and "попробует сам" in rep.outcomes[0].message
+    assert "не пускает хаб" in notify.message_for(rep)[1]
+    assert runner.due_jobs() == []                                  # по расписанию — ждём
+    rep = runner.run(force=True)                                    # кнопка — ещё одна попытка
+    assert HB.until(runner.store, "www.fedstat.ru") - dt.datetime.now() > dt.timedelta(hours=2)
+    fakes["fedstat"].fail = None
+    runner.run(job_ids=[a["id"]])
+    assert HB.until(runner.store, "www.fedstat.ru") is None and HB.active(runner.store) == []

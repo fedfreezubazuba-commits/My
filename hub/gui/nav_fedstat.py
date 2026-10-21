@@ -35,7 +35,7 @@ class FedstatNav(ttk.Frame):
         self.root = self
         self.cache = str(app.paths.cache / "fedstat_catalog.json")
         self.loaded = False
-        self.fs = Fedstat()
+        self.fs = self._client()
         self.q = queue.Queue()
         self.cat = None
         self.node_of = {}       # iid дерева -> узел каталога
@@ -183,19 +183,39 @@ class FedstatNav(ttk.Frame):
                 self.pb.pack_forget()
                 if err:
                     self.status.set("Ошибка")
-                    messagebox.showerror("Не получилось", self._err_text(err))
+                    text = self._err_text(err)
+                    if text:
+                        messagebox.showerror("Не получилось", text)
                 else:
                     done(res)
         except queue.Empty:
             pass
         self.root.after(100, self._poll)
 
-    @staticmethod
-    def _err_text(err):
+    def _client(self):
+        """Тот же клиент, что у фонового обновления: обычные заголовки браузера и куки после проверки сайта."""
+        from types import SimpleNamespace
+        from ..sources.fedstat import BROWSER_HEADERS, load_cookies
+        fs = Fedstat()
+        fs.op.addheaders = list(BROWSER_HEADERS)
+        load_cookies(fs, SimpleNamespace(paths=self.app.paths))
+        return fs
+
+    def _err_text(self, err):
         s = str(err)
         if "503" in s:
             return ("Сервер fedstat.ru временно отклоняет запросы (503) — так он "
                     "ограничивает частые выгрузки. Подождите минуту и повторите.")
+        if "403" in s or getattr(err, "code", None) == 403:
+            if messagebox.askyesno(
+                    "ЕМИСС не пускает", "ЕМИСС сейчас отвечает «доступ запрещён» — так сайт защищается, когда к нему "
+                    "было много запросов; обычно это проходит само через несколько часов.\n\nОткрыть сайт во "
+                    "встроенном браузере? Если там проверка «я не робот» — пройдите её и закройте окно, затем "
+                    "повторите действие здесь.", parent=self):
+                from .tab_overview import open_site_check
+                open_site_check(self.app, "www.fedstat.ru", "https://www.fedstat.ru/",
+                                on_done=lambda: setattr(self, "fs", self._client()))
+            return None
         return human_message(err)
 
     # --- каталог и дерево --------------------------------------------------
