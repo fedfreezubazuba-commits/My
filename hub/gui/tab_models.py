@@ -13,21 +13,24 @@ class ModelsTab(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent, padding=10)
         self.app = app
-        bar = ttk.Frame(self)
+        bar = W.FlowBar(self)
         bar.pack(fill="x")
-        ttk.Button(bar, text="＋ Подключить модель", style="Accent.TButton", command=self.connect).pack(side="left")
-        for text, cmd in (("＋ Данные для модели", self.add_series), ("Изменить выборку", self.edit_selection),
-                          ("Убрать", self.remove_series),
-                          ("Формула", self.formula), ("Открыть в Excel", self.open_excel)):
-            ttk.Button(bar, text=text, command=cmd).pack(side="left", padx=(6, 0))
-        more = ttk.Menubutton(bar, text="Ещё ▾")
-        menu = tk.Menu(more, tearoff=False)
-        for text, cmd in (("Открыть модель", lambda: self.open_model()), ("Открыть файл с данными", self.open_packet),
-                          ("Вид таблицы «Хаб»…", self.choose_layout),
-                          ("Проверить связь с Excel", self.diagnose), ("Отключить модель", self.disconnect)):
-            menu.add_command(label=text, command=cmd)
-        more["menu"] = menu
-        more.pack(side="left", padx=(6, 0))
+        bar.add(W.icon_button(bar, "＋", "Подключить модель Excel — хаб добавит в неё лист «Хаб» (с резервной копией)",
+                              self.connect, text="Подключить модель", style="Accent.TButton"))
+        bar.add(W.icon_button(bar, "⊕", "Данные для модели — выбрать, что из показателя отдавать в модель "
+                                       "(товар, регион, период…)", self.add_series, text="Данные для модели"),
+                gap_before=16)
+        for i, (icon, tip, cmd) in enumerate((
+                ("✎", "Изменить выборку — выделите строку выборки внизу", self.edit_selection),
+                ("⊖", "Убрать из модели выделенные ряды или выборку", self.remove_series),
+                ("ƒx", "Формула — готовые формулы Excel для выделенного ряда", self.formula),
+                ("▦", "Открыть в Excel — выделенные ряды отдельным файлом для просмотра", self.open_excel),
+                ("↗", "Открыть модель в Excel", lambda: self.open_model()),
+                ("▤", "Открыть файл с данными для модели (папка «Для моделей»)", self.open_packet),
+                ("☰", "Вид таблицы «Хаб» — строками (плоская) или столбцами", self.choose_layout),
+                ("⚡", "Проверить связь с Excel (если модель не подключается)", self.diagnose),
+                ("⏏", "Отключить модель — хаб перестанет обновлять для неё данные", self.disconnect))):
+            bar.add(W.icon_button(bar, icon, tip, cmd), gap_before=16 if i in (2, 4, 7) else 0)
         pw = ttk.PanedWindow(self, orient="vertical")
         pw.pack(fill="both", expand=True, pady=8)
         top, self.tree = W.tree_with_scroll(pw, ("name", "path", "n", "built", "news"),
@@ -49,9 +52,9 @@ class ModelsTab(ttk.Frame):
         sf.pack(fill="both", expand=True)
         self.groups = {}        # iid строки-группы -> ("sel", id) | ("job", id) | ("codes", None)
         self.code_of = {}       # iid строки-ряда -> код
-        ttk.Label(self, style="Hint.TLabel", wraplength=1100, justify="left", text=(
+        W.autowrap(ttk.Label(self, style="Hint.TLabel", justify="left", text=(
             "Модель получает данные через файл в папке «Для моделей» и обновляет их сама при открытии "
-            "(или «Данные → Обновить всё»). Новые ряды появляются справа, старые столбцы не сдвигаются.")).pack(anchor="w")
+            "(или «Данные → Обновить всё»). Новые ряды появляются справа, старые столбцы не сдвигаются."))).pack(fill="x")
 
     def refresh(self):
         sel = self.tree.selection()
@@ -379,9 +382,9 @@ class LayoutDialog(tk.Toplevel):
             ttk.Radiobutton(f, text=titles[key], value=key, variable=self.var).pack(anchor="w", pady=(8, 2))
             ttk.Label(f, text=self.EXAMPLES[key], font=("Consolas", 9), style="Muted.TLabel",
                       justify="left").pack(anchor="w", padx=24)
-        ttk.Label(f, style="Hint.TLabel", wraplength=720, justify="left", text=(
+        W.autowrap(ttk.Label(f, style="Hint.TLabel", justify="left", text=(
             "Строки удобны для фильтров, сводных таблиц и СУММЕСЛИМН по любому полю. Excel вмещает до 1 млн строк — "
-            "для больших выборок сузьте период или число рядов.")).pack(anchor="w", pady=(10, 0))
+            "для больших выборок сузьте период или число рядов."))).pack(fill="x", pady=(10, 0))
         bar = ttk.Frame(f)
         bar.pack(fill="x", pady=(14, 0))
         ttk.Button(bar, text="Применить", style="Accent.TButton", command=self.apply).pack(side="right")

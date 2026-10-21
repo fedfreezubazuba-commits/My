@@ -174,6 +174,13 @@ legacy/            исходные навигаторы пользовател�
   `tab_overview.review_quarantine` (объяснения `checks.explain`, выключение проверки `checks.switch_off`,
   решение в фоне, `store.accept_quarantine` пакетом).
 
+- **0.5.7 — окна**: кнопки-значки с подсказками (`widgets.icon_button`, `Tooltip`; только символы из BMP —
+  Tk 8.6 на Windows не рисует эмодзи вне BMP), панели кнопок с переносом (`FlowBar`), текст по ширине окна
+  (`autowrap` — только для растянутых меток), столбцы таблиц делят ширину пропорционально (`fit_columns`).
+  «Мои показатели»: ◷ `tab_jobs.JobWindow` (расписание + статус + история; старые имена HistoryWindow/EditWindow
+  — псевдонимы), ✎ «Изменить набор данных» — `gui/nav_edit.EditMode` в навигаторах ЕМИСС/ЦБ (тот же job,
+  меняются только params). Меню «Ещё ▾» убраны.
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

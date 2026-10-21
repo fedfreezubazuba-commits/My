@@ -92,6 +92,7 @@ def add_dim_tab(nb, title, items, on_change, years=False, before=None, note=""):
     lb.bind("<Button-1>", click)
     lb.bind("<Shift-Button-1>", shift_click)
     entry = (chosen, all_ids, tab, title)
+    tab.redraw = redraw              # перерисовать после смены отметок снаружи (режим «Изменить набор данных»)
     tab.after_idle(redraw)
     return entry
 

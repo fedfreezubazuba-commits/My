@@ -5,6 +5,7 @@ from tkinter import filedialog, messagebox, ttk
 from ..core import winsched
 from ..core.paths import set_workdir
 from ..excel.exports import open_file
+from . import widgets as W
 
 
 class SettingsTab(ttk.Frame):
@@ -16,13 +17,18 @@ class SettingsTab(ttk.Frame):
         g.pack(fill="x", anchor="n")
         r = 0
 
+        g.columnconfigure(1, weight=1)
+
         def row(label, widget, hint=""):
+            """Подпись | настройка; подсказка — под настройкой, по ширине окна."""
             nonlocal r
-            ttk.Label(g, text=label).grid(row=r, column=0, sticky="w", pady=6, padx=(0, 16))
-            widget.grid(row=r, column=1, sticky="w")
-            if hint:
-                ttk.Label(g, text=hint, style="Hint.TLabel", wraplength=560, justify="left").grid(row=r, column=2, sticky="w", padx=12)
+            ttk.Label(g, text=label).grid(row=r, column=0, sticky="nw", pady=(6, 0), padx=(0, 16))
+            widget.grid(row=r, column=1, sticky="w", pady=(6, 0))
             r += 1
+            if hint:
+                W.autowrap(ttk.Label(g, text=hint, style="Hint.TLabel", justify="left")).grid(
+                    row=r, column=1, sticky="ew", pady=(0, 2))
+                r += 1
 
         self.workdir = tk.StringVar()
         wf = ttk.Frame(g)

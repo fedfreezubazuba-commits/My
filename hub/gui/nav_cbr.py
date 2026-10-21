@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox, ttk
 from ..core.errors import human_message
 from .dimlist import add_dim_tab, chosen_years
 from ..sources.cbr_api import CBR, LONG_COLS, SITE, export, series_name
+from .nav_edit import EditMode
 
 SERVICE_URL = SITE + "/statistics/data-service/"
 PREVIEW_ROWS = 1000
@@ -26,7 +27,7 @@ def stems(text):
     return [w[:max(4, len(w) - 2)] for w in text.lower().split()]
 
 
-class CbrNav(ttk.Frame):
+class CbrNav(EditMode, ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
@@ -147,6 +148,7 @@ class CbrNav(ttk.Frame):
         self.add_btn = ttk.Button(act, text="＋ В обновления", style="Add.TButton", state="disabled",
                                   command=self._add_to_updates)
         self.add_btn.pack(side="right", padx=(6, 0))
+        self._edit_bar(act)
         self.dl_btn = ttk.Button(act, text="Скачать файл…", state="disabled", command=self._download)
         self.dl_btn.pack(side="right")
         act.pack_forget()
@@ -317,6 +319,13 @@ class CbrNav(ttk.Frame):
         node = self.node_of.get(sel[0]) if sel else None
         if not node or node["kind"] == "section":
             return
+        if self.editing:                     # выбрали другой показатель — это уже не изменение
+            p = self.editing.get("params") or {}
+            same = int(node["id"] if node["kind"] == "cat" else node["ind"]["category_id"]) == int(p.get("category", -1))
+            if node["kind"] == "ind":
+                same = same and [node["ind"]["indicator_id"]] == [int(i) for i in p.get("indicators") or []]
+            if not same:
+                self.cancel_edit()
         if self.busy:
             self.pending = node
             return
@@ -384,6 +393,10 @@ class CbrNav(ttk.Frame):
         years = [(y, str(y)) for y in range(y_from, y_to + 1)]
         self.lists["y"] = add_dim_tab(
             self.nb, "Год", years, self._update_counts, years=True)
+        if self.edit_pending and self.edit_pending.get("_y1"):
+            y1 = int(self.edit_pending.pop("_y1"))
+            self.edit_pending["y"] = [y for y, _t in years if y >= y1]
+        self.apply_pending(self.lists)
         self.nb.add(self.desc_tab, text="Описание")
         self.nb.add(self.preview_tab, text="Данные")
         self.nb.select(0)
@@ -534,7 +547,36 @@ class CbrNav(ttk.Frame):
         if not params:
             return
         from .dialog_add import AddDialog
-        AddDialog(self.app, "cbr", params, name)
+        self.save_or_add(params, name, lambda: AddDialog(self.app, "cbr", params, name))
+
+    def edit_job(self, job):
+        """«Изменить набор данных»: категория/показатель ЦБ с отмеченными разрезами и годами из параметров."""
+        p = job.get("params") or {}
+        inds = [int(i) for i in p.get("indicators") or []]
+        pending = {"m1": p.get("m1") or None, "m2": p.get("m2") or None, "_y1": p.get("y1"),
+                   "i": inds if len(inds) != 1 else None}
+        self.start_edit(job, pending)
+        if len(inds) == 1:
+            self.select_indicator(p["category"], inds[0])
+        else:
+            self.select_category(p["category"])
+
+    def select_category(self, category_id):
+        self.ensure_loaded()
+
+        def attempt(tries=0):
+            if not self.roots:
+                if tries < 300:
+                    self.after(200, lambda: attempt(tries + 1))
+                return
+            self.search_var.set("")
+            self.fill_tree()
+            for iid, node in self.node_of.items():
+                if node.get("kind") == "cat" and int(node["id"]) == int(category_id):
+                    self.tree.selection_set(iid)
+                    self.tree.see(iid)
+                    return
+        attempt()
 
     def select_indicator(self, category_id, indicator_id, name=""):
         """Открыть показатель из общего поиска."""

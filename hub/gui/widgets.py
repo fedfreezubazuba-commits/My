@@ -1,4 +1,5 @@
-"""Общие элементы интерфейса: стили, светофор, прокручиваемая панель, буфер обмена."""
+"""Общие элементы интерфейса: стили, светофор, прокручиваемая панель, буфер обмена,
+кнопки-значки с подсказками, панель кнопок с переносом, текст по ширине окна."""
 import sys
 import tkinter as tk
 from tkinter import ttk
@@ -11,6 +12,7 @@ BG = "#f5f7fa"
 CARD = "#ffffff"
 ACCENT = "#1565c0"
 MUTED = "#6b7785"
+ICON_FONT = ("Segoe UI Symbol", 13) if IS_WIN else ("DejaVu Sans", 12)   # значки — символы из шрифта
 
 
 def apply_style(root):
@@ -35,6 +37,7 @@ def apply_style(root):
     style.configure("Hint.TLabel", foreground=MUTED, font=(FONT, 9))
     style.configure("Accent.TButton", font=(FONT, 10, "bold"), padding=(12, 6))
     style.configure("Add.TButton", font=(FONT, 10, "bold"), padding=(12, 6), foreground=ACCENT)
+    style.configure("Icon.TButton", font=ICON_FONT, padding=(2, 0), width=2)
     style.configure("Treeview", rowheight=24)
     style.configure("Treeview.Heading", font=(FONT, 9, "bold"))
     for name, color in ST.COLORS.items():
@@ -73,7 +76,30 @@ def tree_with_scroll(parent, columns, headings, widths=None, height=12, show="he
     frame.rowconfigure(0, weight=1)
     frame.columnconfigure(0, weight=1)
     tag_colors(tree)
+    fit_columns(tree)
     return frame, tree
+
+
+def fit_columns(tree, minimum=40):
+    """Столбцы таблицы делят её ширину в тех же пропорциях — при узком окне видно все столбцы,
+    при широком таблица заполняет окно (вместо прокрутки вбок)."""
+    state = {"base": None, "w": 0}
+
+    def on(e):
+        if e.width < 50 or abs(e.width - state["w"]) < 3:
+            return
+        state["w"] = e.width
+        cols = list(tree["columns"])
+        if "tree" in str(tree.cget("show")):
+            cols = ["#0"] + cols
+        if state["base"] is None:
+            state["base"] = {c: max(minimum, int(tree.column(c, "width"))) for c in cols}
+        base = state["base"]
+        total = sum(base.values()) or 1
+        avail = e.width - 4
+        for c in cols:
+            tree.column(c, width=max(minimum, int(base.get(c, minimum) * avail / total)), stretch=False)
+    tree.bind("<Configure>", on, add="+")
 
 
 class ScrollFrame(ttk.Frame):
@@ -151,3 +177,93 @@ def text_window(parent, title, text, copy=True):
     t.pack(fill="both", expand=True)
     center(w, parent)
     return w
+
+
+class Tooltip:
+    """Подсказка при наведении (через полсекунды), как в обычных программах Windows."""
+
+    def __init__(self, widget, text, delay=500):
+        self.widget, self.text, self.delay = widget, text, delay
+        self.tip = self.job = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _e=None):
+        self._hide()
+        self.job = self.widget.after(self.delay, self._show)
+
+    def _show(self):
+        if self.tip or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 8
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self.tip = tk.Toplevel(self.widget)
+        self.tip.wm_overrideredirect(True)
+        self.tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self.tip, text=self.text, justify="left", background="#ffffe8", relief="solid", borderwidth=1,
+                 wraplength=360, padx=6, pady=3, font=(FONT, 9)).pack()
+
+    def _hide(self, _e=None):
+        if self.job:
+            self.widget.after_cancel(self.job)
+            self.job = None
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+
+def icon_button(parent, icon, tip, command, text=None, style=None):
+    """Кнопка-значок с подсказкой. С text — значок и подпись (для главных действий)."""
+    if text:
+        b = ttk.Button(parent, text=f"{icon}  {text}", command=command, style=style or "TButton")
+    else:
+        b = ttk.Button(parent, text=icon, command=command, style=style or "Icon.TButton")
+    b.tooltip = Tooltip(b, tip)
+    return b
+
+
+class FlowBar(ttk.Frame):
+    """Панель кнопок: если окно узкое, кнопки переносятся на следующую строку, а не прячутся за край."""
+
+    def __init__(self, parent, gap=6, **kw):
+        super().__init__(parent, **kw)
+        self.gap = gap
+        self.items = []
+        self.bind("<Configure>", lambda e: self._layout(e.width))
+
+    def add(self, widget, gap_before=0):
+        self.items.append((widget, gap_before))
+        self.after_idle(lambda: self._layout(self.winfo_width()))
+        return widget
+
+    def _layout(self, width):
+        if width <= 1:
+            width = 10000
+        x = y = row_h = 0
+        for w, gap_before in self.items:
+            ww, wh = w.winfo_reqwidth(), w.winfo_reqheight()
+            if x and x + gap_before + ww > width:
+                x, y, row_h = 0, y + row_h + 4, 0
+            elif x:
+                x += gap_before
+            w.place(in_=self, x=x, y=y)
+            x += ww + self.gap
+            row_h = max(row_h, wh)
+        h = y + row_h
+        if int(self.cget("height") or 0) != h:
+            self.configure(height=h)
+
+
+def autowrap(label, margin=24, minimum=160, initial=600):
+    """Текст переносится по ширине, которую метке даёт окно (вместо постоянной ширины).
+    Метка должна растягиваться (pack fill="x" или grid sticky="ew"); initial — ширина до первой раскладки,
+    чтобы окно без заданного размера не растянулось на всю длину строки."""
+    label.configure(wraplength=initial)
+
+    def on(e):
+        w = max(minimum, e.width - margin)
+        if abs(int(str(label.cget("wraplength") or 0)) - w) > 2:
+            label.configure(wraplength=w)
+    label.bind("<Configure>", on, add="+")
+    return label

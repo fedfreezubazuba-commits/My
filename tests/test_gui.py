@@ -409,3 +409,46 @@ def test_quarantine_decision_window(app, fakes):
     assert pump(app, 10, until=lambda: any("данные приняты" in str(a) for _f, a in app.shown))
     assert app.store.state(job["id"])["status"] == "updated" and not app.store.pending_quarantine(job["id"])
     assert "max_jump_pct" not in (app.cfg.job(job["id"]).get("checks") or {})
+
+
+def test_change_dataset_in_navigator(app, fakes, monkeypatch):
+    """«Изменить набор данных»: навигатор ЕМИСС с отмеченными значениями показателя, «Сохранить изменения»
+    меняет параметры того же показателя (id и коды прежние)."""
+    job = app.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883"]}, "years_from": 2024})
+    ran = []
+    monkeypatch.setattr(app, "update_jobs", lambda ids=None, **k: ran.append(ids))
+    app.jobs.refresh()
+    app.jobs.tree.selection_set(job["id"])
+    app.jobs.change_data()
+    nav = app.find.fedstat
+    assert pump(app, 5, until=lambda: "0" in nav.dim_lists and not nav.busy)
+    pump(app, 0.3)
+    region = nav.dim_lists["0"]
+    assert region[0] == {"1558883"}                                  # отмечено как в показателе
+    years = nav.dim_lists["3"][0]
+    labels = nav.info["filters"]["3"]["values"]
+    assert {labels[v].strip()[:4] for v in years} == {y for y in ("2024", "2025") if y in
+                                                      {t.strip()[:4] for t in labels.values()}}
+    assert "Сохранить" in str(nav.add_btn.cget("text"))
+    region[0].add("1558900")                                         # добавили регион
+    nav._add_to_updates()
+    new = app.cfg.job(job["id"])
+    assert new["params"]["id"] == 31074 and "0" not in new["params"].get("select", {})   # теперь «все регионы»
+    assert new["params"].get("years_from") == 2024 and ran == [[job["id"]]]
+    assert "В обновления" in str(nav.add_btn.cget("text"))           # режим изменения закончен
+    assert len(app.cfg.jobs()) == 1
+
+
+def test_job_window_schedule_and_history(app, fakes):
+    from hub.gui.tab_jobs import JobWindow
+    job = app.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]})
+    r = app.runner()
+    r.run(force=True)
+    r.close()
+    w = JobWindow(app, job["id"])
+    pump(app, 0.3)
+    assert w.series.get_children() and w.obs.get_children()          # история значений на месте
+    w.sched_box.mode.set("rules")
+    w.sched_box._render()
+    w.save()
+    assert app.cfg.job(job["id"])["schedule"] == "weekly:Mon@10:00" and "Сохранено" in w.saved.cget("text")

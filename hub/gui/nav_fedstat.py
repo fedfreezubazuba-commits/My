@@ -18,6 +18,7 @@ from tkinter import filedialog, messagebox, ttk
 from ..core.errors import human_message
 from ..sources.fedstat_api import BASE, Fedstat, sdmx_to_rows
 from .dimlist import add_dim_tab
+from .nav_edit import EditMode
 
 SEARCH_LIMIT = 1000
 PREVIEW_ROWS = 1000
@@ -28,7 +29,7 @@ YEARS = "3"
 HUGE = 2_000_000      # больше сочетаний — переспрашиваем: загрузка займёт часы
 
 
-class FedstatNav(ttk.Frame):
+class FedstatNav(EditMode, ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
@@ -130,6 +131,7 @@ class FedstatNav(ttk.Frame):
         self.add_btn = ttk.Button(act, text="＋ В обновления", style="Add.TButton", state="disabled",
                                   command=self._add_to_updates)
         self.add_btn.pack(side="right", padx=(6, 0))
+        self._edit_bar(act)
         self.dl_btn = ttk.Button(act, text="Скачать файл…", state="disabled", command=self._download)
         self.dl_btn.pack(side="right")
         act.pack_forget()
@@ -306,6 +308,8 @@ class FedstatNav(ttk.Frame):
         if not node or "children" in node or not node.get("id"):
             return
         ind_id = node["id"]
+        if self.editing and str(self.editing["params"].get("id")) != str(ind_id):
+            self.cancel_edit()              # выбрали другой показатель — это уже не изменение
         self.title_var.set(unescape(node["name"]))
         self.sub_var.set(f"ID {ind_id} — загрузка измерений…")
         self.run_bg(lambda: self.fs.indicator(ind_id), self._on_indicator,
@@ -329,6 +333,11 @@ class FedstatNav(ttk.Frame):
             return
         for k, f in info["filters"].items():
             self._add_dim_tab(k, f)
+        if self.edit_pending and self.edit_pending.get("_years_from"):
+            yf = int(self.edit_pending.pop("_years_from"))
+            vals = info["filters"].get(YEARS, {}).get("values", {})
+            self.edit_pending[YEARS] = [v for v, t in vals.items() if t.strip()[:4].isdigit() and int(t.strip()[:4]) >= yf]
+        self.apply_pending(self.dim_lists)
         self.nb.add(self.preview_tab, text="Данные")
         self.nb.select(0)
         self.dl_btn.configure(state="normal")
@@ -465,7 +474,25 @@ class FedstatNav(ttk.Frame):
             note = (f"Показатель большой (≈{total:,} значений) — хаб загрузит его частями (по годам, а если нужно — "
                     f"и по регионам/товарам), это может занять от минут до часов. Дальше будут докачиваться "
                     f"только свежие годы.").replace(",", " ")
-        AddDialog(self.app, "fedstat", params, name, note=note)
+        self.save_or_add(params, name, lambda: AddDialog(self.app, "fedstat", params, name, note=note))
+
+    def edit_job(self, job):
+        """«Изменить набор данных»: показатель открывается с отмеченными значениями из его параметров."""
+        p = job.get("params") or {}
+        pending = {str(k): v for k, v in (p.get("select") or {}).items()}
+        pending["_years_from"] = p.get("years_from")
+        self.start_edit(job, pending)
+        ind_id = str(p["id"])
+        self.title_var.set(job["name"])
+        self.sub_var.set(f"ID {ind_id} — загрузка измерений…")
+
+        def go():
+            if self.busy:                    # идёт загрузка каталога — дождёмся
+                self.after(300, go)
+                return
+            self.run_bg(lambda: self.fs.indicator(ind_id), self._on_indicator,
+                        f"Загрузка измерений показателя {ind_id}…")
+        go()
 
     def select_indicator(self, ind_id, name=""):
         self.ensure_loaded()

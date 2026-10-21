@@ -17,8 +17,8 @@ from .tab_overview import review_quarantine, send_claude
 COLS = ("name", "source", "volume", "last_period", "last_value", "updated", "attempt", "status", "expected", "models")
 HEAD = ("Название", "Источник", "Объём", "Последний период", "Последнее значение", "Обновлено",
         "Последняя попытка", "Статус", "Ожидаем новые", "Модели")
-WIDTH = {"name": 240, "source": 95, "volume": 190, "last_period": 80, "last_value": 110, "updated": 110,
-         "attempt": 110, "status": 170, "expected": 90, "models": 120}
+WIDTH = {"name": 320, "source": 95, "volume": 170, "last_period": 75, "last_value": 105, "updated": 100,
+         "attempt": 100, "status": 160, "expected": 85, "models": 110}
 FILTERS = ["Все", "Требуют внимания", "На паузе", "Банк России", "ЕМИСС", "Сайты и файлы"]
 
 
@@ -50,23 +50,22 @@ class JobsTab(ttk.Frame):
         cb.bind("<<ComboboxSelected>>", lambda e: self.refresh())
         ttk.Button(top, text="Корзина…", command=self.trash).pack(side="right")
 
-        bar = ttk.Frame(self)
+        bar = W.FlowBar(self)
         bar.pack(fill="x", pady=(8, 4))
-        for text, cmd, style in (("⟳ Обновить сейчас", self.update_now, "Accent.TButton"),
-                                 ("Формула", self.formula, "TButton"),
-                                 ("Открыть в Excel", self.open_excel, "TButton"),
-                                 ("История", self.history, "TButton"),
-                                 ("Изменить", self.edit, "TButton"),
-                                 ("Пауза / продолжить", self.pause, "TButton"),
-                                 ("Удалить", self.delete, "TButton")):
-            ttk.Button(bar, text=text, command=cmd, style=style).pack(side="left", padx=(0, 6))
-        more = ttk.Menubutton(bar, text="Ещё ▾")
-        menu = tk.Menu(more, tearoff=False)
-        menu.add_command(label="Открыть источник", command=self.open_source)
-        menu.add_command(label="Отправить Claude", command=self.claude)
-        menu.add_command(label="Принять / отклонить отложенные данные", command=self.review)
-        more["menu"] = menu
-        more.pack(side="left")
+        bar.add(W.icon_button(bar, "⟳", "Загрузить выделенные показатели сейчас, не дожидаясь расписания",
+                              self.update_now, text="Обновить сейчас", style="Accent.TButton"))
+        for i, (icon, tip, cmd) in enumerate((
+                ("ƒx", "Формула — готовые формулы Excel для ряда показателя", self.formula),
+                ("▦", "Открыть в Excel — все данные показателя отдельным файлом", self.open_excel),
+                ("◷", "График обновления — когда проверять, статус и история значений (двойной щелчок)",
+                 self.history),
+                ("✎", "Изменить набор данных — регионы, товары, годы… (ЕМИСС и Банк России)", self.change_data),
+                ("⏯", "Пауза / продолжить — временно не проверять показатель", self.pause),
+                ("⚖", "Отложенные данные — посмотреть, принять или отклонить", self.review),
+                ("↗", "Открыть источник — страница показателя на сайте", self.open_source),
+                ("✉", "Отправить Claude — описание проблемы в буфер обмена (без паролей)", self.claude),
+                ("✖", "Удалить — убрать в корзину (30 дней можно восстановить)", self.delete))):
+            bar.add(W.icon_button(bar, icon, tip, cmd), gap_before=16 if i in (0, 4, 6, 8) else 0)
 
         frame, self.tree = W.tree_with_scroll(self, COLS, HEAD, WIDTH, height=20, selectmode="extended")
         frame.pack(fill="both", expand=True)
@@ -74,7 +73,8 @@ class JobsTab(ttk.Frame):
         self.tree.bind("<Button-3>", self._context)
         self.ctx = tk.Menu(self, tearoff=False)
         for label, cmd in (("Обновить сейчас", self.update_now), ("Формула", self.formula),
-                           ("Открыть в Excel", self.open_excel), ("История", self.history), ("Изменить", self.edit),
+                           ("Открыть в Excel", self.open_excel), ("График обновления и история", self.history),
+                           ("Изменить набор данных", self.change_data),
                            ("Пауза / продолжить", self.pause), ("Открыть источник", self.open_source),
                            ("Отправить Claude", self.claude), ("Удалить", self.delete)):
             self.ctx.add_command(label=label, command=cmd)
@@ -233,6 +233,23 @@ class JobsTab(ttk.Frame):
         if jid:
             HistoryWindow(self.app, jid)
 
+    def change_data(self):
+        """Тот же показатель в навигаторе с отмеченными значениями — поменять регионы, товары, годы."""
+        jid = self.selected()
+        if not jid:
+            return
+        job = self.app.cfg.job(jid)
+        find = self.app.find
+        if job["source"] not in ("fedstat", "cbr"):
+            messagebox.showinfo("Изменить набор данных", "Для сайтов и файлов набор данных задаётся при добавлении. "
+                                "Чтобы поменять его, добавьте показатель заново («Найти данные → Сайт» или «Файл»), "
+                                "а этот удалите.", parent=self)
+            return
+        nav = find.fedstat if job["source"] == "fedstat" else find.cbr
+        self.app.nb.select(find)
+        find.nb.select(nav)
+        nav.edit_job(job)
+
     def edit(self):
         jid = self.selected()
         if jid:
@@ -270,9 +287,9 @@ class FormulaWindow(tk.Toplevel):
         ttk.Radiobutton(loc, text="Excel на английском", value="en", variable=self.locale, command=self.fill).pack(side="left", padx=10)
         self.body = ttk.Frame(self, padding=10)
         self.body.pack(fill="both", expand=True)
-        ttk.Label(self, padding=10, style="Hint.TLabel", wraplength=860, justify="left", text=(
+        W.autowrap(ttk.Label(self, padding=10, style="Hint.TLabel", justify="left", text=(
             "Формулы ссылаются на таблицы Хаб и Хаб_Ряды на листе «Хаб» вашей модели. Замените $A10 на ячейку "
-            "с датой (конец месяца, квартала или года). Если ряда нет в модели — отметьте его на вкладке «Модели».")).pack(fill="x")
+            "с датой (конец месяца, квартала или года). Если ряда нет в модели — отметьте его на вкладке «Модели»."))).pack(fill="x")
         self.fill()
         W.center(self, app.root)
 
@@ -293,43 +310,87 @@ class FormulaWindow(tk.Toplevel):
                        ).pack(side="left", padx=6)
 
 
-class HistoryWindow(tk.Toplevel):
+class JobWindow(tk.Toplevel):
+    """«График обновления»: как часто проверять (правила, даты выхода), статус простыми словами,
+    история значений и запусков — в одном окне."""
+
     def __init__(self, app, job_id):
         super().__init__(app.root)
         self.app = app
-        job = app.cfg.job(job_id)
-        self.title(f"История: {job['name']}")
-        self.geometry("1000x620")
+        self.job = job = app.cfg.job(job_id)
         st = app.store.state(job_id)
-        info = (f"Расписание: {S.human(job.get('schedule'))}.  Статус: {ST.word(ST.effective(job, st))}. "
-                f"{ST.explain(job, st)}")
-        if job.get("release_dates"):
-            info += "\nГрафик выхода: " + ", ".join(S.fmt_moment(d) for d in job["release_dates"][:6]) + \
-                ("…" if len(job["release_dates"]) > 6 else "")
+        self.title(f"График обновления: {job['name']}")
+        self.geometry("1080x780")
+
+        bar = ttk.Frame(self, padding=(12, 8))          # кнопки снизу — видны при любом размере окна
+        bar.pack(side="bottom", fill="x")
+        ttk.Button(bar, text="Закрыть", command=self.destroy).pack(side="right")
+        self.saved = ttk.Label(bar, style="green.TLabel")
+        self.saved.pack(side="left")
+
+        top = ttk.Frame(self, padding=(12, 10, 12, 0))
+        top.pack(fill="x")
+        top.columnconfigure(0, weight=1)
+        top.columnconfigure(1, weight=1)
+        left = ttk.Frame(top)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        ttk.Label(left, text="Название").pack(anchor="w")
+        self.name = tk.StringVar(value=job["name"])
+        ttk.Entry(left, textvariable=self.name).pack(fill="x", pady=(0, 8))
+        ttk.Label(left, text="Когда проверять", style="Title.TLabel").pack(anchor="w")
+        hint = ""
+        if st.get("release_next") or st.get("release_note"):
+            hint = "источник сообщает: " + "; ".join(x for x in (
+                ("следующее обновление " + S.fmt_moment(st["release_next"])) if st.get("release_next") else "",
+                st.get("release_note") or "") if x)
+        self.sched_box = ScheduleBox(left, job.get("schedule", "auto"), job.get("release_dates"), hint)
+        self.sched_box.pack(fill="x")
+        more = W.Collapsible(left, "Проверки новых данных")
+        more.pack(fill="x", pady=(6, 0))
+        r = ttk.Frame(more.body)
+        r.pack(fill="x")
+        ttk.Label(r, text="Отложить данные, если значение изменилось больше чем на, %:").pack(side="left")
+        self.jump = tk.StringVar(value=str((job.get("checks") or {}).get("max_jump_pct") or ""))
+        ttk.Entry(r, textvariable=self.jump, width=8).pack(side="left", padx=6)
+        ttk.Button(left, text="Сохранить график", style="Accent.TButton", command=self.save).pack(anchor="w", pady=8)
+
+        right = ttk.Frame(top)
+        right.grid(row=0, column=1, sticky="nsew")
+        ttk.Label(right, text="Статус", style="Title.TLabel").pack(anchor="w")
+        status = ST.effective(job, st)
+        info = f"{ST.word(status)}. {ST.explain(job, st)}"
         if job["source"] == "fedstat" and not (st.get("release_next") or st.get("release_note")):
-            info += ("\nИсточник о сроках: на странице показателя ЕМИСС срок следующего обновления не нашёлся — "
+            info += ("\n\nИсточник о сроках: на странице показателя ЕМИСС срок следующего обновления не нашёлся — "
                      "хаб оценивает его по тому, когда данные выходили раньше.")
-        ttk.Label(self, text=info, padding=10, wraplength=960, justify="left").pack(fill="x")
+        W.autowrap(ttk.Label(right, text=info, justify="left",
+                             foreground=ST.COLORS[ST.color(status)] if ST.color(status) != ST.GREEN else "")
+                   ).pack(fill="x")
         if st.get("warnings"):
-            ttk.Label(self, text="Замечания: " + short(st["warnings"], 600), padding=(10, 0), style="yellow.TLabel",
-                      wraplength=960).pack(fill="x")
-        pw = ttk.PanedWindow(self, orient="horizontal")
-        pw.pack(fill="both", expand=True, padx=10, pady=6)
+            W.autowrap(ttk.Label(right, text="Замечания: " + short(st["warnings"], 600), style="yellow.TLabel",
+                                 justify="left")).pack(fill="x", pady=(6, 0))
+
+        hist = ttk.Notebook(self)
+        hist.pack(fill="both", expand=True, padx=12, pady=(6, 0))
+        vals = ttk.Frame(hist)
+        hist.add(vals, text="История значений")
+        pw = ttk.PanedWindow(vals, orient="horizontal")
+        pw.pack(fill="both", expand=True, pady=4)
         lf, self.series = W.tree_with_scroll(pw, ("code", "name"), ("Код", "Ряд"), {"code": 190, "name": 260})
         pw.add(lf, weight=2)
         rf, self.obs = W.tree_with_scroll(pw, ("label", "date", "value", "state", "fetched"),
                                           ("Период", "Дата", "Значение", "Состояние", "Получено"),
                                           {"label": 80, "date": 90, "value": 110, "state": 120, "fetched": 130})
         pw.add(rf, weight=3)
-        for s in app.store.series_of_job(job_id):
+        for s in app.store.series_of_job(job_id)[:3000]:
             self.series.insert("", "end", iid=s["code"], values=(s["code"], f"{s['name']} [{s['unit']}]"))
         self.series.bind("<<TreeviewSelect>>", lambda e: self.show())
-        ttk.Label(self, text="Последние запуски", style="Title.TLabel", padding=(10, 4)).pack(anchor="w")
-        rf2, runs = W.tree_with_scroll(self, ("when", "status", "new", "rev", "msg"),
+        runs_tab = ttk.Frame(hist)
+        hist.add(runs_tab, text="Загрузки")
+        rf2, runs = W.tree_with_scroll(runs_tab, ("when", "status", "new", "rev", "msg"),
                                        ("Когда", "Статус", "Новых", "Пересмотров", "Сообщение"),
-                                       {"when": 130, "status": 150, "new": 60, "rev": 90, "msg": 520}, height=6)
-        rf2.pack(fill="x", padx=10, pady=(0, 10))
-        for r in app.store.runs(job_id, 30):
+                                       {"when": 130, "status": 150, "new": 60, "rev": 90, "msg": 520})
+        rf2.pack(fill="both", expand=True, pady=4)
+        for r in app.store.runs(job_id, 50):
             runs.insert("", "end", values=(fmt_date(r["started"]), ST.word(r["status"]), r["new_periods"] or 0,
                                            r["revisions"] or 0, short(r["message"] or "", 300)))
         kids = self.series.get_children()
@@ -347,49 +408,6 @@ class HistoryWindow(tk.Toplevel):
             self.obs.insert("", "end", values=(r["period_label"], fmt_date(r["period_end"]), fmt(r["value"]),
                                                names.get(r["state"], r["state"]), fmt_date(r["fetched_at"])))
 
-
-class EditWindow(tk.Toplevel):
-    def __init__(self, app, job_id):
-        super().__init__(app.root)
-        self.app = app
-        self.job = app.cfg.job(job_id)
-        self.title(f"Изменить: {self.job['name']}")
-        self.transient(app.root)
-        f = ttk.Frame(self, padding=16)
-        f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Название").grid(row=0, column=0, sticky="w")
-        self.name = tk.StringVar(value=self.job["name"])
-        ttk.Entry(f, textvariable=self.name, width=60).grid(row=0, column=1, sticky="we", pady=3)
-        ttk.Label(f, text="Как часто проверять").grid(row=1, column=0, sticky="nw", pady=3)
-        st = app.store.state(job_id)
-        hint = ""
-        if st.get("release_next") or st.get("release_note"):
-            hint = "источник сообщает: " + "; ".join(x for x in (
-                ("следующее обновление " + S.fmt_moment(st["release_next"])) if st.get("release_next") else "",
-                st.get("release_note") or "") if x)
-        self.sched_box = ScheduleBox(f, self.job.get("schedule", "auto"), self.job.get("release_dates"), hint)
-        self.sched_box.grid(row=1, column=1, sticky="we", pady=3)
-        ttk.Label(f, text="Порог скачка, %").grid(row=3, column=0, sticky="w")
-        self.jump = tk.StringVar(value=str((self.job.get("checks") or {}).get("max_jump_pct") or ""))
-        ttk.Entry(f, textvariable=self.jump, width=10).grid(row=3, column=1, sticky="w", pady=3)
-        ttk.Label(f, text="Модели").grid(row=4, column=0, sticky="nw", pady=(8, 0))
-        mf = ttk.Frame(f)
-        mf.grid(row=4, column=1, sticky="w", pady=(8, 0))
-        self.mvars = {}
-        for m in app.cfg.models():
-            if not m.get("active", True):
-                continue
-            v = tk.BooleanVar(value=job_id in m["jobs"])
-            self.mvars[m["name"]] = v
-            ttk.Checkbutton(mf, text=m["name"], variable=v).pack(anchor="w")
-        if not self.mvars:
-            ttk.Label(mf, text="нет подключённых моделей", style="Muted.TLabel").pack(anchor="w")
-        bar = ttk.Frame(f)
-        bar.grid(row=5, column=0, columnspan=2, sticky="e", pady=(14, 0))
-        ttk.Button(bar, text="Сохранить", style="Accent.TButton", command=self.save).pack(side="right")
-        ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="right", padx=8)
-        W.center(self, app.root)
-
     def save(self):
         try:
             schedule, release = self.sched_box.get()
@@ -406,19 +424,13 @@ class EditWindow(tk.Toplevel):
                 return
         else:
             checks.pop("max_jump_pct", None)
-        self.app.cfg.update_job(self.job["id"], name=self.name.get().strip() or self.job["name"],
-                                schedule=schedule, release_dates=release, checks=checks)
-        models = self.app.cfg.models()
-        for m in models:
-            if m["name"] in self.mvars:
-                want = self.mvars[m["name"]].get()
-                if want and self.job["id"] not in m["jobs"]:
-                    m["jobs"].append(self.job["id"])
-                elif not want and self.job["id"] in m["jobs"]:
-                    m["jobs"].remove(self.job["id"])
-        self.app.cfg.save_models(models)
-        self.destroy()
+        self.job = self.app.cfg.update_job(self.job["id"], name=self.name.get().strip() or self.job["name"],
+                                           schedule=schedule, release_dates=release, checks=checks)
+        self.saved.configure(text="✔ Сохранено: " + S.human(schedule))
         self.app.refresh_all()
+
+
+HistoryWindow = EditWindow = JobWindow      # прежние имена (двойной щелчок, контекстное меню, тесты)
 
 
 class TrashWindow(tk.Toplevel):

@@ -13,18 +13,15 @@ class OverviewTab(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent, padding=12)
         self.app = app
-        head = ttk.Frame(self)
+        head = W.FlowBar(self, gap=16)
         head.pack(fill="x")
-        self.big = ttk.Label(head, text="…", style="Big.TLabel")
-        self.big.pack(side="left")
-        right = ttk.Frame(head)
-        right.pack(side="right")
-        ttk.Button(right, text="⟳ Обновить всё сейчас", style="Accent.TButton",
-                   command=lambda: app.update_jobs(force=True)).pack(side="right", padx=(8, 0))
+        self.big = head.add(ttk.Label(head, text="…", style="Big.TLabel"))
         self.auto = tk.BooleanVar()
-        self.auto_chk = ttk.Checkbutton(right, text="Автообновление", variable=self.auto, command=self._toggle_auto)
-        self.auto_chk.pack(side="right")
-        self.auto_info = ttk.Label(self, style="Muted.TLabel")
+        self.auto_chk = head.add(ttk.Checkbutton(head, text="Автообновление", variable=self.auto,
+                                                 command=self._toggle_auto), gap_before=24)
+        head.add(W.icon_button(head, "⟳", "Сейчас же проверить все показатели (без учёта расписания)",
+                               lambda: app.update_jobs(force=True), text="Обновить всё сейчас", style="Accent.TButton"))
+        self.auto_info = W.autowrap(ttk.Label(self, style="Muted.TLabel", justify="left"))
         self.auto_info.pack(fill="x", pady=(2, 8))
         self.body = W.ScrollFrame(self)
         self.body.pack(fill="both", expand=True)
@@ -68,11 +65,11 @@ class OverviewTab(ttk.Frame):
 
         if not cfg.jobs():
             self._section(inner, "С чего начать")
-            ttk.Label(inner, wraplength=900, justify="left", text=(
+            W.autowrap(ttk.Label(inner, justify="left", text=(
                 "1. Откройте вкладку «Найти данные», найдите показатель (например, ставки по вкладам в «Банк России»)\n"
                 "    и нажмите «＋ В обновления».\n"
                 "2. На вкладке «Модели» нажмите «Подключить модель» и выберите файл Excel.\n"
-                "3. Отметьте, какие ряды получает модель. В модели нажмите «Данные → Обновить всё».")).pack(anchor="w")
+                "3. Отметьте, какие ряды получает модель. В модели нажмите «Данные → Обновить всё»."))).pack(fill="x")
             ttk.Button(inner, text="Найти данные →", command=lambda: self.app.show(self.app.find)).pack(anchor="w", pady=8)
 
         if stale and enabled:
@@ -94,14 +91,19 @@ class OverviewTab(ttk.Frame):
         ups = overview.recent_updates(cfg, store)
         if not ups:
             ttk.Label(inner, text="Пока нет.", style="Muted.TLabel").pack(anchor="w")
-        for u in ups:
-            row = ttk.Frame(inner)
-            row.pack(fill="x", pady=1)
+        table = ttk.Frame(inner)
+        table.pack(fill="x")
+        table.columnconfigure(0, weight=2, minsize=160)
+        table.columnconfigure(1, weight=3, minsize=200)
+        for i, u in enumerate(ups):
             val = f"{fmt(u['last_value'])} {u['unit'] or ''}".strip()
-            ttk.Label(row, text=f"● {u['job']['name']}", style="green.TLabel").pack(side="left")
-            ttk.Label(row, text=f"   новых значений: {u['new'] or 0}" + (f", пересмотров: {u['revisions']}" if u["revisions"] else "")
-                      + (f"   последнее: {val} за {u['last_label']}" if u["last_label"] else "")
-                      + f"   ({fmt_date(u['when'])})", style="Muted.TLabel").pack(side="left")
+            W.autowrap(ttk.Label(table, text=f"● {u['job']['name']}", style="green.TLabel", justify="left")).grid(
+                row=i, column=0, sticky="new", padx=(0, 10), pady=1)
+            W.autowrap(ttk.Label(table, text=f"новых значений: {u['new'] or 0}"
+                                 + (f", пересмотров: {u['revisions']}" if u["revisions"] else "")
+                                 + (f";  последнее: {val} за {u['last_label']}" if u["last_label"] else "")
+                                 + f"  ({fmt_date(u['when'])})", style="Muted.TLabel", justify="left")).grid(
+                row=i, column=1, sticky="new", pady=1)
 
         self._section(inner, "Модели с новыми данными")
         mods = models_with_new_data(cfg, store)
@@ -120,14 +122,14 @@ class OverviewTab(ttk.Frame):
     def _block_row(self, parent, host, till):
         box = ttk.Frame(parent, padding=(0, 2, 0, 6))
         box.pack(fill="x")
-        ttk.Label(box, wraplength=900, justify="left", style="yellow.TLabel", text=(
+        W.autowrap(ttk.Label(box, justify="left", style="yellow.TLabel", text=(
             f"{HB.title(host)} перестал отвечать хабу («доступ запрещён»). Обычно так сайт защищается, когда к нему "
             f"было много запросов, и через несколько часов снимает ограничение сам. Хаб не обращается к этому сайту "
-            f"до {till:%H:%M %d.%m} и потом попробует снова — делать ничего не нужно.")).pack(anchor="w")
-        ttk.Label(box, wraplength=900, justify="left", style="Muted.TLabel", text=(
+            f"до {till:%H:%M %d.%m} и потом попробует снова — делать ничего не нужно."))).pack(fill="x")
+        W.autowrap(ttk.Label(box, justify="left", style="Muted.TLabel", text=(
             "Если данные нужны раньше: «Открыть сайт» — откроется окно встроенного браузера. Если сайт покажет "
             "проверку «я не робот», пройдите её и закройте окно — хаб запомнит это и сразу попробует снова. "
-            "Если сайт открылся сразу без проверки, просто закройте окно.")).pack(anchor="w", pady=(2, 4))
+            "Если сайт открылся сразу без проверки, просто закройте окно."))).pack(fill="x", pady=(2, 4))
         row = ttk.Frame(box)
         row.pack(anchor="w")
         ttk.Button(row, text="Открыть сайт", command=lambda: self.site_check(host)).pack(side="left")
@@ -154,21 +156,30 @@ class OverviewTab(ttk.Frame):
     MAX_ROWS = 40
 
     def _problem_rows(self, parent, items):
+        table = ttk.Frame(parent)
+        table.pack(fill="x")
         for p in items[:self.MAX_ROWS]:
-            self._problem_row(parent, p)
+            self._problem_row(table, p)
         if len(items) > self.MAX_ROWS:
             ttk.Label(parent, text=f"…и ещё {len(items) - self.MAX_ROWS} — все на вкладке «Мои показатели».",
                       style="Muted.TLabel").pack(anchor="w")
 
     def _problem_row(self, parent, p):
-        row = ttk.Frame(parent, padding=(0, 3))
-        row.pack(fill="x")
+        """Строка проблемы: статус | показатель | что случилось | кнопка — ровными столбцами."""
+        if not getattr(parent, "_grid_ready", False):
+            parent.columnconfigure(1, weight=2, minsize=160)
+            parent.columnconfigure(2, weight=3, minsize=200)
+            parent._grid_ready = True
+        r = parent.grid_size()[1]
         st = ST.effective(p.job, p.state)
-        ttk.Label(row, text=W.status_text(st), style=f"{ST.color(st)}.TLabel", width=24).pack(side="left")
-        ttk.Label(row, text=p.job["name"], font=(W.FONT, 10, "bold")).pack(side="left")
-        ttk.Label(row, text="  " + p.text, style="Muted.TLabel", wraplength=640, justify="left").pack(side="left")
+        ttk.Label(parent, text=W.status_text(st), style=f"{ST.color(st)}.TLabel").grid(
+            row=r, column=0, sticky="nw", padx=(0, 10), pady=4)
+        W.autowrap(ttk.Label(parent, text=p.job["name"], font=(W.FONT, 10, "bold"), justify="left")).grid(
+            row=r, column=1, sticky="new", padx=(0, 10), pady=4)
+        W.autowrap(ttk.Label(parent, text=p.text, style="Muted.TLabel", justify="left")).grid(
+            row=r, column=2, sticky="new", padx=(0, 10), pady=4)
         if p.action_label:
-            ttk.Button(row, text=p.action_label, command=lambda: self.act(p)).pack(side="right")
+            ttk.Button(parent, text=p.action_label, command=lambda: self.act(p)).grid(row=r, column=3, sticky="ne", pady=2)
 
     def act(self, p):
         if p.action == "retry":
@@ -237,14 +248,14 @@ def review_quarantine(app, qid, job):
     body.pack(fill="both", expand=True)
     when = fmt_date(q["created"]) if q else ""
     ttk.Label(body, text="Что случилось", style="Title.TLabel").pack(anchor="w")
-    ttk.Label(body, wraplength=860, justify="left", text=(
+    W.autowrap(ttk.Label(body, justify="left", text=(
         f"При загрузке {when} хаб заметил необычное и не стал сразу отдавать новые данные в модели — "
-        "чтобы не испортить ваши расчёты. Сейчас в моделях прежние данные.")).pack(anchor="w")
+        "чтобы не испортить ваши расчёты. Сейчас в моделях прежние данные."))).pack(fill="x")
     for r in reasons[:MAX_REASONS]:
         text, _k, _o = CH.explain(r)
-        ttk.Label(body, text="• " + short(r, 300), wraplength=840, justify="left").pack(anchor="w", padx=(10, 0))
+        W.autowrap(ttk.Label(body, text="• " + short(r, 300), justify="left")).pack(fill="x", padx=(10, 0))
         if text:
-            ttk.Label(body, text=text, style="Muted.TLabel", wraplength=820, justify="left").pack(anchor="w", padx=(26, 0))
+            W.autowrap(ttk.Label(body, text=text, style="Muted.TLabel", justify="left")).pack(fill="x", padx=(26, 0))
     if len(reasons) > MAX_REASONS:
         ttk.Label(body, text=f"…и ещё {len(reasons) - MAX_REASONS} замечаний", style="Muted.TLabel").pack(anchor="w")
 
@@ -254,9 +265,9 @@ def review_quarantine(app, qid, job):
         n_new, n_changed = n_new + a_, n_changed + b_
     ttk.Label(body, text="Что изменится, если принять", style="Title.TLabel").pack(anchor="w", pady=(10, 0))
     if n_new or n_changed:
-        ttk.Label(body, wraplength=860, justify="left", text=(
+        W.autowrap(ttk.Label(body, justify="left", text=(
             f"Новых значений: {n_new:,}, изменённых прежних: {n_changed:,}. Ниже — примеры "
-            f"(«Было» — что сейчас в моделях).").replace(",", " ")).pack(anchor="w")
+            f"(«Было» — что сейчас в моделях).").replace(",", " "))).pack(fill="x")
         frame, tree = W.tree_with_scroll(body, ("name", "label", "old", "new"), ("Ряд", "Период", "Было", "Стало"),
                                          {"name": 420, "label": 90, "old": 120, "new": 120}, height=8)
         frame.pack(fill="both", expand=True, pady=(4, 0))
@@ -269,9 +280,9 @@ def review_quarantine(app, qid, job):
                 tree.insert("", "end", values=(r["name"], r["period_label"], fmt(cur[0]) if cur else "—", fmt(r["value"])))
                 shown += 1
     else:
-        ttk.Label(body, wraplength=860, justify="left", text=(
+        W.autowrap(ttk.Label(body, justify="left", text=(
             "Числа не меняются — меняются только подписи (единицы измерения или названия). "
-            "Принять безопасно, если новые подписи вам подходят.")).pack(anchor="w")
+            "Принять безопасно, если новые подписи вам подходят."))).pack(fill="x")
 
     def decide(accept):
         for b in bar.winfo_children():
