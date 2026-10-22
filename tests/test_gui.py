@@ -472,3 +472,61 @@ def test_fedstat_fields_cached_and_failure_saved(app, fakes, monkeypatch):
     assert pump(app, 10, until=lambda: any("Поля показателя не загрузились" in str(a) for _f, a in app.shown))
     saved = list(app.paths.claude.glob("*emiss_99999*"))
     assert saved and "Showcase without filters" in saved[0].read_text(encoding="utf-8")
+
+
+def _all_widgets(w):
+    out = [w]
+    for c in w.winfo_children():
+        out += _all_widgets(c)
+    return out
+
+
+def test_overview_news_calendar_filters(app):
+    """«Обзор»: новые данные — «по … период, +N записей (дата)», календарь с закрашенным днём и подсказкой,
+    кнопки-фильтры источников сохраняются в настройках."""
+    import datetime as dt
+    from hub.gui.dialog_add import AddDialog
+    d = AddDialog(app, "cbr", {"category": 18, "indicators": [37], "m1": [2]}, "Ставки по вкладам")
+    d.add()
+    assert pump(app, 10, until=lambda: "Получено" in d.result.cget("text"))
+    ov = app.overview
+    ov.refresh()
+    pump(app, 0.3)
+    texts = [w.cget("text") for w in _all_widgets(ov.news) if w.winfo_class() in ("TLabel", "Label")]
+    line = next(t for t in texts if "запис" in t)
+    assert line.startswith("по ") and "+" in line and " в " in line
+    today = dt.date.today()
+    day = next(w for w in _all_widgets(ov.cal) if w.winfo_class() == "Label" and w.cget("text") == str(today.day))
+    assert "Ставки по вкладам" in day.tooltip.text
+    # фильтр «Сайты» — показателя ЦБ не видно; настройка сохранилась
+    var, btn, _t = ov.groups["sites"]
+    btn.invoke()
+    pump(app, 0.2)
+    assert app.cfg.settings()["overview_sources"] == ["sites"]
+    assert "✓ Сайты" == ov.groups["sites"][1].cget("text")
+    texts = [w.cget("text") for w in _all_widgets(ov.news) if w.winfo_class() in ("TLabel", "Label")]
+    assert not any("запис" in t for t in texts)
+    ov.groups["cbr"][1].invoke()
+    pump(app, 0.2)
+    texts = [w.cget("text") for w in _all_widgets(ov.news) if w.winfo_class() in ("TLabel", "Label")]
+    assert any("запис" in t for t in texts)
+    ov.refresh()                          # после перерисовки фильтры те же
+    assert ov.chosen_groups() == {"sites", "cbr"}
+    ov._shift_month(-1)
+    ov._shift_month(1)
+
+
+def test_jobs_sort_by_heading(app):
+    from hub.gui import widgets as W
+    tree = app.jobs.tree
+    for i, (name, upd) in enumerate((("Бета", "05.10.2026 10:00"), ("альфа", "—"), ("Гамма", "21.09.2026 09:00"))):
+        tree.insert("", "end", iid=f"x{i}", values=(name, "", "", "", "", upd))
+    assert tree.heading("name", "command")      # заголовок кликабельный
+    tree._sort.update(col="name", rev=False)
+    W.resort(tree)
+    assert [tree.set(i, "name") for i in tree.get_children()][:3] == ["альфа", "Бета", "Гамма"]
+    tree._sort.update(col="updated", rev=True)
+    W.resort(tree)
+    assert [tree.set(i, "updated") for i in tree.get_children()] == ["05.10.2026 10:00", "21.09.2026 09:00", "—"]
+    assert W.sort_key_fn(["10 рядов", "9 рядов"])("10 рядов") == 10
+    assert W.sort_key_fn(["2026-01", "2025-Q3"])("2026-01") == "2026-01"

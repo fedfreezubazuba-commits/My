@@ -46,6 +46,54 @@ def label(periodicity, d: dt.date) -> str:
     return d.isoformat()
 
 
+def label_end(period_label) -> dt.date | None:
+    """Обратно к label(): «2026-08» → 31.08.2026, «2026-W42» → воскресенье 42-й недели, «2026» → 31.12.2026."""
+    p = str(period_label or "").strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", p):
+            return dt.date.fromisoformat(p)
+        m = re.fullmatch(r"(\d{4})-(\d{2})", p)
+        if m:
+            return month_end(int(m.group(1)), int(m.group(2)))
+        m = re.fullmatch(r"(\d{4})-Q([1-4])", p)
+        if m:
+            return quarter_end(int(m.group(1)), int(m.group(2)))
+        m = re.fullmatch(r"(\d{4})-H([12])", p)
+        if m:
+            return month_end(int(m.group(1)), 6 if m.group(2) == "1" else 12)
+        m = re.fullmatch(r"(\d{4})-W(\d{2})", p)
+        if m:
+            return dt.date.fromisocalendar(int(m.group(1)), int(m.group(2)), 7)
+        if re.fullmatch(r"\d{4}", p):
+            return dt.date(int(p), 12, 31)
+    except ValueError:
+        return None
+    return None
+
+
+ROMAN = {"1": "I", "2": "II", "3": "III", "4": "IV"}
+
+
+def upto_text(period_label) -> str:
+    """По какой период пришли данные, по-человечески: «по август 2026», «по неделю с 13.10.2026»,
+    «по III кв. 2026», «по I полугодие 2026», «по 2026 год», «по 21.10.2026»."""
+    p = str(period_label or "").strip()
+    end = label_end(p)
+    if end is None:
+        return f"по {p}" if p else ""
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", p):
+        return f"по {end:%d.%m.%Y}"
+    if "-W" in p:
+        return f"по неделю с {end - dt.timedelta(days=6):%d.%m.%Y}"
+    if "-Q" in p:
+        return f"по {ROMAN[p[-1]]} кв. {p[:4]}"
+    if "-H" in p:
+        return f"по {ROMAN[p[-1]]} полугодие {p[:4]}"
+    if len(p) == 4:
+        return f"по {p} год"
+    return f"по {MONTHS_RU[end.month - 1]} {end.year}"
+
+
 def rank(period_label: str) -> int:
     """Чем меньше, тем подробнее период (так же, как функция Ранг в M-шаблоне)."""
     p = period_label or ""

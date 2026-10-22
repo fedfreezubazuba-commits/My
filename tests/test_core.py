@@ -333,3 +333,18 @@ def test_schedule_time_is_moscow(monkeypatch):
     assert not S.is_due(job, st, dt.datetime(2026, 10, 20, 11, 59))
     assert S.is_due(job, st, dt.datetime(2026, 10, 20, 12, 0))
     assert S.release_moments({"release_dates": ["2026-10-21T19:00"]}) == [dt.datetime(2026, 10, 21, 21, 0)]
+
+
+def test_upto_text_and_update_line():
+    from hub.core import overview as O, periods as P
+    assert P.upto_text("2026-08") == "по август 2026"
+    assert P.upto_text("2026-W42") == "по неделю с 12.10.2026"
+    assert P.upto_text("2026-Q3") == "по III кв. 2026" and P.upto_text("2026") == "по 2026 год"
+    assert P.upto_text("2026-10-21") == "по 21.10.2026"
+    u = {"upto": "2026-08", "new": 16000, "revisions": 0, "when": "2026-10-21T14:05:33"}
+    assert O.update_text(u) == "по август 2026, +16 000 записей (21.10.26 в 14:05)"
+    assert O.update_text({**u, "new": 1, "revisions": 3}) == "по август 2026, +1 запись, пересмотрено 3 (21.10.26 в 14:05)"
+    # запуски до 0.6: «по какой период» — самый поздний из сохранённых новых значений
+    assert O._upto('{"new": [["A", "2026-07", 1], ["A", "2026-09", 2], ["B", "2025-Q4", 3]]}') == "2026-09"
+    assert O._later("2026-W40", "2026-09") == "2026-W40"
+    assert O.source_group("web_table") == "sites" and O.source_group("folder_inbox") == "other"

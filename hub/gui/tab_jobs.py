@@ -69,6 +69,7 @@ class JobsTab(ttk.Frame):
 
         frame, self.tree = W.tree_with_scroll(self, COLS, HEAD, WIDTH, height=20, selectmode="extended")
         frame.pack(fill="both", expand=True)
+        W.sortable(self.tree)
         self.tree.bind("<Double-1>", lambda e: self.history())
         self.tree.bind("<Button-3>", self._context)
         self.ctx = tk.Menu(self, tearoff=False)
@@ -137,6 +138,7 @@ class JobsTab(ttk.Frame):
                 W.status_text(status), fmt_date((st.get("expected_next") or "")[:10])
                 if job["source"] in ("cbr", "fedstat") or job.get("release_dates") or st.get("release_next") else "",
                 mods))
+        W.resort(self.tree)
         for iid in sel:
             if self.tree.exists(iid):
                 self.tree.selection_add(iid)

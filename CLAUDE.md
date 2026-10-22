@@ -197,6 +197,17 @@ legacy/            исходные навигаторы пользовател�
   `<tbody>`. Окно браузера для человека (вход, выбор) — `no_viewport`, страница следует размеру окна.
   Образец — синтетический `samples/web/moex_gcurve_archive.html` (живая страница из облака недоступна).
 
+- **0.6.0 — «Обзор»**: «Новые данные за неделю» — `overview.recent_updates` (по показателю: сумма записей, самый
+  поздний период, время), текст `overview.update_text` → «по август 2026, +16 000 записей (21.10.26 в 14:05)»
+  (`periods.upto_text`, `periods.label_end`). Период запуска runner пишет в `runs.details.upto`; у старых
+  запусков — самый поздний из `details.new` (`overview._upto`). Календарь месяца — `overview.month_updates`,
+  `tab_overview._fill_calendar` (подсказка `Tooltip`, не уходит за край экрана). Фильтры источников
+  `overview.GROUPS` (fedstat/cbr/sites/other, `source_group`) — `widgets.toggle_button`, сохраняются в
+  `settings.overview_sources` (пусто = все). Галочка автообновления — только в «Настройках». Сортировка
+  таблиц по заголовку — `widgets.sortable` + `resort` после перезаполнения («Мои показатели»). Из «Настроек»
+  убраны «Мастер первого запуска» (сам открывается на новом компьютере) и «Добавить примеры» (`core.examples`
+  остался для тестов).
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

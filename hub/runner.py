@@ -331,7 +331,7 @@ class Runner:
             return out
         fetched_at = now.isoformat(timespec="seconds")
         qid = self.store.new_quarantine(job["id"], run_id, problems) if problems else None
-        by_key = {}
+        by_key, upto = {}, None
         for o in res.obs:
             if o.value is not None:
                 by_key.setdefault(o.key, []).append(o)
@@ -345,6 +345,8 @@ class Runner:
                 continue
             self.store.apply(code, changes, run_id, fetched_at, initial=initial, qid=qid)
             for o, old, is_new in changes:
+                if is_new and (upto is None or o.period_end > upto[0]):
+                    upto = (o.period_end, o.period_label)       # по какой период пришли данные («Обзор»)
                 if is_new:
                     out.new_periods.append((code, o.period_label, o.value))
                 else:
@@ -379,7 +381,8 @@ class Runner:
         self.store.finish_run(run_id, status=out.status, category=out.category, message=out.message,
                               new_periods=len(out.new_periods), revisions=len(out.revisions),
                               n_series=len(res.series), raw_path=out.raw_path,
-                              details={"new": out.new_periods[:200], "revisions": out.revisions[:200],
+                              details={"upto": upto[1] if upto else None,
+                                       "new": out.new_periods[:200], "revisions": out.revisions[:200],
                                        "problems": problems, "warnings": out.warnings})
         self.log.info("Показатель %s: %s (новых периодов %d, пересмотров %d)", job["id"], out.status,
                       len(out.new_periods), len(out.revisions))

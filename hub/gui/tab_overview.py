@@ -1,8 +1,10 @@
 """«Обзор» — стартовый экран: светофор, проблемы с одной кнопкой действия, новые данные, модели."""
+import calendar
+import datetime as dt
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from ..core import claude_pack, hostblock as HB, overview, status as ST, winsched
+from ..core import claude_pack, hostblock as HB, overview, periods as P, status as ST, winsched
 from ..core.overview import short
 from ..core.base_fmt import fmt, fmt_date
 from ..excel.models import models_with_new_data
@@ -13,26 +15,20 @@ class OverviewTab(ttk.Frame):
     def __init__(self, parent, app):
         super().__init__(parent, padding=12)
         self.app = app
-        head = W.FlowBar(self, gap=16)
+        head = ttk.Frame(self)
         head.pack(fill="x")
-        self.big = head.add(ttk.Label(head, text="…", style="Big.TLabel"))
-        self.auto = tk.BooleanVar()
-        self.auto_chk = head.add(ttk.Checkbutton(head, text="Автообновление", variable=self.auto,
-                                                 command=self._toggle_auto), gap_before=24)
-        head.add(W.icon_button(head, "⟳", "Сейчас же проверить все показатели (без учёта расписания)",
-                               lambda: app.update_jobs(force=True), text="Обновить всё сейчас", style="Accent.TButton"))
+        self.big = ttk.Label(head, text="…", style="Big.TLabel")
+        self.big.pack(side="left")
+        W.icon_button(head, "⟳", "Сейчас же проверить все показатели (без учёта расписания)",
+                      lambda: app.update_jobs(force=True), text="Обновить всё сейчас",
+                      style="Accent.TButton").pack(side="right")
         self.auto_info = W.autowrap(ttk.Label(self, style="Muted.TLabel", justify="left"))
         self.auto_info.pack(fill="x", pady=(2, 8))
         self.body = W.ScrollFrame(self)
         self.body.pack(fill="both", expand=True)
-
-    def _toggle_auto(self):
-        want = self.auto.get()
-        ok, msg = winsched.enable() if want else winsched.disable()
-        if not ok:
-            self.auto.set(not want)
-            messagebox.showwarning("Автообновление", msg, parent=self)
-        self.refresh()
+        today = dt.date.today()
+        self.cal_month = (today.year, today.month)
+        self.groups = {}                  # кнопки-фильтры источников: ключ → BooleanVar
 
     def refresh(self):
         app = self.app
@@ -42,17 +38,15 @@ class OverviewTab(ttk.Frame):
         delayed = [p for p in allp if ST.effective(p.job, p.state) == "delayed"]
         stale = overview.runner_stale(store)
         enabled, next_run = winsched.status()
-        self.auto.set(bool(enabled))
+        last = store.meta_get("runner_heartbeat")
         if enabled is None:
-            self.auto_chk.state(["disabled"])
-            self.auto_info.configure(text="Автообновление работает через планировщик Windows (здесь не Windows).")
+            auto = "Автообновление работает через планировщик Windows (здесь не Windows)."
+        elif enabled:
+            auto = (f"Автообновление включено ({winsched.EVERY_TEXT}"
+                    + (f", следующий запуск {next_run}). " if next_run else "). "))
         else:
-            last = store.meta_get("runner_heartbeat")
-            self.auto_info.configure(text=(f"Автообновление включено: {winsched.EVERY_TEXT} и при входе в Windows "
-                                           f"(задача «{winsched.TASK_NAME}» в Планировщике заданий"
-                                           + (f", следующий запуск {next_run}). " if next_run else "). ")
-                                           if enabled else "Автообновление выключено — данные обновляются только по кнопке. ")
-                                     + (f"Последнее обновление: {fmt_date(last)}." if last else ""))
+            auto = "Автообновление выключено — данные обновляются только по кнопке (включить — в «Настройках»). "
+        self.auto_info.configure(text=auto + (f"Последнее обновление: {fmt_date(last)}." if last else ""))
         bad = len(probs) + (1 if stale and enabled else 0)
         if not cfg.jobs():
             self.big.configure(text="Добавьте первый показатель", style="Big.TLabel", foreground="")
@@ -87,23 +81,10 @@ class OverviewTab(ttk.Frame):
             self._section(inner, "Задерживаются (это не ошибка)")
             self._problem_rows(inner, delayed)
 
-        self._section(inner, "Новые данные за неделю")
-        ups = overview.recent_updates(cfg, store)
-        if not ups:
-            ttk.Label(inner, text="Пока нет.", style="Muted.TLabel").pack(anchor="w")
-        table = ttk.Frame(inner)
-        table.pack(fill="x")
-        table.columnconfigure(0, weight=2, minsize=160)
-        table.columnconfigure(1, weight=3, minsize=200)
-        for i, u in enumerate(ups):
-            val = f"{fmt(u['last_value'])} {u['unit'] or ''}".strip()
-            W.autowrap(ttk.Label(table, text=f"● {u['job']['name']}", style="green.TLabel", justify="left")).grid(
-                row=i, column=0, sticky="new", padx=(0, 10), pady=1)
-            W.autowrap(ttk.Label(table, text=f"новых значений: {u['new'] or 0}"
-                                 + (f", пересмотров: {u['revisions']}" if u["revisions"] else "")
-                                 + (f";  последнее: {val} за {u['last_label']}" if u["last_label"] else "")
-                                 + f"  ({fmt_date(u['when'])})", style="Muted.TLabel", justify="left")).grid(
-                row=i, column=1, sticky="new", pady=1)
+        self._news_header(inner)
+        self.news = ttk.Frame(inner)
+        self.news.pack(fill="x")
+        self._fill_news()
 
         self._section(inner, "Модели с новыми данными")
         mods = models_with_new_data(cfg, store)
@@ -114,6 +95,104 @@ class OverviewTab(ttk.Frame):
             row.pack(fill="x", pady=2)
             ttk.Label(row, text=f"Откройте модель «{name}» — там новые данные по {n} {'ряду' if n == 1 else 'рядам'}.").pack(side="left")
             ttk.Button(row, text="Открыть модель", command=lambda nm=name: self.app.models.open_model(nm)).pack(side="left", padx=8)
+
+    # --- новые данные: фильтры, список, календарь ------------------------------------------
+    def _news_header(self, parent):
+        """Заголовок «Новые данные за неделю» и в одну линию с ним — сплошной ряд кнопок-фильтров."""
+        row = ttk.Frame(parent)
+        row.pack(fill="x", pady=(14, 4))
+        ttk.Label(row, text="Новые данные за неделю", style="Title.TLabel").pack(side="left")
+        chosen = set(self.app.cfg.settings().get("overview_sources") or [])
+        seg = ttk.Frame(row)
+        seg.pack(side="left", padx=(18, 0))
+        self.groups = {}
+        for key, title in overview.GROUPS:
+            var = tk.BooleanVar(value=key in chosen)
+            b = W.toggle_button(seg, title, var, self._filter_changed)
+            b.pack(side="left")              # вплотную — сплошной ряд
+            b.tooltip = W.Tooltip(b, f"Показывать только «{title}» (можно нажать несколько). "
+                                     "Ничего не нажато — показываются все источники.")
+            self.groups[key] = (var, b, title)
+        self._label_filters()
+
+    def _label_filters(self):
+        for var, b, title in self.groups.values():
+            b.configure(text=("✓ " if var.get() else "") + title)
+
+    def chosen_groups(self):
+        return {k for k, (var, _b, _t) in self.groups.items() if var.get()}
+
+    def _filter_changed(self):
+        self._label_filters()
+        s = self.app.cfg.settings()
+        s["overview_sources"] = [k for k, _t in overview.GROUPS if k in self.chosen_groups()]
+        self.app.cfg.save_settings(s)          # нажатые фильтры сохраняются и после закрытия программы
+        self._fill_news()
+
+    def _fill_news(self):
+        for w in self.news.winfo_children():
+            w.destroy()
+        cfg, store = self.app.cfg, self.app.store
+        groups = self.chosen_groups()
+        self.news.columnconfigure(0, weight=1)
+        left = ttk.Frame(self.news)
+        left.grid(row=0, column=0, sticky="new")
+        self.cal = ttk.Frame(self.news, padding=(10, 0, 0, 0))
+        self.cal.grid(row=0, column=1, sticky="ne")
+        ups = overview.recent_updates(cfg, store, groups=groups)
+        if not ups:
+            ttk.Label(left, text="Пока нет." if not groups else "По выбранным источникам за неделю ничего нового.",
+                      style="Muted.TLabel").pack(anchor="w")
+        left.columnconfigure(0, weight=2, minsize=140)
+        left.columnconfigure(1, weight=3, minsize=160)
+        for i, u in enumerate(ups):
+            W.autowrap(ttk.Label(left, text=f"● {u['job']['name']}", style="green.TLabel", justify="left"),
+                       initial=300).grid(row=i, column=0, sticky="new", padx=(0, 10), pady=1)
+            W.autowrap(ttk.Label(left, text=overview.update_text(u), style="Muted.TLabel", justify="left"),
+                       initial=300).grid(row=i, column=1, sticky="new", pady=1)
+        self._fill_calendar()
+
+    def _shift_month(self, step):
+        y, m = self.cal_month
+        m += step
+        self.cal_month = (y + (m - 1) // 12, (m - 1) % 12 + 1)
+        self._fill_calendar()
+
+    def _fill_calendar(self):
+        """Календарь месяца: закрашены дни, когда приходили новые данные; наведите мышь — что именно."""
+        for w in self.cal.winfo_children():
+            w.destroy()
+        y, m = self.cal_month
+        days = overview.month_updates(self.app.cfg, self.app.store, y, m, self.chosen_groups())
+        bg = ttk.Style(self).lookup("TFrame", "background") or W.BG
+        top = ttk.Frame(self.cal)
+        top.grid(row=0, column=0, columnspan=7, sticky="ew", pady=(0, 4))
+        W.icon_button(top, "◀", "Предыдущий месяц", lambda: self._shift_month(-1)).pack(side="left")
+        W.icon_button(top, "▶", "Следующий месяц", lambda: self._shift_month(1)).pack(side="right")
+        ttk.Label(top, text=f"{P.MONTHS_RU[m - 1].capitalize()} {y}", font=(W.FONT, 10, "bold"),
+                  anchor="center").pack(side="left", fill="x", expand=True)
+        for j, name in enumerate(("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")):
+            tk.Label(self.cal, text=name, width=4, bg=bg, fg=W.MUTED, font=(W.FONT, 9)).grid(row=1, column=j)
+        today = dt.date.today()
+        for r, week in enumerate(calendar.Calendar().monthdatescalendar(y, m)):
+            for j, d in enumerate(week):
+                if d.month != m:
+                    tk.Label(self.cal, text="", width=4, bg=bg).grid(row=r + 2, column=j)
+                    continue
+                ups = days.get(d)
+                lab = tk.Label(self.cal, text=str(d.day), width=4, pady=3, bg=W.UPDATED_BG if ups else bg,
+                               fg=W.UPDATED_FG if ups else ("#9aa5b1" if d > today else "#1f2933"),
+                               font=(W.FONT, 9, "bold" if ups or d == today else "normal"),
+                               relief="solid" if d == today else "flat", borderwidth=1 if d == today else 0)
+                lab.grid(row=r + 2, column=j, padx=1, pady=1)
+                if ups:
+                    lines = [f"• {u['job']['name']} — {overview.update_text(u)}" for u in ups[:15]]
+                    if len(ups) > 15:
+                        lines.append(f"…и ещё {len(ups) - 15}")
+                    lab.tooltip = W.Tooltip(lab, f"{d:%d.%m.%Y}: новые данные\n" + "\n".join(lines), delay=200)
+        n = len(days)
+        ttk.Label(self.cal, text=(f"Дней с обновлениями: {n}" if n else "В этом месяце обновлений не было"),
+                  style="Hint.TLabel").grid(row=9, column=0, columnspan=7, pady=(4, 0))
 
     @staticmethod
     def _section(parent, title):

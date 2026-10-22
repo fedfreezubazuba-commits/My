@@ -1,5 +1,6 @@
 """Общие элементы интерфейса: стили, светофор, прокручиваемая панель, буфер обмена,
 кнопки-значки с подсказками, панель кнопок с переносом, текст по ширине окна."""
+import re
 import sys
 import tkinter as tk
 from tkinter import ttk
@@ -12,6 +13,9 @@ BG = "#f5f7fa"
 CARD = "#ffffff"
 ACCENT = "#1565c0"
 MUTED = "#6b7785"
+SELECTED_BG = "#cfe3fb"    # нажатая кнопка-фильтр
+UPDATED_BG = "#c8e6c9"     # календарь «Обзора»: день с новыми данными
+UPDATED_FG = "#1b5e20"
 ICON_FONT = ("Segoe UI Symbol", 13) if IS_WIN else ("DejaVu Sans", 12)   # значки — символы из шрифта
 
 
@@ -100,6 +104,69 @@ def fit_columns(tree, minimum=40):
         for c in cols:
             tree.column(c, width=max(minimum, int(base.get(c, minimum) * avail / total)), stretch=False)
     tree.bind("<Configure>", on, add="+")
+
+
+_DATE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?")
+_NUM = re.compile(r"[-−]?\d[\d\s\u00a0]*(?:,\d+)?(?![\d.\-])")
+EMPTY = ("", "—", "-")
+
+
+def _as_date(s):
+    m = _DATE.match(s)
+    return (m.group(3), m.group(2), m.group(1), int(m.group(4) or 0), m.group(5) or "00") if m else None
+
+
+def _as_num(s):
+    m = _NUM.match(s)
+    if not m:
+        return None
+    try:
+        return float(re.sub(r"\s", "", m.group(0)).replace(",", ".").replace("−", "-"))
+    except ValueError:
+        return None
+
+
+def sort_key_fn(values):
+    """Как сравнивать значения столбца: все — даты «дд.мм.гггг» → по дате; все начинаются с числа → по числу;
+    иначе — по тексту без учёта регистра (значок статуса «●» не мешает)."""
+    vals = [v for v in values if v not in EMPTY]
+    if vals and all(_as_date(v) for v in vals):
+        return _as_date
+    if vals and all(_as_num(v) is not None for v in vals):
+        return _as_num
+    return lambda v: v.lstrip("●○◐◑▲▼■□◆◇⏸✓✗ ").casefold()
+
+
+def sortable(tree):
+    """Щелчок по заголовку столбца — сортировка (по возрастанию, повторный щелчок — по убыванию).
+    Пустые «—» всегда внизу. После перезаполнения таблицы вызвать resort(tree)."""
+    tree._sort = {"col": None, "rev": False, "titles": {c: tree.heading(c, "text") for c in tree["columns"]}}
+
+    def click(c):
+        st = tree._sort
+        st["rev"] = not st["rev"] if st["col"] == c else False
+        st["col"] = c
+        for col, title in st["titles"].items():
+            mark = (" ▼" if st["rev"] else " ▲") if col == c else ""
+            tree.heading(col, text=title + mark)
+        resort(tree)
+
+    for c in tree["columns"]:
+        tree.heading(c, command=lambda c=c: click(c))
+    return tree
+
+
+def resort(tree, parent=""):
+    st = getattr(tree, "_sort", None)
+    if not st or not st["col"]:
+        return
+    items = [(tree.set(i, st["col"]), i) for i in tree.get_children(parent)]
+    key = sort_key_fn([v for v, _i in items])
+    full = [(v, i) for v, i in items if v not in EMPTY and key(v) is not None]
+    empty = [(v, i) for v, i in items if v in EMPTY or key(v) is None]
+    full.sort(key=lambda x: key(x[0]), reverse=st["rev"])
+    for n, (_v, i) in enumerate(full + empty):
+        tree.move(i, parent, n)
 
 
 class ScrollFrame(ttk.Frame):
@@ -209,6 +276,14 @@ class Tooltip:
         self.tip.wm_geometry(f"+{x}+{y}")
         tk.Label(self.tip, text=self.text, justify="left", background="#ffffe8", relief="solid", borderwidth=1,
                  wraplength=360, padx=6, pady=3, font=(FONT, 9)).pack()
+        self.tip.update_idletasks()          # у правого и нижнего края экрана подсказка не уходит за край
+        sw, sh = self.widget.winfo_screenwidth(), self.widget.winfo_screenheight()
+        tw, th = self.tip.winfo_reqwidth(), self.tip.winfo_reqheight()
+        if x + tw > sw - 4:
+            x = max(0, sw - tw - 4)
+        if y + th > sh - 4:
+            y = max(0, self.widget.winfo_rooty() - th - 4)
+        self.tip.wm_geometry(f"+{x}+{y}")
 
     def _hide(self, _e=None):
         if self.job:
@@ -217,6 +292,15 @@ class Tooltip:
         if self.tip:
             self.tip.destroy()
             self.tip = None
+
+
+def toggle_button(parent, text, variable, command):
+    """Кнопка-переключатель для сплошного ряда фильтров: нажата — подсвечена и с галочкой."""
+    b = tk.Checkbutton(parent, text=text, variable=variable, command=command, indicatoron=False,
+                       font=(FONT, 9), padx=10, pady=2, bd=1, relief="raised", offrelief="raised",
+                       overrelief="raised", background=CARD, activebackground="#e8f0fb",
+                       selectcolor=SELECTED_BG, cursor="hand2")
+    return b
 
 
 def icon_button(parent, icon, tip, command, text=None, style=None):

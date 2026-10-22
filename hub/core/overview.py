@@ -1,7 +1,10 @@
 """Данные для экрана «Обзор»: светофор, проблемы с кнопками действий, новые данные, модели."""
 import datetime as dt
+import json
 
 from . import errors as E
+from . import periods as P
+from .base_fmt import fmt
 from . import status as ST
 
 
@@ -64,20 +67,97 @@ def problems(cfg, store) -> list[Problem]:
     return out
 
 
-def recent_updates(cfg, store, days=7, limit=30):
-    since = (dt.datetime.now() - dt.timedelta(days=days)).isoformat(timespec="seconds")
+GROUPS = [("fedstat", "Росстат"), ("cbr", "ЦБ РФ"), ("sites", "Сайты"), ("other", "Прочее")]
+SITE_SOURCES = {"web_value", "web_table", "file_link"}
+
+
+def source_group(source) -> str:
+    """Кнопки-фильтры «Обзора»: Росстат (ЕМИСС), ЦБ РФ, Сайты (страницы и файлы по ссылке), Прочее."""
+    if source in ("fedstat", "cbr"):
+        return source
+    return "sites" if source in SITE_SOURCES else "other"
+
+
+def _upto(details) -> str | None:
+    """По какой период пришли данные в запуске: запись «upto» (с 0.6.0) или самый поздний из сохранённых."""
+    try:
+        d = json.loads(details) if details else {}
+    except (TypeError, ValueError):
+        return None
+    if d.get("upto"):
+        return d["upto"]
+    labels = [x[1] for x in (d.get("new") or d.get("revisions") or []) if isinstance(x, list) and len(x) > 1]
+    dated = [(P.label_end(lab), lab) for lab in labels if P.label_end(lab)]
+    return max(dated)[1] if dated else (max(labels) if labels else None)
+
+
+def _later(a, b):
+    if not a or not b:
+        return a or b
+    return a if (P.label_end(a) or dt.date.min) >= (P.label_end(b) or dt.date.min) else b
+
+
+def update_events(cfg, store, since, until=None, groups=None) -> list[dict]:
+    """Удачные запуски с новыми данными: [{job, when, new, revisions, upto}] по времени.
+    groups — какие кнопки-фильтры нажаты (пусто — все источники)."""
     jobs = {j["id"]: j for j in cfg.jobs()}
-    rows = store.q("SELECT job_id, MAX(finished) f, SUM(new_periods) n, SUM(revisions) r FROM runs "
-                   "WHERE finished>? AND (new_periods>0 OR revisions>0) AND status='updated' "
-                   "GROUP BY job_id ORDER BY f DESC LIMIT ?", (since, limit))
+    rows = store.q("SELECT job_id, finished, new_periods n, revisions r, details FROM runs "
+                   "WHERE finished>=? AND finished<? AND status='updated' AND (new_periods>0 OR revisions>0) "
+                   "ORDER BY finished", (since, until or "9999"))
     out = []
     for r in rows:
-        if r["job_id"] in jobs:
-            st = store.state(r["job_id"])
-            out.append({"job": jobs[r["job_id"]], "when": r["f"], "new": r["n"], "revisions": r["r"],
-                        "last_label": st.get("last_label"), "last_value": st.get("last_value"),
-                        "unit": st.get("last_unit")})
+        job = jobs.get(r["job_id"])
+        if not job or groups and source_group(job.get("source")) not in groups:
+            continue
+        out.append({"job": job, "when": r["finished"], "new": r["n"] or 0, "revisions": r["r"] or 0,
+                    "upto": _upto(r["details"])})
     return out
+
+
+def _merge(events) -> list[dict]:
+    """По одному показателю — одна строка: сколько всего записей и по какой самый поздний период."""
+    by = {}
+    for e in events:
+        m = by.setdefault(e["job"]["id"], {**e, "new": 0, "revisions": 0, "upto": None})
+        m["new"] += e["new"]
+        m["revisions"] += e["revisions"]
+        m["upto"] = _later(m["upto"], e["upto"])
+        m["when"] = max(m["when"], e["when"])
+    return sorted(by.values(), key=lambda x: x["when"], reverse=True)
+
+
+def recent_updates(cfg, store, days=7, groups=None, limit=40):
+    since = (dt.datetime.now() - dt.timedelta(days=days)).isoformat(timespec="seconds")
+    return _merge(update_events(cfg, store, since, groups=groups))[:limit]
+
+
+def update_text(u) -> str:
+    """«по август 2026, +16 000 записей (21.10.26 в 14:05)»."""
+    parts = [P.upto_text(u["upto"])] if u.get("upto") else []
+    if u["new"]:
+        parts.append(f"+{fmt(u['new'])} {plural(u['new'], 'запись', 'записи', 'записей')}")
+    if u["revisions"]:
+        parts.append(f"пересмотрено {fmt(u['revisions'])}")
+    when = u["when"] or ""
+    stamp = f"{when[8:10]}.{when[5:7]}.{when[2:4]} в {when[11:16]}" if len(when) >= 16 else when
+    return ", ".join(parts) + (f" ({stamp})" if stamp else "")
+
+
+def month_updates(cfg, store, year, month, groups=None) -> dict:
+    """Для календаря: {дата: [строки по показателям]} за месяц."""
+    first = dt.date(year, month, 1)
+    nxt = dt.date(year + (month == 12), month % 12 + 1, 1)
+    by_day = {}
+    for e in update_events(cfg, store, first.isoformat(), nxt.isoformat(), groups):
+        by_day.setdefault(dt.date.fromisoformat(e["when"][:10]), []).append(e)
+    return {d: _merge(evs) for d, evs in by_day.items()}
+
+
+def plural(n, one, few, many) -> str:
+    n = abs(int(n))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
 
 
 def runner_stale(store, days=2) -> str | None:
