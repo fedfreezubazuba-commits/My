@@ -68,7 +68,7 @@ def problems(cfg, store) -> list[Problem]:
 
 
 GROUPS = [("fedstat", "Росстат"), ("cbr", "ЦБ РФ"), ("sites", "Сайты"), ("other", "Прочее")]
-SITE_SOURCES = {"web_value", "web_table", "file_link"}
+SITE_SOURCES = {"web_value", "web_table", "file_link", "web_form"}
 
 
 def source_group(source) -> str:

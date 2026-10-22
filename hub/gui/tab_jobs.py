@@ -70,7 +70,8 @@ class JobsTab(ttk.Frame):
                 ("▦", "Открыть в Excel — все данные показателя отдельным файлом", self.open_excel),
                 ("◷", "График обновления — когда проверять, статус и история значений (двойной щелчок)",
                  self.history),
-                ("✎", "Изменить набор данных — регионы, товары, годы… (ЕМИСС и Банк России)", self.change_data),
+                ("✎", "Изменить набор данных — регионы, товары, годы… (ЕМИСС, Банк России, форма на сайте)",
+                 self.change_data),
                 ("⏯", "Пауза / продолжить — временно не проверять показатель", self.pause),
                 ("⚖", "Отложенные данные — посмотреть, принять или отклонить", self.review),
                 ("↗", "Открыть источник — страница показателя на сайте", self.open_source),
@@ -254,6 +255,11 @@ class JobsTab(ttk.Frame):
             return
         job = self.app.cfg.job(jid)
         find = self.app.find
+        if job["source"] == "web_form":
+            from .dialog_form import FormDialog
+            p = job["params"]
+            FormDialog(self.app, p.get("url"), p["request"], None, job=job)
+            return
         if job["source"] not in ("fedstat", "cbr"):
             messagebox.showinfo("Изменить набор данных", "Для сайтов и файлов набор данных задаётся при добавлении. "
                                 "Чтобы поменять его, добавьте показатель заново («Найти данные → Сайт» или «Файл»), "

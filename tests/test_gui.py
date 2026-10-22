@@ -530,3 +530,45 @@ def test_jobs_sort_by_heading(app):
     assert [tree.set(i, "updated") for i in tree.get_children()] == ["05.10.2026 10:00", "21.09.2026 09:00", "—"]
     assert W.sort_key_fn(["10 рядов", "9 рядов"])("10 рядов") == 10
     assert W.sort_key_fn(["2026-01", "2025-Q3"])("2026-01") == "2026-01"
+
+
+def test_form_dialog_builds_web_form_job(app):
+    """Окно «Данные из формы на сайте»: поля периода закрыты (их перебирает хаб), остальные можно поменять;
+    «Далее» открывает добавление показателя с параметрами web_form."""
+    from hub.gui.dialog_add import AddDialog
+    from hub.gui.dialog_form import FormDialog
+    from hub.sources import _forms as F
+    import customs_site as CS
+    from test_forms import REQ
+    cand = dict(REQ, text=CS.table({"year": "2025", "startMonth": "1", "endMonth": "12", "pageSize": "10",
+                                     "outerValue1": "27111100", "outerValue2": "344"}))
+    _c, table = F.best_candidate([cand])
+    d = FormDialog(app, "http://stats.customs.gov.cn/indexEn", cand, table)
+    pump(app, 0.3)
+    assert "year" not in d.vars and "outerValue1" in d.vars
+    d.from_year.set("2020")
+    d.vars["outerValue2"].set("643")
+    pump(app, 0.2)
+    assert "7 запросов" in d.count.cget("text")
+    p = d.params()
+    assert p["from_year"] == 2020 and p["values"] == {"outerValue2": "643"} and p["by"] == "year"
+    opened = []
+    orig = AddDialog.__init__
+    AddDialog.__init__ = lambda self, app_, src, params, name, **kw: opened.append((src, params, name))
+    try:
+        d.next()
+    finally:
+        AddDialog.__init__ = orig
+    assert opened[0][0] == "web_form" and opened[0][2].startswith("Таможня Китая: Liquefied natural gas")
+    assert "text" not in opened[0][1]["request"]                    # ответ сайта в настройки не попадает
+    # «Изменить набор данных»: тот же показатель, поменяли страну и год
+    job = app.cfg.add_job("web_form", "СПГ", opened[0][1])
+    e = FormDialog(app, job["params"]["url"], job["params"]["request"], None, job=job)
+    pump(app, 0.2)
+    assert e.vars["outerValue2"].get() == "643" and e.from_year.get() == "2020"
+    e.vars["outerValue2"].set("344")
+    e.from_year.set("2022")
+    e.save()
+    pump(app, 0.3)
+    p = app.cfg.job(job["id"])["params"]
+    assert p["values"] == {} and p["from_year"] == 2022

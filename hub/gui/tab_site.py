@@ -37,6 +37,10 @@ class SiteTab(ttk.Frame):
         tools.pack(fill="x", pady=(6, 0))
         ttk.Button(tools, text="🖱 Выбрать на странице…", command=self.pick).pack(side="left")
         ttk.Button(tools, text="🔑 Войти на сайт…", command=self.login).pack(side="left", padx=6)
+        W2.icon_button(tools, "✍", "Для сайтов, где данные выдаются после заполнения формы (коды товаров, страна, "
+                                  "импорт/экспорт, период): заполните форму один раз — хаб запомнит запрос и будет "
+                                  "повторять его сам, по годам", self.record_form,
+                       text="Заполнить форму…").pack(side="left")
         ttk.Button(tools, text="Не получилось — Отправить Claude", command=self.claude).pack(side="right")
         self.info = ttk.Label(self, style="Muted.TLabel", wraplength=1100, justify="left",
                               text="Вставьте ссылку на страницу с ценой, таблицей или файлом отчёта. "
@@ -252,6 +256,38 @@ class SiteTab(ttk.Frame):
         self.info.configure(text=f"Выбрано: {fmt(value)} («{label}»).", style="green.TLabel")
         title = (self.found.title if self.found else "") or W.site_name(url)
         AddDialog(self.app, "web_value", params, f"{title} — {label}")
+
+    def record_form(self):
+        url = W.clean_url(self.url.get())
+        br = self._browser() if url else None
+        if not br:
+            if not url:
+                messagebox.showinfo("Ссылка", "Сначала вставьте ссылку на страницу с формой.", parent=self)
+            return
+        self.info.configure(text="Откроется окно браузера. Заполните форму на сайте (коды, страна, импорт/экспорт, "
+                                 "период) и нажмите поиск. Когда появится таблица с нужными данными — закройте окно.",
+                            style="Muted.TLabel")
+        self.app.bg(lambda: br.record(url), lambda c: self._recorded(url, c),
+                    "Жду, пока вы заполните форму в окне браузера…", error=self._failed)
+
+    def _recorded(self, url, cands):
+        from ..sources import _forms as F
+        from .dialog_form import FormDialog
+        # что записали — на случай «Не получилось — Отправить Claude»
+        self.page_text = "\n\n".join(f"<!-- {c['resource_type']} {c['method']} {c['url']}\n     поля: {c.get('body')}\n"
+                                      f"     рамка: {c.get('frame_url')} -->\n{c['text'][:30000]}" for c in cands[-15:])
+        if not cands:
+            self.info.configure(text="Окно закрыто, а сайт ничего не ответил. Попробуйте ещё раз: дождитесь таблицы "
+                                     "с данными и только потом закройте окно.", style="red.TLabel")
+            return
+        cand, table = F.best_candidate(cands)
+        if cand is None:
+            self.info.configure(text="В ответах сайта не нашлось таблицы с числами. Нажмите «Не получилось — "
+                                     "Отправить Claude» — записанные ответы сайта приложатся к запросу.",
+                                style="red.TLabel")
+            return
+        self.info.configure(text=f"Записан запрос формы: таблица из {len(table.rows)} строк.", style="green.TLabel")
+        FormDialog(self.app, url, cand, table)
 
     def login(self):
         url = W.clean_url(self.url.get())

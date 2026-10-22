@@ -106,6 +106,37 @@ LOGIN_BANNER_JS = r"""
 """
 
 
+FORM_BANNER_JS = r"""
+(() => {
+  if (document.getElementById('__hub_banner')) return;
+  const b = document.createElement('div');
+  b.id = '__hub_banner';
+  b.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483647;background:#1565c0;color:#fff;' +
+                    'font:15px Segoe UI,Arial;padding:8px 14px;text-align:center;pointer-events:none';
+  b.textContent = 'Хаб данных: заполните форму (коды, страна, импорт/экспорт, период) и нажмите поиск. ' +
+                  'Когда появится таблица с нужными данными — просто закройте это окно.';
+  document.documentElement.appendChild(b);
+})();
+"""
+
+# запрос из страницы сайта — так же, как его отправляет сама форма (со скриптами и куками сайта)
+XHR_JS = r"""
+async (a) => await new Promise((resolve) => {
+  const x = new XMLHttpRequest();
+  x.open(a.method, a.url, true);
+  for (const [k, v] of Object.entries(a.headers || {})) { try { x.setRequestHeader(k, v); } catch (e) {} }
+  x.timeout = a.timeout;
+  x.onload = () => resolve({status: x.status, text: x.responseText || ''});
+  x.onerror = () => resolve({status: 0, text: ''});
+  x.ontimeout = () => resolve({status: -1, text: ''});
+  x.send(a.method === 'GET' || a.method === 'HEAD' ? null : (a.body || ''));
+})
+"""
+
+KEEP_HEADERS = ("x-requested-with", "accept")
+MAX_TEXT = 3_000_000
+
+
 class Browser:
     def __init__(self, paths):
         self.profile = paths.browser_profile if paths else None
@@ -216,29 +247,148 @@ class Browser:
                     pass
         return got
 
+    def record(self, url, timeout_s=1800, headless=False, on_page=None):
+        """Окно, в котором пользователь заполняет форму и нажимает поиск. Хаб записывает запросы страницы
+        (адрес, поля формы, ответ). Возвращается, когда окно закрыли: [{method, url, body, content_type,
+        headers, resource_type, frame_url, text}] — последние запросы, вернувшие страницу или данные."""
+        cands = []
+
+        def on_response(resp):
+            try:
+                req = resp.request
+                if req.resource_type not in ("document", "xhr", "fetch") or resp.status != 200:
+                    return
+                ct = (resp.headers.get("content-type") or "").lower()
+                if ct and not any(x in ct for x in ("html", "json", "text/plain", "xml")):
+                    return
+                try:
+                    frame_url = req.frame.url
+                except Exception:  # noqa: BLE001
+                    frame_url = ""
+                hdr = req.headers
+                cands.append({"resp": resp, "method": req.method, "url": req.url, "body": req.post_data or "",
+                              "content_type": hdr.get("content-type", ""),
+                              "headers": {k: hdr[k] for k in KEEP_HEADERS if hdr.get(k)},
+                              "resource_type": req.resource_type, "frame_url": frame_url})
+                del cands[:-80]
+            except Exception:  # noqa: BLE001
+                pass
+
+        def read_bodies():
+            for c in cands:
+                if "text" not in c:
+                    try:
+                        c["text"] = c["resp"].text()[:MAX_TEXT]
+                    except Exception:  # noqa: BLE001 — страница ушла дальше, тело ответа уже недоступно
+                        c["text"] = ""
+
+        with _lock, self._sync() as p:
+            ctx = self._launch(p, headless=headless)
+            ctx.on("response", on_response)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=90000)
+                if on_page:
+                    on_page(page)              # для тестов: заполнить форму программно
+                    read_bodies()
+                else:
+                    end = time.time() + timeout_s
+                    while time.time() < end and any(not pg.is_closed() for pg in ctx.pages):
+                        read_bodies()
+                        for pg in ctx.pages:
+                            try:
+                                pg.evaluate(FORM_BANNER_JS)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        time.sleep(0.4)
+                    read_bodies()
+            finally:
+                try:
+                    ctx.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return [{k: v for k, v in c.items() if k != "resp"} for c in cands if c.get("text")]
+
+    def replay(self, start_url, requests, pause_s=4, progress=None, headless=False, timeout_ms=120000):
+        """Повторить записанные запросы формы из страницы сайта (окно за краем экрана): сайт открывается
+        как у человека, со своими скриптами и защитой, запросы идут по одному с паузой. → [текст ответа]."""
+        out = []
+        with _lock, self._sync() as p:
+            ctx = self._launch(p, headless=headless, offscreen=not headless)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                try:
+                    page.goto(start_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                except Exception as e:  # noqa: BLE001
+                    raise E.HubError(E.NETWORK, "Встроенный браузер не смог открыть сайт", detail=str(e))
+                _settle(page)
+                for i, req in enumerate(requests, 1):
+                    if progress:
+                        progress(i)
+                    r = None
+                    for _attempt in range(3):
+                        frame = _frame_for(page, req)
+                        try:
+                            r = frame.evaluate(XHR_JS, {
+                                "method": req.get("method") or "GET", "url": req["url"], "body": req.get("body") or "",
+                                "timeout": timeout_ms,
+                                "headers": {**(req.get("headers") or {}),
+                                            **({"Content-Type": req["content_type"]}
+                                               if req.get("body") and req.get("content_type") else {})}})
+                            break
+                        except Exception:  # noqa: BLE001 — страница перезагрузилась (защита сайта) — ещё раз
+                            _settle(page)
+                    if r is None:
+                        raise E.HubError(E.NETWORK, "Сайт перезагружал страницу и не дал выполнить запрос")
+                    status, text = r["status"], r["text"]
+                    cat = _block_category(status, text)
+                    if cat:
+                        raise E.HubError(cat, f"Сайт не выдал данные (ответ {status})")
+                    if status == -1:
+                        raise E.HubError(E.NETWORK, f"Сайт не ответил за {timeout_ms // 60000} мин")
+                    if status != 200:
+                        raise E.HubError(E.NETWORK, f"Сайт ответил ошибкой {status}" if status else "Нет связи с сайтом")
+                    out.append(text)
+                    if i < len(requests):
+                        page.wait_for_timeout(int(pause_s * 1000))
+            finally:
+                try:
+                    ctx.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return out
+
     def pick(self, url, timeout_s=600, headless=False, on_page=None):
-        """Окно выбора элемента. Возвращает словарь с выбором или None, если окно закрыли."""
+        """Окно выбора элемента. Возвращает словарь с выбором или None, если окно закрыли.
+
+        Подсветка ставится во все рамки страницы (формы и таблицы часто внутри <iframe>), а после
+        перезагрузки страницы (защита сайта, переход по ссылке) — заново."""
         with _lock, self._sync() as p:
             ctx = self._launch(p, headless=headless)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                page.evaluate(PICKER_JS)
+                _settle(page)
+                _in_frames(page, PICKER_JS)
                 if on_page:
                     on_page(page)      # для тестов: «щёлкнуть» программно
                 end = time.time() + timeout_s
                 while time.time() < end:
                     if page.is_closed():
                         return None
-                    try:
-                        page.evaluate(PICKER_JS)      # после перехода по ссылке подсветку ставим заново
-                        res = page.evaluate("window.__hubPick")
-                    except Exception:  # noqa: BLE001 — страница перезагружается
-                        res = None
-                    if res:
-                        time.sleep(0.8)
-                        res["page_html"] = page.content()
-                        return res
+                    _in_frames(page, PICKER_JS)      # после перехода или перезагрузки подсветку ставим заново
+                    for fr in list(page.frames):
+                        try:
+                            res = fr.evaluate("window.__hubPick")
+                        except Exception:  # noqa: BLE001 — рамка перезагружается
+                            res = None
+                        if res:
+                            time.sleep(0.8)
+                            try:
+                                res["page_html"] = fr.content()
+                            except Exception:  # noqa: BLE001
+                                res["page_html"] = page.content()
+                            return res
                     time.sleep(0.3)
                 return None
             finally:
@@ -246,3 +396,50 @@ class Browser:
                     ctx.close()
                 except Exception:  # noqa: BLE001
                     pass
+
+
+def _settle(page, timeout_ms=15000):
+    """Дождаться, пока страница успокоится: сайты с защитой перезагружают её сразу после открытия."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _in_frames(page, js):
+    """Выполнить скрипт во всех рамках страницы; рамка, которая как раз перезагружается, пропускается."""
+    for fr in list(page.frames):
+        try:
+            fr.evaluate(js)
+        except Exception:  # noqa: BLE001 — «Execution context was destroyed»: страница перезагружается
+            pass
+
+
+def _block_category(status, text):
+    from ._web import detect_block
+    return detect_block(status, text) if status else None
+
+
+def _origin(url):
+    from urllib.parse import urlsplit
+    u = urlsplit(url or "")
+    return f"{u.scheme}://{u.netloc}"
+
+
+def _frame_for(page, req):
+    """Рамка, из которой форма отправляла запрос (та же страница или хотя бы тот же сайт)."""
+    want = (req.get("frame_url") or "").split("#")[0]
+    frames = list(page.frames)
+    for fr in frames:
+        if want and fr.url.split("#")[0] == want:
+            return fr
+    for fr in frames:
+        if want and fr.url.split("?")[0] == want.split("?")[0]:
+            return fr
+    origin = _origin(req["url"])
+    for fr in frames:
+        if _origin(fr.url) == origin:
+            return fr
+    page.goto(req.get("frame_url") or origin + "/", wait_until="domcontentloaded", timeout=90000)
+    _settle(page)
+    return page.main_frame

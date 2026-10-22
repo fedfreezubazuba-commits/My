@@ -10,8 +10,9 @@
 import datetime as dt
 
 STEPS_MIN = [60, 180, 720, 1440]
-TITLES = {"www.fedstat.ru": "ЕМИСС (fedstat.ru)", "www.cbr.ru": "Банк России (cbr.ru)"}
-SITE_URLS = {"www.fedstat.ru": "https://www.fedstat.ru/"}
+TITLES = {"www.fedstat.ru": "ЕМИСС (fedstat.ru)", "www.cbr.ru": "Банк России (cbr.ru)",
+          "stats.customs.gov.cn": "Таможня Китая (stats.customs.gov.cn)"}
+SITE_URLS = {"www.fedstat.ru": "https://www.fedstat.ru/", "stats.customs.gov.cn": "http://stats.customs.gov.cn/indexEn"}
 
 
 def title(host) -> str:
