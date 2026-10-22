@@ -94,14 +94,16 @@ class FormDialog(tk.Toplevel):
                          and str(v).isdigit()), this_year)
         jp = (job or {}).get("params", {})
         self.from_year = tk.StringVar(value=str(jp.get("from_year") or min(rec_year, this_year - 5)))
-        self.by = tk.StringVar(value=jp.get("by") or ("year" if lay is None or lay["date"] is not None else "month"))
+        # по месяцу — мелкие запросы: сайты реже предупреждают о «большом периоде» и реже просят проверку
+        self.by = tk.StringVar(value=jp.get("by") or ("month" if (self.period or {}).get("kind") == "year_months"
+                                                       or lay is None or lay["date"] is None else "year"))
         if self.period:
             ttk.Label(opts, text="Загружать с года:").pack(side="left")
             ttk.Spinbox(opts, from_=1990, to=this_year, textvariable=self.from_year, width=6,
                         command=self._count).pack(side="left", padx=6)
-            ttk.Radiobutton(opts, text="запрос на год", value="year", variable=self.by,
+            ttk.Radiobutton(opts, text="запрос на месяц (бережнее к сайту)", value="month", variable=self.by,
                             command=self._count).pack(side="left", padx=(16, 0))
-            ttk.Radiobutton(opts, text="запрос на месяц", value="month", variable=self.by,
+            ttk.Radiobutton(opts, text="запрос на год (быстрее)", value="year", variable=self.by,
                             command=self._count).pack(side="left", padx=6)
         else:
             ttk.Label(opts, text="Поля периода в запросе не нашлись — хаб будет повторять запрос как есть.",

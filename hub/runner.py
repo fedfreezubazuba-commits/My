@@ -200,9 +200,11 @@ class Runner:
         self.store.close()
 
     def context(self, dry_run=False):
-        return sources.Context(paths=self.paths, log=self.log, settings=self.cfg.settings(),
-                               clients=self.clients, browser=self.browser, now=self.now or dt.datetime.now(),
-                               dry_run=dry_run)
+        ctx = sources.Context(paths=self.paths, log=self.log, settings=self.cfg.settings(),
+                              clients=self.clients, browser=self.browser, now=self.now or dt.datetime.now(),
+                              dry_run=dry_run)
+        ctx.interactive = getattr(self, "interactive", False)
+        return ctx
 
     # --- выбор показателей ---------------------------------------------------
     def due_jobs(self, now=None):
@@ -442,6 +444,7 @@ class Runner:
     # --- проход --------------------------------------------------------------
     def run(self, job_ids=None, force=False, scheduled=False, progress=None, write_report=True) -> RunReport:
         report = RunReport()
+        self.interactive = not scheduled         # по кнопке человек рядом — ему можно показать окно проверки
         with Lock(self.paths.lock):
             self.store.meta_set("runner_heartbeat", now_iso())
             if scheduled:

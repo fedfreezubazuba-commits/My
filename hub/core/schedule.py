@@ -45,6 +45,7 @@ DEFAULT_LAG = {
     ("cbr", P.HALF): 80, ("cbr", P.YEAR): 100,
     ("fedstat", P.DAY): 3, ("fedstat", P.WEEK): 10, ("fedstat", P.MONTH): 45, ("fedstat", P.QUARTER): 80,
     ("fedstat", P.HALF): 90, ("fedstat", P.YEAR): 150,
+    ("comtrade", P.MONTH): 75, ("web_form", P.MONTH): 20,
 }
 GENERIC_LAG = {P.DAY: 1, P.WEEK: 4, P.MONTH: 30, P.QUARTER: 60, P.HALF: 90, P.YEAR: 120}
 # как часто проверять до ожидаемой даты

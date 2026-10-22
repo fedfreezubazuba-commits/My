@@ -85,6 +85,7 @@ class Context:
 
     def __init__(self, paths=None, log=None, settings=None, clients=None, browser=None, now=None, dry_run=False):
         self.dry_run = dry_run           # пробная загрузка: ничего не перемещать и не менять
+        self.interactive = False         # человек у компьютера (обновление по кнопке): можно показать ему окно
         self.last_period = None          # последний загруженный период показателя (для дозагрузки)
         self.full_reload = True          # нужна полная перезагрузка истории
         self.progress = None             # progress("текст") — что сейчас происходит (для окна)

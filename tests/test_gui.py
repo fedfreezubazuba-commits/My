@@ -366,7 +366,7 @@ def test_blocked_site_banner_and_site_check(app, monkeypatch):
         def available(self):
             return True
 
-        def login(self, url):
+        def login(self, url, banner=None):
             assert url == "https://www.fedstat.ru/"
             return {"cookies": [{"name": "guard", "value": "1", "domain": ".fedstat.ru", "path": "/"}],
                     "user_agent": "Chrome"}
@@ -549,6 +549,9 @@ def test_form_dialog_builds_web_form_job(app):
     d.from_year.set("2020")
     d.vars["outerValue2"].set("643")
     pump(app, 0.2)
+    assert d.by.get() == "month" and "81 запрос" in d.count.cget("text")     # по месяцу: 2020–сентябрь 2026
+    d.by.set("year")
+    d._count()
     assert "7 запросов" in d.count.cget("text")
     p = d.params()
     assert p["from_year"] == 2020 and p["values"] == {"outerValue2": "643"} and p["by"] == "year"
@@ -572,3 +575,40 @@ def test_form_dialog_builds_web_form_job(app):
     pump(app, 0.3)
     p = app.cfg.job(job["id"])["params"]
     assert p["values"] == {} and p["from_year"] == 2022
+
+
+def test_comtrade_tab_preview_and_add(app, monkeypatch):
+    import json
+    from hub.gui.dialog_add import AddDialog
+    from hub.sources import _web as Wb, comtrade as CT
+    monkeypatch.setattr(CT, "PAUSE_S", 0)
+
+    def fake_get(url, ctx=None, timeout=60):
+        from urllib.parse import parse_qs, urlsplit
+        pers = parse_qs(urlsplit(url).query)["period"][0].split(",")
+        data = [{"refYear": int(p[:4]), "refMonth": int(p[4:]), "netWgt": 1000.0, "primaryValue": 600.0} for p in pers]
+        return 200, "application/json", json.dumps({"data": data, "error": ""}).encode(), url
+    monkeypatch.setattr(Wb, "http_get", fake_get)
+    tab = app.find.comtrade
+    tab.preview()
+    assert pump(app, 10, until=lambda: "Получено месяцев" in tab.info.cget("text"))
+    first = tab.tree.item(tab.tree.get_children()[0])["values"]
+    assert str(first[3]) == "600"
+    opened = []
+    monkeypatch.setattr(AddDialog, "__init__", lambda self, app_, src, params, name, **kw: opened.append((src, params, name)))
+    tab.partner.set("123abc")
+    assert tab.params() is None                          # непонятная страна — предупреждение
+    tab.partner.set("Россия (643)")
+    tab.add()
+    assert opened == [("comtrade", {"reporter": 156, "partner": 643, "flow": "M", "cmd": "271111", "from_year": 2017},
+                       "UN Comtrade: Китай, импорт 271111 — Россия")]
+
+
+def test_overview_check_row_offers_human_check(app):
+    from hub.core import hostblock as HB
+    from hub.sources.browser import CHECK_MESSAGE
+    HB.block(app.store, "stats.customs.gov.cn", CHECK_MESSAGE)
+    app.overview.refresh()
+    pump(app, 0.2)
+    texts = [w.cget("text") for w in _all_widgets(app.overview.body.inner) if w.winfo_class() in ("TLabel", "TButton")]
+    assert "Пройти проверку" in texts and any("ползунок" in t and "Таможня Китая" in t for t in texts)

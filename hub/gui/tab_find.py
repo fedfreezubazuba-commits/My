@@ -103,6 +103,9 @@ class FindTab(ttk.Frame):
             self.nb.add(self.file, text="Файл")
         except ImportError:
             pass
+        from .tab_comtrade import ComtradeTab
+        self.comtrade = ComtradeTab(self.nb, app)
+        self.nb.add(self.comtrade, text="ООН (Comtrade)")
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._on_source())
 
     def refresh(self):

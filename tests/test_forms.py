@@ -17,7 +17,7 @@ REQ = {"method": "GET", "url": LIST_URL, "body": "", "content_type": "", "header
        "frame_url": "http://stats.customs.gov.cn/queryDataForEN/queryDataByWhereEn"}
 
 
-def fake_site(start_url, reqs, pause_s=0, progress=None):
+def fake_site(start_url, reqs, pause_s=0, progress=None, interactive=False):
     out = []
     for r in reqs:
         q = {k: v[0] for k, v in parse_qs(urlsplit(r["url"]).query, keep_blank_values=True).items()}
@@ -90,7 +90,9 @@ def test_customs_fetch_by_years_monthly_rows():
 def site():
     srv, base = CS.start()
     CS.Handler.calls.clear()
+    CS.Handler.check_after = None
     yield base
+    CS.Handler.check_after = None
     srv.shutdown()
 
 
@@ -164,5 +166,59 @@ def test_runner_loads_history_then_only_fresh_months(workdir):
         out = r.run(job_ids=[job["id"]]).outcomes[0]
         assert [c["year"] for c in fake_site.calls] == [["2026"]]
         assert out.status in ("waiting", "unchanged", "delayed") and not out.new_periods
+    finally:
+        r.close()
+
+
+@pytest.mark.skipif(not os.environ.get("HUB_CHROMIUM"), reason="нужен Chromium (HUB_CHROMIUM)")
+def test_slider_check_needs_human(site, tmp_path):
+    """После второго запроса сайт просит «сдвинуть ползунок». В фоне — ошибка «проверка» (сайт на паузу,
+    на «Обзоре» кнопка); по кнопке — окно на экран, человек сдвигает ползунок, хаб продолжает сам."""
+    pytest.importorskip("playwright")
+    from hub.core import errors as E
+    from hub.core.paths import Paths
+    from hub.sources.browser import Browser, is_check
+    br = Browser(Paths(tmp_path))
+    req = dict(REQ, url=site + "/queryDataForEN/queryDataListEn?" + LIST_URL.split("?", 1)[1],
+               frame_url=site + "/queryDataForEN/queryDataByWhereEn")
+    reqs = [F.with_fields(req, {"year": str(y)}) for y in (2023, 2024, 2025)]
+    assert is_check(200, CS.CHECK) and not is_check(200, CS.table({"year": "2024", "startMonth": "1", "endMonth": "2"}))
+    CS.Handler.check_after = 1
+    with pytest.raises(E.HubError) as ei:
+        br.replay(site + "/indexEn", reqs, pause_s=0, headless=True)
+    assert ei.value.category == E.BOT and "ползунок" in str(ei.value)
+    CS.Handler.calls.clear()
+    seen = []
+    out = br.replay(site + "/indexEn", reqs, pause_s=0, headless=True, interactive=True,
+                    human=lambda tab: (seen.append(tab.url), tab.click("#slide")), human_wait_s=30)
+    assert len(seen) == 1 and len(out) == 3 and all("Liquefied natural gas" in t for t in out)
+    # 2024 спрошен дважды: вкладка проверки открывает тот же запрос (после ползунка там уже данные)
+    assert [c["year"] for c in CS.Handler.calls] == ["2023", "2024", "2024", "2025"]
+
+
+def test_check_in_background_pauses_site(workdir):
+    """В фоне сайт попросил ползунок: показатель «сайт не пускает», сайт на паузе с причиной «проверка»,
+    по кнопке (не в фоне) хаб передаёт браузеру «человек рядом»."""
+    from hub.core import errors as E, hostblock as HB
+    from hub.core.paths import Paths
+    from hub.runner import Runner
+    from hub.sources.browser import CHECK_MESSAGE
+    seen = []
+
+    def check_site(start_url, reqs, pause_s=0, progress=None, interactive=False):
+        seen.append(interactive)
+        raise E.HubError(E.BOT, CHECK_MESSAGE)
+    r = Runner(Paths(workdir), ctx_clients={"web_form": check_site}, now=NOW)
+    try:
+        params = {"url": "http://stats.customs.gov.cn/indexEn", "request": REQ, "from_year": 2026,
+                  "period": F.detect_period(F.fields(REQ), NOW.date()), "by": "month"}
+        job = r.cfg.add_job("web_form", "СПГ", params)
+        out = r.run(scheduled=True).outcomes[0]
+        assert out.status == "blocked" and seen == [False]
+        host, _till, reason = HB.active(r.store)[0]
+        assert host == "stats.customs.gov.cn" and "ползунок" in reason
+        HB.lift(r.store, host)
+        r.run(job_ids=[job["id"]])
+        assert seen == [False, True]
     finally:
         r.close()

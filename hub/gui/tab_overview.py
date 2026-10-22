@@ -77,8 +77,8 @@ class OverviewTab(ttk.Frame):
         blocks = HB.active(store)
         if blocks:
             self._section(inner, "Сайт временно не пускает хаб")
-            for host, till, _reason in blocks:
-                self._block_row(inner, host, till)
+            for host, till, reason in blocks:
+                self._block_row(inner, host, till, reason)
         if probs:
             self._section(inner, "Проблемы")
             self._problem_rows(inner, probs)
@@ -209,20 +209,29 @@ class OverviewTab(ttk.Frame):
     def _section(parent, title):
         ttk.Label(parent, text=title, style="Title.TLabel").pack(anchor="w", pady=(14, 4))
 
-    def _block_row(self, parent, host, till):
+    def _block_row(self, parent, host, till, reason=""):
         box = ttk.Frame(parent, padding=(0, 2, 0, 6))
         box.pack(fill="x")
-        W.autowrap(ttk.Label(box, justify="left", style="yellow.TLabel", text=(
-            f"{HB.title(host)} перестал отвечать хабу («доступ запрещён»). Обычно так сайт защищается, когда к нему "
-            f"было много запросов, и через несколько часов снимает ограничение сам. Хаб не обращается к этому сайту "
-            f"до {till:%H:%M %d.%m} и потом попробует снова — делать ничего не нужно."))).pack(fill="x")
-        W.autowrap(ttk.Label(box, justify="left", style="Muted.TLabel", text=(
-            "Если данные нужны раньше: «Открыть сайт» — откроется окно встроенного браузера. Если сайт покажет "
-            "проверку «я не робот», пройдите её и закройте окно — хаб запомнит это и сразу попробует снова. "
-            "Если сайт открылся сразу без проверки, просто закройте окно."))).pack(fill="x", pady=(2, 4))
+        check = "ползун" in (reason or "") or "я не робот" in (reason or "")
+        if check:
+            main = (f"{HB.title(host)} просит пройти проверку «я не робот» (сдвинуть ползунок). Хаб не проходит её "
+                    f"сам и до {till:%H:%M %d.%m} к сайту не обращается.")
+            more = ("Нажмите «Пройти проверку» — откроется сайт. Выполните поиск в форме, сдвиньте ползунок, когда "
+                    "сайт его покажет, дождитесь таблицы и закройте окно — хаб сразу продолжит загрузку. Обычно после "
+                    "этого сайт какое-то время пускает без проверки.")
+        else:
+            main = (f"{HB.title(host)} перестал отвечать хабу («доступ запрещён»). Обычно так сайт защищается, когда к "
+                    f"нему было много запросов, и через несколько часов снимает ограничение сам. Хаб не обращается к "
+                    f"этому сайту до {till:%H:%M %d.%m} и потом попробует снова — делать ничего не нужно.")
+            more = ("Если данные нужны раньше: «Открыть сайт» — откроется окно встроенного браузера. Если сайт покажет "
+                    "проверку «я не робот», пройдите её и закройте окно — хаб запомнит это и сразу попробует снова. "
+                    "Если сайт открылся сразу без проверки, просто закройте окно.")
+        W.autowrap(ttk.Label(box, justify="left", style="yellow.TLabel", text=main)).pack(fill="x")
+        W.autowrap(ttk.Label(box, justify="left", style="Muted.TLabel", text=more)).pack(fill="x", pady=(2, 4))
         row = ttk.Frame(box)
         row.pack(anchor="w")
-        ttk.Button(row, text="Открыть сайт", command=lambda: self.site_check(host)).pack(side="left")
+        ttk.Button(row, text="Пройти проверку" if check else "Открыть сайт",
+                   command=lambda: self.site_check(host, form=check)).pack(side="left")
         ttk.Button(row, text="Попробовать сейчас", command=lambda: self.retry_host(host)).pack(side="left", padx=8)
 
     def _host_jobs(self, host):
@@ -240,8 +249,8 @@ class OverviewTab(ttk.Frame):
         HB.lift(self.app.store, host)
         self.app.update_jobs(self._host_jobs(host))
 
-    def site_check(self, host):
-        open_site_check(self.app, host, HB.site_url(host), on_done=lambda: self.retry_host(host))
+    def site_check(self, host, form=False):
+        open_site_check(self.app, host, HB.site_url(host), on_done=lambda: self.retry_host(host), form=form)
 
     MAX_ROWS = 40
 
@@ -435,7 +444,11 @@ def _rebuild(app):
     app.bg(work, lambda _r: app.refresh_all(), "Обновляю файлы для моделей…")
 
 
-def open_site_check(app, host, url, on_done=None):
+FORM_CHECK_BANNER = ("Хаб данных: выполните поиск в форме (как при добавлении показателя). Если сайт покажет "
+                     "ползунок — сдвиньте его. Дождитесь таблицы и закройте окно — хаб продолжит сам.")
+
+
+def open_site_check(app, host, url, on_done=None, form=False):
     """Встроенный браузер на сайте: пользователь сам проходит проверку «я не робот» (или входит),
     после закрытия окна куки сайта сохраняются для хаба (без паролей)."""
     import json
@@ -446,7 +459,7 @@ def open_site_check(app, host, url, on_done=None):
         return
 
     def work():
-        got = br.login(url) or {}
+        got = br.login(url, banner=FORM_CHECK_BANNER if form else None) or {}
         if got.get("cookies"):
             d = app.paths.cache / "cookies"
             d.mkdir(parents=True, exist_ok=True)

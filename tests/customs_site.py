@@ -53,8 +53,13 @@ def table(q):
             "<th>US dollar</th></tr></thead><tbody>" + "".join(rows[:size]) + "</tbody></table>")
 
 
+CHECK = """<html><body><div class="nc-container"><p>请向右滑动验证 — slide to verify</p>
+<button id="slide" onclick="document.cookie='human=1; path=/'; location.reload()">&rarr;</button></div></body></html>"""
+
+
 class Handler(BaseHTTPRequestHandler):
     calls = []
+    check_after = None           # после стольких запросов сайт просит проверку «я не робот» (ползунок)
 
     def log_message(self, *a):
         pass
@@ -77,6 +82,9 @@ class Handler(BaseHTTPRequestHandler):
             if "ts=1" not in (self.headers.get("Cookie") or ""):
                 return self._send(403, "<html>forbidden</html>")
             q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
+            if Handler.check_after is not None and len(Handler.calls) >= Handler.check_after \
+                    and "human=1" not in (self.headers.get("Cookie") or ""):
+                return self._send(200, CHECK)
             Handler.calls.append(q)
             return self._send(200, table(q))
         return self._send(404, "not found")

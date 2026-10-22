@@ -100,7 +100,7 @@ LOGIN_BANNER_JS = r"""
   b.id = '__hub_banner';
   b.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483647;background:#1565c0;color:#fff;' +
                     'font:15px Segoe UI,Arial;padding:8px 14px;text-align:center';
-  b.textContent = 'Хаб данных: войдите на сайт (или выберите магазин) как обычно, затем просто закройте это окно.';
+  b.textContent = '%s';
   document.documentElement.appendChild(b);
 })();
 """
@@ -113,8 +113,9 @@ FORM_BANNER_JS = r"""
   b.id = '__hub_banner';
   b.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483647;background:#1565c0;color:#fff;' +
                     'font:15px Segoe UI,Arial;padding:8px 14px;text-align:center;pointer-events:none';
-  b.textContent = 'Хаб данных: заполните форму (коды, страна, импорт/экспорт, период) и нажмите поиск. ' +
-                  'Когда появится таблица с нужными данными — просто закройте это окно.';
+  b.textContent = 'Хаб данных: заполните форму (коды, страна, импорт/экспорт) и выберите ОДИН месяц — так сайт не ' +
+                  'предупреждает о большом периоде; годы и месяцы хаб потом переберёт сам. Нажмите поиск; если сайт ' +
+                  'покажет ползунок — сдвиньте его. Когда появится таблица — закройте это окно.';
   document.documentElement.appendChild(b);
 })();
 """
@@ -133,8 +134,34 @@ async (a) => await new Promise((resolve) => {
 })
 """
 
+CHECK_MESSAGE = ("Сайт просит пройти проверку «я не робот» (ползунок). Хаб не проходит её сам: нажмите на «Обзоре» "
+                 "«Пройти проверку» или обновите показатель кнопкой — окно браузера откроется, сдвиньте ползунок")
+CHECK_MARKERS = ("captcha", "滑块", "滑动验证", "向右滑动", "拖动滑块", "请完成安全验证", "slide to verify",
+                 "slider-verify", "nc_wrapper", "nc-container", "geetest", "tcaptcha", "verify-slider")
+
+CHECK_BANNER_JS = r"""
+(() => {
+  if (document.getElementById('__hub_banner')) return;
+  const b = document.createElement('div');
+  b.id = '__hub_banner';
+  b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#e65100;color:#fff;' +
+                    'font:15px Segoe UI,Arial;padding:8px 14px;text-align:center;pointer-events:none';
+  b.textContent = 'Хаб данных: сайт просит проверку «я не робот». Сдвиньте ползунок — дальше хаб продолжит сам ' +
+                  '(эта вкладка закроется). Если проверки не видно — просто закройте вкладку.';
+  document.documentElement.appendChild(b);
+})();
+"""
+
+CHECK_BANNER_FORM_JS = CHECK_BANNER_JS.replace(
+    "Сдвиньте ползунок — дальше хаб продолжит сам ' +\n                  '(эта вкладка закроется). Если проверки не видно — просто закройте вкладку.",
+    "Нажмите поиск в форме, сдвиньте ползунок, ' +\n                  'дождитесь таблицы и закройте эту вкладку — дальше хаб продолжит сам.")
+
 KEEP_HEADERS = ("x-requested-with", "accept")
 MAX_TEXT = 3_000_000
+
+
+LOGIN_TEXT = "Хаб данных: войдите на сайт (или выберите магазин) как обычно, затем просто закройте это окно."
+LOGIN_BANNER_JS = LOGIN_BANNER_JS.replace("%s", LOGIN_TEXT)
 
 
 class Browser:
@@ -214,7 +241,7 @@ class Browser:
             finally:
                 ctx.close()
 
-    def login(self, url, timeout_s=900):
+    def login(self, url, timeout_s=900, banner=None):
         """Окно для входа (или для проверки «я не робот»). Возвращается, когда пользователь закрыл окно
         (или через 15 минут): {"cookies": [...], "user_agent": "..."} — чтобы хаб мог ходить на сайт и без
         браузера (ЕМИСС). Пароли не читаются и не сохраняются — только куки сайта, как в самом браузере."""
@@ -232,7 +259,8 @@ class Browser:
                 while time.time() < end and any(not pg.is_closed() for pg in ctx.pages):
                     for pg in ctx.pages:
                         try:
-                            pg.evaluate(LOGIN_BANNER_JS)
+                            pg.evaluate(LOGIN_BANNER_JS if not banner else
+                                        LOGIN_BANNER_JS.replace(LOGIN_TEXT, banner.replace("'", "’")))
                         except Exception:  # noqa: BLE001 — страница грузится или закрыта
                             pass
                     try:
@@ -309,9 +337,15 @@ class Browser:
                     pass
         return [{k: v for k, v in c.items() if k != "resp"} for c in cands if c.get("text")]
 
-    def replay(self, start_url, requests, pause_s=4, progress=None, headless=False, timeout_ms=120000):
+    def replay(self, start_url, requests, pause_s=4, progress=None, headless=False, timeout_ms=120000,
+               interactive=False, human=None, human_wait_s=600):
         """Повторить записанные запросы формы из страницы сайта (окно за краем экрана): сайт открывается
-        как у человека, со своими скриптами и защитой, запросы идут по одному с паузой. → [текст ответа]."""
+        как у человека, со своими скриптами и защитой, запросы идут по одному с паузой. → [текст ответа].
+
+        Если сайт просит проверку «я не робот» (ползунок): interactive=True (обновление по кнопке, человек у
+        компьютера) — окно выходит на экран, человек проходит проверку, хаб продолжает; иначе — ошибка BOT,
+        и на «Обзоре» появляется «Пройти проверку». Решать проверку за человека хаб не пытается.
+        human — для тестов: «действие человека» в открытой вкладке."""
         out = []
         with _lock, self._sync() as p:
             ctx = self._launch(p, headless=headless, offscreen=not headless)
@@ -325,22 +359,22 @@ class Browser:
                 for i, req in enumerate(requests, 1):
                     if progress:
                         progress(i)
-                    r = None
-                    for _attempt in range(3):
-                        frame = _frame_for(page, req)
-                        try:
-                            r = frame.evaluate(XHR_JS, {
-                                "method": req.get("method") or "GET", "url": req["url"], "body": req.get("body") or "",
-                                "timeout": timeout_ms,
-                                "headers": {**(req.get("headers") or {}),
-                                            **({"Content-Type": req["content_type"]}
-                                               if req.get("body") and req.get("content_type") else {})}})
-                            break
-                        except Exception:  # noqa: BLE001 — страница перезагрузилась (защита сайта) — ещё раз
+                    checks = 0
+                    while True:
+                        status, text = self._xhr(page, req, timeout_ms)
+                        if status == 412:                  # защита сайта обновляет свои куки — перезагрузить страницу
+                            page.reload(wait_until="domcontentloaded", timeout=timeout_ms)
                             _settle(page)
-                    if r is None:
-                        raise E.HubError(E.NETWORK, "Сайт перезагружал страницу и не дал выполнить запрос")
-                    status, text = r["status"], r["text"]
+                            status, text = self._xhr(page, req, timeout_ms)
+                        if not is_check(status, text, page):
+                            break
+                        checks += 1
+                        if not interactive or checks > 2:
+                            raise E.HubError(E.BOT, CHECK_MESSAGE)
+                        if progress:
+                            progress(i, "Сайт просит пройти проверку «я не робот» — сдвиньте ползунок в окне браузера")
+                        self._human_check(ctx, page, req, start_url, second=checks > 1, human=human,
+                                          wait_s=human_wait_s)
                     cat = _block_category(status, text)
                     if cat:
                         raise E.HubError(cat, f"Сайт не выдал данные (ответ {status})")
@@ -357,6 +391,52 @@ class Browser:
                 except Exception:  # noqa: BLE001
                     pass
         return out
+
+    @staticmethod
+    def _xhr(page, req, timeout_ms):
+        for _attempt in range(3):
+            frame = _frame_for(page, req)
+            try:
+                r = frame.evaluate(XHR_JS, {
+                    "method": req.get("method") or "GET", "url": req["url"], "body": req.get("body") or "",
+                    "timeout": timeout_ms,
+                    "headers": {**(req.get("headers") or {}),
+                                **({"Content-Type": req["content_type"]}
+                                   if req.get("body") and req.get("content_type") else {})}})
+                return r["status"], r["text"]
+            except Exception:  # noqa: BLE001 — страница перезагрузилась (защита сайта) — ещё раз
+                _settle(page)
+        raise E.HubError(E.NETWORK, "Сайт перезагружал страницу и не дал выполнить запрос")
+
+    @staticmethod
+    def _human_check(ctx, page, req, start_url, second=False, human=None, wait_s=600):
+        """Вкладка на экране: человек проходит проверку сам. Сначала — сам запрос (если проверка стоит перед
+        данными), во второй раз — страница с формой (если проверку показывает форма после поиска)."""
+        _show_window(page)
+        tab = ctx.new_page()
+        get = (req.get("method") or "GET").upper() == "GET"
+        target = req["url"] if get and not second else (req.get("frame_url") or start_url)
+        banner = CHECK_BANNER_FORM_JS if second or not get else CHECK_BANNER_JS
+        try:
+            tab.goto(target, wait_until="domcontentloaded", timeout=90000)
+        except Exception:  # noqa: BLE001
+            pass
+        if human:
+            human(tab)                          # тесты: «человек сдвинул ползунок»
+        end, clean = time.time() + wait_s, 0
+        while time.time() < end and not tab.is_closed():
+            _in_frames(tab, banner)
+            html = _frames_html(tab)
+            clean = clean + 1 if html and not has_check_markers(html) else 0
+            if clean >= 3 and not second:
+                break                           # проверка пройдена — дальше хаб сам
+            time.sleep(1)
+        try:
+            if not tab.is_closed():
+                tab.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _settle(page)
 
     def pick(self, url, timeout_s=600, headless=False, on_page=None):
         """Окно выбора элемента. Возвращает словарь с выбором или None, если окно закрыли.
@@ -443,3 +523,45 @@ def _frame_for(page, req):
     page.goto(req.get("frame_url") or origin + "/", wait_until="domcontentloaded", timeout=90000)
     _settle(page)
     return page.main_frame
+
+
+def has_check_markers(html) -> bool:
+    low = (html or "")[:300000].lower()
+    return any(m in low for m in CHECK_MARKERS)
+
+
+def is_check(status, text, page=None) -> bool:
+    """Ответ — проверка «я не робот» (ползунок), а не данные: признаки проверки и нет таблицы с числами.
+    Проверку может показать и сама страница с формой — тогда смотрим и на неё."""
+    if status in (200, 403, 405, 429) and has_check_markers(text):
+        from ._forms import result_table
+        if result_table(text) is None:
+            return True
+    if status == 200 and page is not None:
+        from ._forms import result_table
+        if result_table(text) is None and has_check_markers(_frames_html(page)):
+            return True
+    return False
+
+
+def _frames_html(page) -> str:
+    parts = []
+    for fr in list(page.frames):
+        try:
+            parts.append(fr.content())
+        except Exception:  # noqa: BLE001
+            pass
+    return "\n".join(parts)
+
+
+def _show_window(page):
+    """Окно за краем экрана — на экран, поверх остальных (чтобы человек увидел проверку)."""
+    try:
+        cdp = page.context.new_cdp_session(page)
+        wid = cdp.send("Browser.getWindowForTarget")["windowId"]
+        cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "normal"}})
+        cdp.send("Browser.setWindowBounds", {"windowId": wid, "bounds": {"left": 80, "top": 60, "width": 1280,
+                                                                          "height": 900}})
+        page.bring_to_front()
+    except Exception:  # noqa: BLE001 — без окна (тесты) или старый Chromium
+        pass

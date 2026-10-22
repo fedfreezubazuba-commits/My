@@ -90,7 +90,8 @@ class WebForm(Source):
         self.say(ctx, f"Запросов к сайту: {len(plan)} (по одному на {'год' if params.get('by', 'year') == 'year' else 'месяц'})")
         answers = replay(params.get("url") or params["request"].get("frame_url") or params["request"]["url"],
                          [r for r, _a, _b in plan], pause_s=PAUSE_S,
-                         progress=lambda i: self.say(ctx, f"Запрос {i} из {len(plan)}"))
+                         progress=lambda i, msg=None: self.say(ctx, msg or f"Запрос {i} из {len(plan)}"),
+                         interactive=bool(getattr(ctx, "interactive", False)))
         res = FetchResult(url=params.get("url") or "", partial=since is not None)
         seen = {}
         raw = []
