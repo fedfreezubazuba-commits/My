@@ -47,7 +47,7 @@ class OverviewTab(ttk.Frame):
         else:
             auto = "Автообновление выключено — данные обновляются только по кнопке (включить — в «Настройках»). "
         self.auto_info.configure(text=auto + (f"Последнее обновление: {fmt_date(last)}." if last else ""))
-        bad = len(probs) + (1 if stale and enabled else 0)
+        bad = len(probs) + (1 if stale and enabled or enabled and overview.scheduler_stale(store, app.started) else 0)
         if not cfg.jobs():
             self.big.configure(text="Добавьте первый показатель", style="Big.TLabel", foreground="")
         elif bad:
@@ -66,9 +66,14 @@ class OverviewTab(ttk.Frame):
                 "3. Отметьте, какие ряды получает модель. В модели нажмите «Данные → Обновить всё»."))).pack(fill="x")
             ttk.Button(inner, text="Найти данные →", command=lambda: self.app.show(self.app.find)).pack(anchor="w", pady=8)
 
-        if stale and enabled:
+        sched = overview.scheduler_stale(store, app.started) if enabled else None
+        if stale and enabled or sched:
             self._section(inner, "Фоновое обновление")
-            ttk.Label(inner, text=stale, style="yellow.TLabel").pack(anchor="w")
+            W.autowrap(ttk.Label(inner, text=sched or stale, style="yellow.TLabel", justify="left")).pack(fill="x")
+            row = ttk.Frame(inner)
+            row.pack(anchor="w", pady=(4, 0))
+            ttk.Button(row, text="Пересоздать задачу", command=self.recreate_task).pack(side="left")
+            ttk.Button(row, text="Открыть Планировщик заданий", command=winsched.open_scheduler).pack(side="left", padx=8)
         blocks = HB.active(store)
         if blocks:
             self._section(inner, "Сайт временно не пускает хаб")
@@ -95,6 +100,12 @@ class OverviewTab(ttk.Frame):
             row.pack(fill="x", pady=2)
             ttk.Label(row, text=f"Откройте модель «{name}» — там новые данные по {n} {'ряду' if n == 1 else 'рядам'}.").pack(side="left")
             ttk.Button(row, text="Открыть модель", command=lambda nm=name: self.app.models.open_model(nm)).pack(side="left", padx=8)
+
+    def recreate_task(self):
+        ok, msg = winsched.enable()
+        if ok:
+            msg += ". Первый запуск — в течение 15 минут; это сообщение исчезнет, когда планировщик запустит хаб."
+        (messagebox.showinfo if ok else messagebox.showwarning)("Автообновление", msg, parent=self)
 
     # --- новые данные: фильтры, список, календарь ------------------------------------------
     def _news_header(self, parent):

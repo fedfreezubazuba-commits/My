@@ -50,12 +50,67 @@ def default_browser(paths):
         return None
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)            # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return ctypes.GetLastError() == 5             # «нет доступа» — процесс есть, но чужой
+        try:
+            code = ctypes.c_ulong()
+            return bool(k.GetExitCodeProcess(h, ctypes.byref(code))) and code.value == 259    # STILL_ACTIVE
+        finally:
+            k.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def boot_time() -> float | None:
+    """Когда включили компьютер (секунды с 1970) — замок старше включения точно брошен."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            ticks = ctypes.windll.kernel32.GetTickCount64
+            ticks.restype = ctypes.c_ulonglong
+            return time.time() - ticks() / 1000
+        with open("/proc/uptime") as fh:
+            return time.time() - float(fh.read().split()[0])
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class Lock:
-    """Файл-замок runner.lock: создаётся атомарно; если старше 3 часов — считается брошенным."""
+    """Файл-замок runner.lock: создаётся атомарно. Брошенным считается замок, если процесса, который его
+    поставил, уже нет, если он старше включения компьютера (выключили посреди обновления) или старше 3 часов."""
 
     def __init__(self, path):
         self.path = path
         self.held = False
+
+    def _abandoned(self) -> bool:
+        try:
+            age = time.time() - os.path.getmtime(self.path)
+            text = open(self.path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return True
+        if age > STALE_LOCK_SEC:
+            return True
+        boot = boot_time()
+        if boot and os.path.getmtime(self.path) < boot - 60:
+            return True
+        try:
+            pid = int(text.split()[0])
+        except (IndexError, ValueError):
+            return age > 60                 # замок ещё пишется или испорчен
+        return not _pid_alive(pid)
 
     def __enter__(self):
         for _ in range(2):
@@ -66,11 +121,7 @@ class Lock:
                 self.held = True
                 return self
             except FileExistsError:
-                try:
-                    age = time.time() - os.path.getmtime(self.path)
-                except OSError:
-                    continue
-                if age > STALE_LOCK_SEC:
+                if self._abandoned():
                     try:
                         os.remove(self.path)
                     except OSError:
@@ -393,6 +444,8 @@ class Runner:
         report = RunReport()
         with Lock(self.paths.lock):
             self.store.meta_set("runner_heartbeat", now_iso())
+            if scheduled:
+                self.store.meta_set("scheduler_heartbeat", now_iso())     # планировщик Windows работает
             settings = self.cfg.settings()
             report.purged = self.cfg.purge_trash(int(settings.get("trash_days", 30)))
             all_jobs = self.cfg.jobs()

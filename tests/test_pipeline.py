@@ -191,6 +191,24 @@ def test_lock_prevents_parallel_runs(runner):
             runner.run(force=True)
 
 
+def test_abandoned_lock_after_power_off(runner, monkeypatch):
+    """Компьютер выключили посреди обновления — замок остался. Он не должен 3 часа блокировать обновления:
+    процесса уже нет или замок старше включения компьютера → замок снимается сразу."""
+    import os
+    import time
+    from hub import runner as R
+    lock = runner.paths.lock
+    lock.write_text("999999 2026-10-22T15:59:00")              # такого процесса нет
+    runner.run(force=True)
+    assert not lock.exists()
+    lock.write_text(f"{os.getpid()} 2026-10-22T15:59:00")      # процесс жив и обновляет
+    with pytest.raises(R.Busy):
+        runner.run(force=True)
+    monkeypatch.setattr(R, "boot_time", lambda: time.time() + 120)   # компьютер включили после замка
+    runner.run(force=True)
+    assert not lock.exists()
+
+
 def test_selection_gives_model_only_an_extract(runner):
     """Выжимка: из большого показателя модель получает только выбранные ряды и только с 2024 года."""
     fs = runner.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883", "1558900"]}})
@@ -366,3 +384,28 @@ def test_cbr_not_downloaded_when_unchanged_with_own_schedule(runner, fakes):
     assert len([c for c in fakes["cbr"].calls if c[0] == "/dataNew"]) == calls
     runner.run(job_ids=[cbr["id"]])                          # «Обновить сейчас» — скачивает всегда
     assert len([c for c in fakes["cbr"].calls if c[0] == "/dataNew"]) == calls + 1
+
+
+def test_missed_slot_caught_up_then_retried_until_new_data(runner, fakes):
+    """Будни в 16:00: компьютер был выключен — после включения хаб проверяет сразу; ЦБ ничего нового
+    не опубликовал — через час снова (дёшево, по дате обновления); данные пришли — ждём следующий срок."""
+    import datetime as dt
+    from hub.core import schedule as S
+    job = runner.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]},
+                             schedule="weekly:Mon,Tue,Wed,Thu,Fri@16:00")
+    runner.run(force=True)
+    now = dt.datetime.now()
+    slot = S.due_slot(S.parse_rules(job["schedule"]), now)
+    before = (slot - dt.timedelta(days=1)).isoformat(timespec="seconds")
+    runner.store.set_state(job["id"], last_attempt=before, last_change=before, last_success=before)
+    assert [j["id"] for j in runner.due_jobs()] == [job["id"]]              # срок пропущен — догоняем
+    rep = runner.run()
+    assert rep.outcomes[0].status in ("waiting", "delayed")                 # новых данных нет
+    assert runner.due_jobs() == []
+    st = runner.store.state(job["id"])
+    later = dt.datetime.fromisoformat(st["last_attempt"]) + dt.timedelta(hours=1, minutes=1)
+    if not S.quiet(later):
+        assert [j["id"] for j in runner.due_jobs(later)] == [job["id"]]     # повтор через час
+    runner.store.set_state(job["id"], last_change=st["last_attempt"])       # данные пришли
+    if later < S.next_slot(job["schedule"], now):
+        assert runner.due_jobs(later) == []                                 # ждём следующий срок

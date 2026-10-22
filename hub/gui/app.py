@@ -5,6 +5,7 @@
 
 Долгие операции идут в фоне (app.bg), окно не замирает; внизу — строка состояния с индикатором.
 """
+import datetime as dt
 import queue
 import threading
 import tkinter as tk
@@ -31,6 +32,7 @@ class HubApp:
         self.q = queue.Queue()
         self.tasks = 0
         self.clients = {}       # подмена сетевых клиентов (тесты)
+        self.started = dt.datetime.now()
         self._stage("открываю рабочую папку и базу данных")
         self.open_paths()
         self._stage("строю вкладки")
@@ -41,6 +43,18 @@ class HubApp:
         else:
             root.after(200, lambda: (self._stage("заполняю списки"), self.refresh_all()))
         threading.Thread(target=self._upgrade_task, daemon=True).start()
+        root.after(self.PERIODIC_MS, self._periodic)
+
+    PERIODIC_MS = 10 * 60 * 1000
+
+    def _periodic(self):
+        """Раз в 10 минут «Обзор» перечитывается: фоновое обновление могло принести новые данные."""
+        try:
+            if not self.tasks:
+                self.overview.refresh()
+        except Exception:  # noqa: BLE001
+            self.log.exception("Обновление «Обзора»")
+        self.root.after(self.PERIODIC_MS, self._periodic)
 
     def _stage(self, text):
         if self.watch:

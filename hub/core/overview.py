@@ -171,3 +171,22 @@ def runner_stale(store, days=2) -> str | None:
     if age > dt.timedelta(days=days):
         return f"Фоновое обновление не запускалось {age.days} дн. — проверьте, включено ли автообновление"
     return None
+
+
+def scheduler_stale(store, app_started: dt.datetime, now=None, minutes=45) -> str | None:
+    """Автообновление включено, окно открыто уже давно (значит, компьютер включён), а планировщик Windows
+    хаб не запускал — задача не работает (отключена, удалена или Windows её не запускает)."""
+    now = now or dt.datetime.now()
+    if now - app_started < dt.timedelta(minutes=minutes):
+        return None
+    last = store.meta_get("scheduler_heartbeat")
+    try:
+        t = dt.datetime.fromisoformat(last) if last else None
+    except ValueError:
+        t = None
+    if t and now - t < dt.timedelta(minutes=minutes):
+        return None
+    since = f"с {t:%d.%m.%Y %H:%M}" if t else "ни разу с установки этой версии"
+    return (f"Планировщик Windows не запускал фоновое обновление {since}, хотя компьютер включён. "
+            "Пока это так, показатели обновляются только по кнопке. Нажмите «Пересоздать задачу» — "
+            "если не поможет, откройте Планировщик заданий и посмотрите «Журнал» задачи «Хаб данных — обновление».")

@@ -22,6 +22,17 @@ WIDTH = {"name": 320, "source": 95, "volume": 170, "last_period": 75, "last_valu
 FILTERS = ["Все", "Требуют внимания", "На паузе", "Банк России", "ЕМИСС", "Сайты и файлы"]
 
 
+def next_check_text(app, job, st) -> str:
+    """Когда хаб проверит показатель в следующий раз и почему (повторы, пока нет новых данных)."""
+    import datetime as dt
+    try:
+        src = sources.get(job["source"])
+        _exp, per = S.expected_next(app.store, job)
+        return S.check_text(job, st, dt.datetime.now(), snapshot=src.snapshot, periodicity=per)
+    except Exception:  # noqa: BLE001 — подсказка не должна ломать окно
+        return ""
+
+
 def volume(store, job_id, state):
     series = store.series_of_job(job_id)
     if not series or not state.get("first_period"):
@@ -96,7 +107,8 @@ class JobsTab(ttk.Frame):
             return
         st = self.app.store.state(job["id"])
         status = ST.effective(job, st)
-        self.info.configure(text=f"{job['name']} — {ST.word(status)}. {ST.explain(job, st)}",
+        self.info.configure(text=f"{job['name']} — {ST.word(status)}. {ST.explain(job, st)} "
+                                 f"{next_check_text(self.app, job, st)}".strip(),
                             foreground=ST.COLORS[ST.color(status)] if ST.color(status) != ST.GREEN else "")
 
     def _context(self, e):
@@ -361,6 +373,9 @@ class JobWindow(tk.Toplevel):
         ttk.Label(right, text="Статус", style="Title.TLabel").pack(anchor="w")
         status = ST.effective(job, st)
         info = f"{ST.word(status)}. {ST.explain(job, st)}"
+        nxt = next_check_text(app, job, st)
+        if nxt:
+            info += "\n\n" + nxt
         if job["source"] == "fedstat" and not (st.get("release_next") or st.get("release_note")):
             info += ("\n\nИсточник о сроках: на странице показателя ЕМИСС срок следующего обновления не нашёлся — "
                      "хаб оценивает его по тому, когда данные выходили раньше.")

@@ -383,7 +383,57 @@ def _release_due(job, state, now, last_attempt) -> bool:
     return False
 
 
+QUIET = (23, 7)          # частые повторы (раз в час, раз в 3 часа) ночью по Москве не делаем
+
+
+def slots_per_week(rules) -> float:
+    """Сколько плановых сроков в неделю дают правила (без «каждые N часов» и «автоматически»)."""
+    per = 0.0
+    for kind, arg, _t in rules:
+        if kind == "daily":
+            per += 7
+        elif kind == "weekly":
+            per += len(arg)
+        elif kind in ("monthly", "workday"):
+            per += 7 / 30.4
+        elif kind == "quarterly":
+            per += 7 / 91
+        elif kind == "yearly":
+            per += 7 / 365
+    return per
+
+
+def retry_interval(rules) -> dt.timedelta:
+    """Пауза между повторами, пока после срока не пришли новые данные: сроки несколько раз в неделю —
+    раз в час; раз в неделю — раз в 3 часа; раз в месяц и реже — раз в сутки."""
+    per = slots_per_week(rules)
+    if not per:
+        return dt.timedelta(days=1)
+    gap_days = 7 / per
+    if gap_days <= 3.5:
+        return dt.timedelta(hours=1)
+    if gap_days <= 8:
+        return dt.timedelta(hours=3)
+    return dt.timedelta(days=1)
+
+
+def quiet(now_local: dt.datetime) -> bool:
+    h = to_msk(now_local).hour
+    return h >= QUIET[0] or h < QUIET[1]
+
+
+def due_slot(rules, now: dt.datetime) -> dt.datetime | None:
+    """Последний наступивший плановый срок по правилам (в местном времени)."""
+    slots = [last_rule_slot(r, now) for r in rules if r[0] not in ("auto", "every")]
+    return max(slots) if slots else None
+
+
 def is_due(job, state, now: dt.datetime, snapshot=False, periodicity=None) -> bool:
+    """Пора ли проверять показатель.
+
+    Свой график (дни и время): срок наступил, а попытки после него не было (компьютер был выключен,
+    не было связи) — проверка при первой возможности. Если после срока новых данных ещё нет — повторы
+    (retry_interval), пока данные не придут; пришли — ждём следующий срок по графику."""
     if not job.get("enabled", True):
         return False
     last_attempt = _dt(state.get("last_attempt"))
@@ -396,13 +446,22 @@ def is_due(job, state, now: dt.datetime, snapshot=False, periodicity=None) -> bo
         return True
     rules = parse_rules(job.get("schedule"))
     if rules[0][0] != "auto":
-        for kind, arg, at in rules:
-            if kind == "every":
-                if now - last_attempt >= dt.timedelta(hours=arg):
-                    return True
-            elif last_attempt < last_rule_slot((kind, arg, at), now):
+        for kind, arg, _t in rules:
+            if kind == "every" and now - last_attempt >= dt.timedelta(hours=arg):
                 return True
-        return False
+        slot = due_slot(rules, now)
+        if slot is None:
+            return False
+        if last_attempt < slot:
+            return True                       # первая возможность после срока
+        last_change = _dt(state.get("last_change"))
+        last_success = _dt(state.get("last_success"))
+        if last_change is not None and last_change >= slot or snapshot and last_success and last_success >= slot:
+            return False                      # данные после срока получены — ждём следующий срок
+        gap = retry_interval(rules)
+        if gap < dt.timedelta(days=1) and quiet(now):
+            return False
+        return now - last_attempt >= gap
     if snapshot:
         return last_attempt < last_slot("daily", None, now)
     expected = _dt(state.get("expected_next"))
@@ -410,6 +469,84 @@ def is_due(job, state, now: dt.datetime, snapshot=False, periodicity=None) -> bo
         return last_attempt < last_slot("daily", None, now)
     rare = RARE_DAYS.get(periodicity or P.MONTH, 7)
     return now - last_attempt >= dt.timedelta(days=rare)
+
+
+def next_check(job, state, now: dt.datetime, snapshot=False, periodicity=None) -> dt.datetime | None:
+    """Когда хаб в следующий раз проверит показатель (для подсказок; точность — до запуска планировщика)."""
+    if not job.get("enabled", True):
+        return None
+    st = state or {}
+    if is_due(job, st, now, snapshot, periodicity):
+        return now
+    last = _dt(st.get("last_attempt")) or now
+    cands = []
+    fails = st.get("fail_count") or 0
+    if fails:
+        cands.append(last + dt.timedelta(minutes=backoff_minutes(fails)))
+    try:
+        rules = parse_rules(job.get("schedule"))
+    except ValueError:
+        return None
+    if rules[0][0] != "auto":
+        gap = retry_interval(rules)
+        cands.append(last + gap)
+        for kind, arg, _t in rules:
+            if kind == "every":
+                cands.append(last + dt.timedelta(hours=arg))
+        nxt = next_slot(job.get("schedule"), now, count=2) or []
+        cands += nxt
+    else:
+        exp = _dt(st.get("expected_next"))
+        if exp:
+            cands.append(exp)
+        rare = RARE_DAYS.get(periodicity or P.MONTH, 7)
+        cands.append(last + dt.timedelta(days=rare))
+        for d in range(0, 3):
+            cands.append(_at(now.date() + dt.timedelta(days=d), None))
+    cands += [r for r in release_moments(job, st) if r > now]
+    cands.append(last + RECHECK)
+    # конец «тихих часов»: 7 утра по Москве в ближайшие дни
+    for d in range(0, 3):
+        cands.append(from_msk(_at(to_msk(now).date() + dt.timedelta(days=d), (QUIET[1], 0))))
+    for c in sorted({c for c in cands if c and c > now}):
+        if is_due(job, st, c + dt.timedelta(seconds=1), snapshot, periodicity):
+            return c
+    return None
+
+
+RETRY_WORDS = {dt.timedelta(hours=1): "каждый час", dt.timedelta(hours=3): "каждые 3 часа",
+               dt.timedelta(days=1): "раз в сутки"}
+
+
+def check_text(job, state, now: dt.datetime, snapshot=False, periodicity=None) -> str:
+    """«Новых данных после срока 22.10 16:00 ещё нет — хаб повторяет каждый час… Следующая проверка: …»."""
+    st = state or {}
+    if not job.get("enabled", True):
+        return ""
+    parts = []
+    try:
+        rules = parse_rules(job.get("schedule"))
+    except ValueError:
+        return ""
+    slot = due_slot(rules, now) if rules[0][0] != "auto" else None
+    last_change = _dt(st.get("last_change"))
+    last_attempt = _dt(st.get("last_attempt"))
+    if slot and last_attempt and last_attempt >= slot and not (last_change and last_change >= slot) \
+            and not (snapshot and _dt(st.get("last_success")) and _dt(st["last_success"]) >= slot) \
+            and not st.get("fail_count"):
+        word = RETRY_WORDS.get(retry_interval(rules), "")
+        parts.append(f"Новых данных после срока {slot:%d.%m %H:%M} ещё нет — хаб повторяет проверку {word}"
+                     + (" (ночью с 23 до 7 — нет)" if retry_interval(rules) < dt.timedelta(days=1) else "")
+                     + ", пока они не появятся, затем ждёт следующий срок по графику.")
+    nc = next_check(job, st, now, snapshot, periodicity)
+    if nc is not None:
+        if nc <= now + dt.timedelta(minutes=1):
+            parts.append("Следующая проверка — при ближайшем запуске фонового обновления (в течение 15 минут"
+                         " после включения компьютера).")
+        else:
+            parts.append(f"Следующая проверка: {nc:%d.%m.%Y %H:%M}. Если компьютер в это время будет выключен — "
+                         "сразу после включения.")
+    return " ".join(parts)
 
 
 def lag_days(source, periodicity, observed_lags):

@@ -102,7 +102,7 @@ def test_release_dates_trigger_checks():
     assert not S.is_due(job, st2, dt.datetime(2026, 10, 21, 21, 10), periodicity=P.MONTH)
     # дата, которую сообщил источник, работает так же
     job2 = {"schedule": "weekly:Mon", "enabled": True}
-    st3 = {"last_attempt": "2026-10-19T07:00:00", "release_next": "2026-10-20"}
+    st3 = {"last_attempt": "2026-10-19T07:00:00", "last_change": "2026-10-19T07:00:00", "release_next": "2026-10-20"}
     assert not S.is_due(job2, st3, dt.datetime(2026, 10, 20, 8, 0))
     assert S.is_due(job2, st3, dt.datetime(2026, 10, 20, 9, 0))
 
@@ -111,7 +111,7 @@ def test_is_due():
     now = dt.datetime(2026, 10, 19, 10, 0)
     job = {"schedule": "daily", "enabled": True}
     assert S.is_due(job, {}, now)
-    assert not S.is_due(job, {"last_attempt": "2026-10-19T07:00:00"}, now)
+    assert not S.is_due(job, {"last_attempt": "2026-10-19T07:00:00", "last_change": "2026-10-19T07:00:00"}, now)
     assert S.is_due(job, {"last_attempt": "2026-10-18T22:00:00"}, now)
     assert not S.is_due({**job, "enabled": False}, {}, now)
     # сбой: повтор через 15 мин, потом реже
@@ -318,7 +318,7 @@ def test_schedule_rules_quarter_year_last_and_several():
     nxt = S.next_slot("weekly:Mon@10:00;quarterly:wd10@10:00", now, count=3)
     assert nxt == [dt.datetime(2026, 10, 26, 10), dt.datetime(2026, 11, 2, 10), dt.datetime(2026, 11, 9, 10)]
     job = {"schedule": "weekly:Fri@10:00;every:48h", "enabled": True}
-    st = {"last_attempt": "2026-10-19T09:00:00"}
+    st = {"last_attempt": "2026-10-19T09:00:00", "last_change": "2026-10-19T09:00:00"}
     assert not S.is_due(job, st, now)
     assert S.is_due(job, st, dt.datetime(2026, 10, 21, 9, 30))      # прошло 48 ч
     assert S.is_due(job, {"last_attempt": "2026-10-22T09:00:00"}, dt.datetime(2026, 10, 23, 10, 1))
@@ -329,7 +329,7 @@ def test_schedule_time_is_moscow(monkeypatch):
     monkeypatch.setattr(S, "_local_offset", lambda moment: dt.timedelta(hours=5))
     assert S.next_slot("daily@10:00", dt.datetime(2026, 10, 20, 11, 0)) == dt.datetime(2026, 10, 20, 12, 0)
     job = {"schedule": "daily@10:00", "enabled": True}
-    st = {"last_attempt": "2026-10-20T08:00:00"}
+    st = {"last_attempt": "2026-10-20T08:00:00", "last_change": "2026-10-20T08:00:00"}
     assert not S.is_due(job, st, dt.datetime(2026, 10, 20, 11, 59))
     assert S.is_due(job, st, dt.datetime(2026, 10, 20, 12, 0))
     assert S.release_moments({"release_dates": ["2026-10-21T19:00"]}) == [dt.datetime(2026, 10, 21, 21, 0)]
@@ -348,3 +348,50 @@ def test_upto_text_and_update_line():
     assert O._upto('{"new": [["A", "2026-07", 1], ["A", "2026-09", 2], ["B", "2025-Q4", 3]]}') == "2026-09"
     assert O._later("2026-W40", "2026-09") == "2026-W40"
     assert O.source_group("web_table") == "sites" and O.source_group("folder_inbox") == "other"
+
+
+def test_missed_slot_and_retries_until_new_data():
+    """Будни в 16:00 по Москве. Компьютер был выключен в 16:00 — проверка при первой возможности
+    (включили в 19:40). Новых данных нет — повтор каждый час, ночью (23–7) не дёргаем. Данные пришли —
+    ждём следующий срок. Раз в месяц — повтор раз в сутки, раз в неделю — раз в 3 часа."""
+    job = {"schedule": "weekly:Mon,Tue,Wed,Thu,Fri@16:00", "enabled": True}
+    st = {"last_attempt": "2026-10-21T16:02:00", "last_change": "2026-10-21T16:02:00"}
+    assert not S.is_due(job, st, dt.datetime(2026, 10, 22, 15, 59))
+    assert S.is_due(job, st, dt.datetime(2026, 10, 22, 19, 40))          # срок пропущен — сразу
+    st = {"last_attempt": "2026-10-22T19:40:00", "last_change": "2026-10-21T16:02:00"}   # данных нет
+    assert not S.is_due(job, st, dt.datetime(2026, 10, 22, 20, 30))
+    assert S.is_due(job, st, dt.datetime(2026, 10, 22, 20, 41))          # через час
+    st = {"last_attempt": "2026-10-22T22:50:00", "last_change": "2026-10-21T16:02:00"}
+    assert not S.is_due(job, st, dt.datetime(2026, 10, 23, 3, 0))        # ночь
+    assert S.is_due(job, st, dt.datetime(2026, 10, 23, 7, 5))
+    assert S.next_check(job, st, dt.datetime(2026, 10, 23, 3, 0)) == dt.datetime(2026, 10, 23, 7, 0)
+    st = {"last_attempt": "2026-10-22T20:41:00", "last_change": "2026-10-22T20:41:00"}   # данные пришли
+    assert not S.is_due(job, st, dt.datetime(2026, 10, 23, 15, 0))
+    assert S.next_check(job, st, dt.datetime(2026, 10, 23, 15, 0)) == dt.datetime(2026, 10, 23, 16, 0)
+    monthly = {"schedule": "monthly:15@10:00", "enabled": True}
+    st = {"last_attempt": "2026-10-15T10:05:00", "last_change": "2026-09-15T10:05:00"}
+    assert not S.is_due(monthly, st, dt.datetime(2026, 10, 16, 9, 0))
+    assert S.is_due(monthly, st, dt.datetime(2026, 10, 16, 10, 6))      # через сутки
+    weekly = {"schedule": "weekly:Wed@10:00", "enabled": True}
+    st = {"last_attempt": "2026-10-21T10:05:00", "last_change": "2026-10-14T10:05:00"}
+    assert not S.is_due(weekly, st, dt.datetime(2026, 10, 21, 12, 0))
+    assert S.is_due(weekly, st, dt.datetime(2026, 10, 21, 13, 6))       # через 3 часа
+    assert S.retry_interval(S.parse_rules("daily@09:00")) == dt.timedelta(hours=1)
+
+
+def test_check_text_and_scheduler_watchdog(tmp_path):
+    job = {"schedule": "weekly:Mon,Tue,Wed,Thu,Fri@16:00", "enabled": True}
+    st = {"last_attempt": "2026-10-22T19:40:00", "last_success": "2026-10-22T19:40:00",
+          "last_change": "2026-10-21T16:02:00"}
+    text = S.check_text(job, st, dt.datetime(2026, 10, 22, 20, 0))
+    assert "после срока 22.10 16:00 ещё нет" in text and "каждый час" in text
+    assert "Следующая проверка: 22.10.2026 20:40" in text
+    from hub.core import overview as O
+    from hub.core.store import Store
+    store = Store(tmp_path / "hub.sqlite")
+    start = dt.datetime(2026, 10, 22, 9, 0)
+    assert O.scheduler_stale(store, start, now=start + dt.timedelta(minutes=10)) is None    # окно только открыли
+    assert "ни разу" in O.scheduler_stale(store, start, now=start + dt.timedelta(hours=1))
+    store.meta_set("scheduler_heartbeat", (start + dt.timedelta(minutes=50)).isoformat())
+    assert O.scheduler_stale(store, start, now=start + dt.timedelta(hours=1)) is None
+    assert "с 22.10.2026 09:50" in O.scheduler_stale(store, start, now=start + dt.timedelta(hours=3))
