@@ -125,10 +125,15 @@ class Browser:
         from ._web import UA
         # обычный браузер, а не «робот»: некоторые сайты не показывают данные «безголовому» Chrome
         args = ["--disable-blink-features=AutomationControlled"]
+        kw = {"headless": headless, "locale": "ru-RU", "user_agent": UA, "args": args}
         if offscreen:
             args += ["--window-position=-32000,-32000", "--window-size=1280,900"]
-        kw = {"headless": headless, "locale": "ru-RU", "viewport": {"width": 1280, "height": 900},
-              "user_agent": UA, "args": args}
+        if headless or offscreen:
+            kw["viewport"] = {"width": 1280, "height": 900}
+        else:
+            # окно для человека: страница растягивается вместе с окном (кнопка «развернуть» работает)
+            args.append("--window-size=1280,900")
+            kw["no_viewport"] = True
         exe = os.environ.get("HUB_CHROMIUM")
         if exe:
             kw["executable_path"] = exe

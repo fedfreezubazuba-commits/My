@@ -23,7 +23,16 @@ from .base import FetchResult, Obs, SeriesInfo
 
 DATE_RE = re.compile(r"^\s*(\d{1,2}[./]\d{1,2}([./]\d{2,4})?|\d{4}-\d{2}-\d{2}|\d{1,2}\s+[а-яёa-z]{3,}\.?(\s+\d{4})?"
                      r"(\s+\d{1,2}:\d{2})?|\d{1,2}:\d{2})\s*$", re.I)
+SHORT_DATE_RE = re.compile(r"\s*(\d{1,2})[./](\d{1,2})\s*")
 PCT_RE = re.compile(r"%")
+
+
+def _is_date(s):
+    """Ячейка — дата или время. «12.63» и «14.61» — числа (доходность), а не «день.месяц»."""
+    if not DATE_RE.match(s or ""):
+        return False
+    m = SHORT_DATE_RE.fullmatch(s)
+    return not m or 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12
 SIGNED_RE = re.compile(r"^\s*[-+−–]")
 
 
@@ -73,13 +82,23 @@ def _span(cell, name):
         return 1
 
 
+def _is_head_row(tr, cells):
+    """Строка шапки по разметке: внутри <thead> или целиком из <th> (подписи «0.25 0.5 1 …» — тоже шапка)."""
+    parent = tr.getparent()
+    if parent is not None and parent.tag == "thead":
+        return True
+    return bool(cells) and all(c.tag == "th" for c in cells)
+
+
 def _grid(trs):
-    """Строки таблицы с учётом colspan/rowspan: [(тексты по столбцам, число исходных ячеек, тексты для шапки)].
+    """Строки таблицы с учётом colspan/rowspan:
+    [(тексты по столбцам, число исходных ячеек, тексты для шапки, шапка по разметке)].
     Для шапки объединённая ячейка повторяется во всех своих столбцах («Цена, руб.» над «Рыночная/Первая/…»),
     для данных — только в первом (число не размножается по соседним столбцам)."""
     out, carry = [], {}          # carry: столбец -> (оставшихся строк, текст)
     for tr in trs:
         cells = tr.xpath("./td|./th")
+        is_head = _is_head_row(tr, cells)
         data, head, j = [], [], 0
         queue = list(cells)
         while queue or any(c >= j for c in carry):
@@ -103,7 +122,7 @@ def _grid(trs):
                 if rs > 1:
                     carry[j + k] = (rs - 1, text)
             j += cs
-        out.append((data, len(cells), head))
+        out.append((data, len(cells), head, is_head))
     return out
 
 
@@ -120,20 +139,23 @@ def html_tables(doc):
     """Все <table> с числами (без вложенных таблиц-раскладок)."""
     out = []
     for t in doc.xpath("//table"):
-        if len(t.xpath(".//table")) > 2 or len(t.text_content()) > 20000:
-            continue          # таблица-раскладка страницы
+        inner = t.xpath(".//table")
+        if len(inner) > 2 or inner and len(t.text_content()) > 20000:
+            continue          # таблица-раскладка страницы (длинная таблица с данными — не раскладка: архивы)
         trs = t.xpath("./tr|./thead/tr|./tbody/tr|./tfoot/tr")
         grid = [g for g in _grid(trs) if any(c for c in g[0])]
         if len(grid) < 2:
             continue
-        width = max(len(r) for r, _n, _h in grid)
+        width = max(len(r) for r, _n, _h, _m in grid)
+        marked = any(m for *_x, m in grid) and not all(m for *_x, m in grid)
         title, heads, data = "", [], []
-        for r, n_cells, head in grid:
+        for r, n_cells, head, is_head in grid:
             if n_cells == 1 and width > 1 and len({c for c in head if c}) <= 1:
                 if not data and not title and not heads:
                     title = r[0]
                 continue      # строки-заголовки и подвалы на всю ширину
-            if not data and not any(_is_num(c) for c in r[1:]):
+            carried = bool(heads) and r[0] and r[0] == heads[-1][0]     # «Дата» с rowspan над второй строкой шапки
+            if not data and (not any(_is_num(c) for c in r[1:]) or marked and is_head or carried):
                 heads.append(head)          # строк шапки может быть несколько (двухуровневая)
                 continue
             data.append(r)
@@ -265,7 +287,7 @@ def column_profile(rows, kind="html"):
         prof.append({
             "num": sum(_is_num(c) for c in col) / n,
             "pct": sum(bool(PCT_RE.search(c)) for c in col) / n,
-            "date": sum(bool(DATE_RE.match(c)) for c in col) / n,
+            "date": sum(_is_date(c) for c in col) / n,
             "signed": sum(bool(SIGNED_RE.match(c)) for c in col) / n,
             "filled": len(col) / max(len(rows), 1),
         })
@@ -291,8 +313,12 @@ def guess_columns(table):
 
 
 def unit_from_header(name):
-    """«Цена, руб. — Рыночная» → «руб.»; «Объем, тонн» → «тонн»; без единиц → ""."""
-    for part in str(name or "").split(" — "):
+    """«Цена, руб. — Рыночная» → «руб.»; «Объем, тонн» → «тонн»; без единиц → "".
+    «Срок, лет — 0.25»: «лет» — единицы срока (подписи столбца), а не значений → ""."""
+    parts = str(name or "").split(" — ")
+    if len(parts) > 1 and _is_num(parts[-1]):
+        return ""
+    for part in parts:
         m = re.search(r",\s*([^,\d]{1,15})$", part.strip())
         if m:
             return m.group(1).strip()
@@ -314,6 +340,8 @@ def unit_from_title(title):
         first = m.group(1).split(",")[0].strip()
         if re.search(r"usd|\$|руб|eur|€|/|%|ws|(?<![а-яё])т\b", first, re.I) and len(first) <= 25:
             return first
+    if re.search(r"доходност|бескупон|\bКБД\b|yield", title or "", re.I):
+        return "%"                  # кривая доходности, доходность облигаций — проценты
     m = re.search(r"(?:,|в)\s*((?:US)?\$/[а-яa-z.]+|руб\.?/[а-яa-z.]+|US\$/[а-яa-z.]+|USD/[a-z]+|\$/т)", title or "", re.I)
     if m:
         return m.group(1)

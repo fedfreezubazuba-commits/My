@@ -236,8 +236,10 @@ class SiteTab(ttk.Frame):
                 self.tables.selection_set(f"t{idx}")
                 self.tables.see(f"t{idx}")
             params, name = A.table_params(self.found, t)
-            AddDialog(self.app, "web_table", params, name,
-                      note=f"Каждая строка выбранной таблицы ({len(t.rows)} строк) станет рядом.")
+            note = (f"В строках таблицы — даты ({len(t.rows)} строк): каждый числовой столбец станет рядом, "
+                    "история будет копиться с каждым обновлением." if params["mode"] == "history" else
+                    f"Каждая строка выбранной таблицы ({len(t.rows)} строк) станет рядом.")
+            AddDialog(self.app, "web_table", params, name, note=note)
             return
         params, label = A.picked_value_params(url, pick)
         from ..sources.web_value import extract_fields

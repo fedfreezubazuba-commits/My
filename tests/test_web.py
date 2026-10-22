@@ -397,3 +397,51 @@ def test_spimex_two_level_header_history(offline):
     assert val[("Цена, руб. — Рыночная", d)] == 67180 and val[("Объем, тонн", d)] == 6000
     assert val[("Объем, руб.", d)] == 403080000 and val[("Договоров, штук", d)] == 2
     assert val[("Цена, руб. — Рыночная", dt.date(2026, 10, 16))] == 74150
+
+
+def test_moex_gcurve_archive_history(offline):
+    """Мосбиржа, архив КБД: длинная таблица (больше 20 тыс. знаков — раньше считалась раскладкой страницы),
+    вторая строка шапки — числа «0.25 … 20» (раньше принималась за данные), столбец «Время».
+    Каждый срок — свой ряд с историей по датам, единицы — %."""
+    offline["www.moex.com"] = "moex_gcurve_archive.html"
+    url = "https://www.moex.com/ru/marketdata/indices/state/g-curve/archive/"
+    found = A.analyze(page("moex_gcurve_archive.html"), url)
+    t = next(t for t in found.tables if "КБД" in t.title)
+    assert t.header[:4] == ["Дата", "Время", "Срок, лет — 0.25", "Срок, лет — 0.5"]
+    assert len(t.rows) == 320
+    params, _name = A.table_params(found, t)
+    assert params["mode"] == "history"
+    res = get("web_table").fetch(params, Context(now=NOW))
+    by = {s.name.split(" | ")[-1]: s for s in res.series}
+    assert len(by) == 11 and "Время" not in by
+    assert {s.unit for s in res.series} == {"%"}
+    assert len({s.code for s in res.series}) == 11
+    val = {(o.key.split("|", 1)[1], o.period_end): o.value for o in res.obs}
+    d = dt.date(2026, 10, 22)
+    assert val[("Срок, лет — 0.25", d)] == 12.63 and val[("Срок, лет — 20", d)] == 16.34
+    assert len(res.obs) == 11 * 320
+
+
+def test_moex_pick_table_body(offline):
+    """«Выбрать на странице»: щелчок по телу таблицы (<tbody>) или по блоку вокруг неё — та же таблица."""
+    html = page("moex_gcurve_archive.html")
+    url = "https://www.moex.com/ru/marketdata/indices/state/g-curve/archive/"
+    doc = W.parse_html(html)
+    body = doc.xpath("//tbody")[0]
+    from lxml import html as LH
+    for el in (body, doc.xpath("//div[@class='ui-table']")[0]):
+        frag = LH.tostring(el, encoding="unicode")
+        t = A.picked_table(url, {"kind": "table", "html": frag, "text": el.text_content(), "page_html": html})
+        assert t is not None and "КБД" in t.title
+
+
+def test_numeric_second_header_without_thead():
+    """Шапка из <td> без <thead>: «Дата» на две строки (rowspan), под «Срок» — числа. Вторая строка — тоже шапка."""
+    html = ("<table><tr><td rowspan=2>Дата</td><td colspan=3>Срок, лет</td></tr><tr><td>1</td><td>5</td><td>10</td></tr>"
+            "<tr><td>22.10.2026</td><td>13,1</td><td>14,6</td><td>15,6</td></tr>"
+            "<tr><td>21.10.2026</td><td>13,2</td><td>14,5</td><td>15,7</td></tr></table>")
+    from hub.sources import _tables as T
+    t = T.html_tables(W.parse_html(html))[0]
+    assert t.header == ["Дата", "Срок, лет — 1", "Срок, лет — 5", "Срок, лет — 10"]
+    assert t.rows[0][0] == "22.10.2026" and T.rows_are_dates(t)
+    assert T.unit_from_header("Срок, лет — 5") == "" and T.unit_from_header("Цена, руб. — Рыночная") == "руб."

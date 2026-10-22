@@ -2,6 +2,7 @@
 Мастер «Сайт»: что хаб нашёл на странице — цены и числа, таблицы с превью, ссылки на файлы.
 И сборка параметров показателя из того, что выбрал пользователь.
 """
+import re
 from dataclasses import dataclass, field
 
 from . import _files as F
@@ -122,7 +123,10 @@ def picked_table(url, pick):
             tables.append(t)
         except Exception:  # noqa: BLE001
             continue
-    frag = T.all_tables(W.parse_html(f"<html><body>{pick.get('html', '')}</body></html>")) if pick.get("html") else []
+    html = pick.get("html") or ""
+    if re.match(r"\s*<(tbody|thead|tr)\b", html, re.I):
+        html = f"<table>{html}</table>"          # щёлкнули по телу таблицы, а не по самой таблице
+    frag = T.all_tables(W.parse_html(f"<html><body>{html}</body></html>")) if html else []
     if frag:
         rows = frag[0].rows[:3]
         for t in tables:
