@@ -66,6 +66,56 @@ def _is_num(s):
     return len(digits) >= 0.5 * len(core)
 
 
+def _span(cell, name):
+    try:
+        return max(1, min(int(cell.get(name) or 1), 50))
+    except ValueError:
+        return 1
+
+
+def _grid(trs):
+    """Строки таблицы с учётом colspan/rowspan: [(тексты по столбцам, число исходных ячеек, тексты для шапки)].
+    Для шапки объединённая ячейка повторяется во всех своих столбцах («Цена, руб.» над «Рыночная/Первая/…»),
+    для данных — только в первом (число не размножается по соседним столбцам)."""
+    out, carry = [], {}          # carry: столбец -> (оставшихся строк, текст)
+    for tr in trs:
+        cells = tr.xpath("./td|./th")
+        data, head, j = [], [], 0
+        queue = list(cells)
+        while queue or any(c >= j for c in carry):
+            if j in carry:
+                left, text = carry[j]
+                data.append(text)
+                head.append(text)
+                carry[j] = (left - 1, text)
+                if left - 1 <= 0:
+                    del carry[j]
+                j += 1
+                continue
+            if not queue:
+                break
+            c = queue.pop(0)
+            text = norm_text(c)
+            cs, rs = _span(c, "colspan"), _span(c, "rowspan")
+            for k in range(cs):
+                data.append(text if k == 0 else "")
+                head.append(text)
+                if rs > 1:
+                    carry[j + k] = (rs - 1, text)
+            j += cs
+        out.append((data, len(cells), head))
+    return out
+
+
+def _join_header(parts):
+    """Многоуровневая шапка столбца → «Цена, руб. — Рыночная» (повторы и пустые уровни выкидываются)."""
+    seen = []
+    for x in parts:
+        if x and x not in seen:
+            seen.append(x)
+    return " — ".join(seen)
+
+
 def html_tables(doc):
     """Все <table> с числами (без вложенных таблиц-раскладок)."""
     out = []
@@ -73,21 +123,24 @@ def html_tables(doc):
         if len(t.xpath(".//table")) > 2 or len(t.text_content()) > 20000:
             continue          # таблица-раскладка страницы
         trs = t.xpath("./tr|./thead/tr|./tbody/tr|./tfoot/tr")
-        rows = [_cells(tr) for tr in trs]
-        rows = [r for r in rows if any(c for c in r)]
-        if len(rows) < 2:
+        grid = [g for g in _grid(trs) if any(c for c in g[0])]
+        if len(grid) < 2:
             continue
-        width = max(len(r) for r in rows)
-        title, header, data = "", [], []
-        for r in rows:
-            if len(r) == 1 and width > 1:
-                if not data and not title:
+        width = max(len(r) for r, _n, _h in grid)
+        title, heads, data = "", [], []
+        for r, n_cells, head in grid:
+            if n_cells == 1 and width > 1 and len({c for c in head if c}) <= 1:
+                if not data and not title and not heads:
                     title = r[0]
                 continue      # строки-заголовки и подвалы на всю ширину
-            if not data and not any(_is_num(c) for c in r[1:]) and not header:
-                header = r
+            if not data and not any(_is_num(c) for c in r[1:]):
+                heads.append(head)          # строк шапки может быть несколько (двухуровневая)
                 continue
             data.append(r)
+        header = []
+        if heads:
+            hw = max(len(h) for h in heads)
+            header = [_join_header([h[j] if j < len(h) else "" for h in heads]) for j in range(hw)]
         if not data or not any(_is_num(c) for r in data for c in r[1:]):
             continue
         cap = t.xpath("./caption")
@@ -237,12 +290,29 @@ def guess_columns(table):
     return label, values, date
 
 
+def unit_from_header(name):
+    """«Цена, руб. — Рыночная» → «руб.»; «Объем, тонн» → «тонн»; без единиц → ""."""
+    for part in str(name or "").split(" — "):
+        m = re.search(r",\s*([^,\d]{1,15})$", part.strip())
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def rows_are_dates(table) -> bool:
+    """В каждой строке — дата, а подписей нет: таблица вида «дата | значения» — это история."""
+    prof = column_profile(table.rows, table.kind)
+    dates = [j for j, p in enumerate(prof) if p["date"] >= 0.6]
+    labels = [j for j, p in enumerate(prof) if p["num"] < 0.5 and p["date"] < 0.5 and p["filled"] >= 0.5]
+    return bool(dates) and not labels
+
+
 def unit_from_title(title):
     """«…цены по трехмесячному контракту, $/т» → $/т; «(USD/Day, Weekly Change)» → USD/Day."""
     m = re.search(r"\(([^)]*)\)", title or "")
     if m:
         first = m.group(1).split(",")[0].strip()
-        if re.search(r"usd|\$|руб|eur|€|/|%|ws|т\b", first, re.I) and len(first) <= 25:
+        if re.search(r"usd|\$|руб|eur|€|/|%|ws|(?<![а-яё])т\b", first, re.I) and len(first) <= 25:
             return first
     m = re.search(r"(?:,|в)\s*((?:US)?\$/[а-яa-z.]+|руб\.?/[а-яa-z.]+|US\$/[а-яa-z.]+|USD/[a-z]+|\$/т)", title or "", re.I)
     if m:
@@ -282,8 +352,8 @@ def table_to_result(table, spec, prefix, url, today, page_dt=None, page_is_week=
     res = FetchResult(url=url)
     title_slug = slug(spec.get("code_part") or table.title or f"t{table.index}", 14)
     unit = unit if unit is not None else (spec.get("unit") or unit_from_title(table.title))
-    if mode == "history":
-        return _history(table, spec, prefix, url, res, unit)
+    if mode == "history" or rows_are_dates(table):
+        return _history(table, spec, prefix, url, res, unit)       # строки — даты: каждый столбец — ряд
     label_col, value_cols, date_col = guess_columns(table)
     label_col = int(spec.get("label_col", label_col))
     if spec.get("value_cols"):
@@ -359,7 +429,8 @@ def _history(table, spec, prefix, url, res, unit):
         key = f"col|{col_name}"
         code = f"{prefix}_{slug(table.title or 't', 10)}_{slug(col_name, 16)}"
         res.series.append(SeriesInfo(key=key, name=(f"{table.title} | {col_name}" if table.title else col_name)[:200],
-                                     unit=spec.get("unit", unit), periodicity=periodicity, code=code, url=url,
+                                     unit=spec.get("unit") or unit_from_header(col_name) or unit,
+                                     periodicity=periodicity, code=code, url=url,
                                      dims=([("Таблица", table.title)] if table.title else []) + [("Столбец", col_name)],
                                      date_rule="дата из таблицы → конец периода"))
         for r in rows:

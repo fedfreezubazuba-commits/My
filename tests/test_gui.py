@@ -113,7 +113,8 @@ def test_fedstat_nav_params(app, fakes, tmp_path):
     chosen = nav.dim_lists["0"][0]
     chosen.discard("1558900")
     params, name = nav.current_params()
-    assert params == {"id": 31074, "select": {"0": ["1558883"]}}
+    assert params == {"id": 31074, "select": {"0": ["1558883"]},
+                      "select_titles": {"0": ["Российская Федерация"]}}     # название — на случай смены номеров
     assert "Российская Федерация" in name
 
 
@@ -452,3 +453,22 @@ def test_job_window_schedule_and_history(app, fakes):
     w.sched_box._render()
     w.save()
     assert app.cfg.job(job["id"])["schedule"] == "weekly:Mon@10:00" and "Сохранено" in w.saved.cget("text")
+
+
+def test_fedstat_fields_cached_and_failure_saved(app, fakes, monkeypatch):
+    """Поля показателя запоминаются на сутки; если не загрузились — начало страницы и ошибка для Claude."""
+    nav = app.find.fedstat
+    nav.fs = fakes["fedstat"]
+    nav.cat = {"roots": [], "years": {}}
+    nav._load_indicator("31074")
+    assert pump(app, 10, until=lambda: "0" in nav.dim_lists and not nav.busy)
+    assert nav._info_cache("31074").exists()
+    calls = len(fakes["fedstat"].calls)
+    nav._load_indicator("31074")                                   # второй раз — из сохранённого, без сайта
+    pump(app, 0.3)
+    assert len(fakes["fedstat"].calls) == calls and "0" in nav.dim_lists
+    fakes["fedstat"].page = b"<html><body>Showcase without filters</body></html>"
+    nav._load_indicator("99999")
+    assert pump(app, 10, until=lambda: any("Поля показателя не загрузились" in str(a) for _f, a in app.shown))
+    saved = list(app.paths.claude.glob("*emiss_99999*"))
+    assert saved and "Showcase without filters" in saved[0].read_text(encoding="utf-8")

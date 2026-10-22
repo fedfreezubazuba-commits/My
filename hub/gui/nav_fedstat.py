@@ -186,6 +186,10 @@ class FedstatNav(EditMode, ttk.Frame):
                 if err:
                     self.status.set("Ошибка")
                     text = self._err_text(err)
+                    if text and done == self._on_indicator:
+                        path = self._indicator_failed(err)
+                        text += ("\n\nПоля показателя не загрузились. Описание для Claude (с началом страницы "
+                                 f"сайта) скопировано в буфер обмена и сохранено:\n{path}\nВставьте его в сессию Claude.")
                     if text:
                         messagebox.showerror("Не получилось", text)
                 else:
@@ -312,8 +316,103 @@ class FedstatNav(EditMode, ttk.Frame):
             self.cancel_edit()              # выбрали другой показатель — это уже не изменение
         self.title_var.set(unescape(node["name"]))
         self.sub_var.set(f"ID {ind_id} — загрузка измерений…")
-        self.run_bg(lambda: self.fs.indicator(ind_id), self._on_indicator,
-                    f"Загрузка измерений показателя {ind_id}…")
+        self._load_indicator(ind_id)
+
+    # --- страница показателя: ход загрузки, запоминание, сбой -------------------
+    INFO_DAYS = 1           # сколько помнить поля показателя (для выбора; выгрузка всегда берёт свежую страницу)
+
+    def _info_cache(self, ind_id):
+        return self.app.paths.cache / "fedstat_info" / f"{ind_id}.json"
+
+    def _load_indicator(self, ind_id):
+        """Поля показателя. Страница больших показателей огромная и готовится долго — показываем ход,
+        запоминаем результат на сутки, при сбое сохраняем начало страницы для Claude."""
+        import json
+        import time
+        f = self._info_cache(ind_id)
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            if time.time() - data["saved"] < self.INFO_DAYS * 86400:
+                self.status.set("Поля показателя взяты из сохранённых (обновляются раз в сутки)")
+                self._on_indicator(data["info"])
+                return
+        except (OSError, ValueError, KeyError):
+            pass
+        prog = {"bytes": 0, "t0": time.time(), "page": b""}
+
+        def work():
+            info = self._fetch_indicator(ind_id, prog)
+            keep = dict(info, token=None)     # токен одноразовый — не храним
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps({"saved": time.time(), "info": keep}, ensure_ascii=False), encoding="utf-8")
+            return info
+
+        def tick():
+            if not self.busy:
+                return
+            mb = prog["bytes"] / 1e6
+            sec = int(time.time() - prog["t0"])
+            self.status.set(f"Загрузка полей показателя {ind_id}: {sec} с" + (f", получено {mb:.1f} МБ" if mb else "")
+                            + (" — у больших показателей ЕМИСС готовит страницу долго, подождите" if sec > 15 else ""))
+            self.after(1000, tick)
+        self.run_bg(work, self._on_indicator, f"Загрузка измерений показателя {ind_id}…")
+        self._last_load = (ind_id, prog)
+        self.after(1000, tick)
+
+    def _fetch_indicator(self, ind_id, prog):
+        """fs.indicator(), но страница читается по частям — видно, сколько уже пришло. Запрос тот же."""
+        import time
+        import urllib.error
+        fs = self.fs
+        orig = fs._get
+
+        def streaming(url, data=None, retries=4):
+            if data is not None or "/indicator/" not in url or type(fs)._get is not Fedstat._get:
+                ct, body = orig(url, data, retries)       # подменённый клиент (тесты) — без чтения по частям
+                if data is None and "/indicator/" in url:
+                    prog["page"] = body
+                return ct, body
+            for attempt in range(retries):
+                try:
+                    with fs.op.open(url, timeout=300) as r:
+                        buf = bytearray()
+                        while True:
+                            chunk = r.read(256 * 1024)
+                            if not chunk:
+                                break
+                            buf += chunk
+                            prog["bytes"] = len(buf)
+                        prog["page"] = bytes(buf)
+                        return r.headers.get("Content-Type", ""), bytes(buf)
+                except urllib.error.HTTPError as e:
+                    if e.code != 503 or attempt == retries - 1:
+                        raise
+                    time.sleep(fs.pause * 5 * (attempt + 1))
+        fs._get = streaming
+        try:
+            return fs.indicator(ind_id)
+        finally:
+            fs._get = orig
+
+    def _indicator_failed(self, err):
+        """Поля не загрузились: сохранить начало страницы и ошибку — текст для Claude в буфере обмена."""
+        from ..core import claude_pack
+        from . import widgets as W
+        ind_id, prog = getattr(self, "_last_load", ("?", {}))
+        page = prog.get("page") or b""
+        text = (f"# ЕМИСС: не загрузились поля показателя {ind_id}\n\nПрочитай CLAUDE.md. Навигатор ЕМИСС "
+                f"(hub/gui/nav_fedstat.py, fedstat_api.indicator) не смог получить измерения показателя.\n\n"
+                f"Ошибка: {human_message(err)}\nПолучено байт страницы: {len(page)}\n\n"
+                f"Начало страницы:\n```\n{page[:6000].decode('utf-8', 'replace')}\n```\n")
+        try:
+            i = page.find(b"filters:")
+            if i >= 0:
+                text += f"\nКусок страницы около filters:\n```\n{page[i:i + 4000].decode('utf-8', 'replace')}\n```\n"
+        except Exception:  # noqa: BLE001
+            pass
+        path = claude_pack.save(self.app.paths, claude_pack.scrub(text), f"emiss_{ind_id}")
+        W.copy_to_clipboard(self, text)
+        return path
 
     # --- измерения ---------------------------------------------------------
     def _on_indicator(self, info):
@@ -444,7 +543,10 @@ class FedstatNav(EditMode, ttk.Frame):
                 select[fid] = [v for v in all_ids if v in chosen]
                 if len(chosen) == 1:
                     parts.append(self.info["filters"][fid]["values"][select[fid][0]].strip())
-        params = {"id": int(self.info["id"]), "select": select}
+        params = {"id": int(self.info["id"]), "select": select,
+                  # названия отмеченных значений — чтобы найти их, если ЕМИСС сменит номера
+                  "select_titles": {fid: [self.info["filters"][fid]["values"][v].strip() for v in vals]
+                                    for fid, vals in select.items()}}
         if years_from:
             params["years_from"] = years_from
         name = unescape(self.info["title"]) + (" — " + ", ".join(unescape(x) for x in parts[:2]) if parts else "")
@@ -490,8 +592,7 @@ class FedstatNav(EditMode, ttk.Frame):
             if self.busy:                    # идёт загрузка каталога — дождёмся
                 self.after(300, go)
                 return
-            self.run_bg(lambda: self.fs.indicator(ind_id), self._on_indicator,
-                        f"Загрузка измерений показателя {ind_id}…")
+            self._load_indicator(ind_id)
         go()
 
     def select_indicator(self, ind_id, name=""):

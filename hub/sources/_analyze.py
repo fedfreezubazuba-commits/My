@@ -87,6 +87,8 @@ def value_params(found: Found, chosen_keys=None):
 
 
 def table_params(found: Found, table, mode="snapshot"):
+    if mode == "snapshot" and T.rows_are_dates(table):
+        mode = "history"          # в строках даты (торговые сессии, недели…) — каждый столбец станет рядом
     params = {"url": found.url, "table": {"kind": table.kind, "title": table.title, "index": table.index},
               "mode": mode, "date": "auto", "code_prefix": W.site_name(found.url).upper(), "fetch_mode": "auto"}
     name = table.title or f"Таблица {table.index + 1}"

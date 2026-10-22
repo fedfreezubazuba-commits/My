@@ -165,6 +165,11 @@ def clean(text) -> str:
     return " ".join(s.split())
 
 
+def _key(text) -> str:
+    """Название значения для сравнения: без регистра, лишних пробелов и «^»."""
+    return clean(text).lower().strip(" .")
+
+
 def is_unit_dim(name) -> bool:
     n = str(name).lower()
     return "единиц" in n and "измерен" in n or n in ("s_okei", "okei")
@@ -282,9 +287,15 @@ class FedstatSource(Source):
                 warnings.append(f"У показателя больше нет измерения {fid}")
                 continue
             ok = [str(v) for v in vals if str(v) in f["values"]]
+            # выбор по названию, а не только по номеру: ЕМИСС при смене классификатора даёт тому же значению
+            # («К предыдущему месяцу») новый номер — данные новых лет лежат под ним
+            titles = {_key(f["values"][v]) for v in ok}
+            titles |= {_key(t) for t in ((params.get("select_titles") or {}).get(fid) or [])}
+            twins = [v for v, t in f["values"].items() if _key(t) in titles and v not in ok]
             lost = [str(v) for v in vals if str(v) not in f["values"]]
-            if lost:
+            if lost and not twins:
                 warnings.append(f"В измерении «{f['title']}» исчезли значения: {', '.join(lost)}")
+            ok += twins
             if not ok:
                 raise StructureError(f"В измерении «{f['title']}» не осталось выбранных значений")
             select[fid] = ok
@@ -360,12 +371,25 @@ class FedstatSource(Source):
         for xml in parts:
             series += sdmx_series(xml)
         self._to_result(series, info, ind_id, res)
+        self._coverage(info, years, res)
         if page.get("html"):
             try:
                 self._release(page["html"], res, ctx)
             except Exception:  # noqa: BLE001 — срок обновления не обязателен
                 pass
         return res
+
+    @staticmethod
+    def _coverage(info, years, res):
+        """ЕМИСС показывает годы до 2026, а данные по выбору пришли только до 2022 — сказать об этом."""
+        vals = info["filters"].get(YEARS_FILTER, {}).get("values", {})
+        asked = [int(vals[v].strip()[:4]) for v in (years or []) if v in vals and vals[v].strip()[:4].isdigit()]
+        got = [o.period_end.year for o in res.obs if o.value is not None]
+        if asked and got and max(got) < max(asked) - 1:
+            res.warnings.append(
+                f"ЕМИСС показывает годы до {max(asked)}, а по выбранным значениям данные есть только до {max(got)}. "
+                f"Возможно, с {max(got) + 1} года у показателя другие значения (новый классификатор) — откройте "
+                "«✎ Изменить набор данных» и проверьте, что отмечено.")
 
     @staticmethod
     def _release(html, res, ctx):

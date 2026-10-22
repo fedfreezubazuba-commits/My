@@ -251,3 +251,30 @@ def test_fedstat_browser_headers_and_saved_cookies(tmp_path):
     assert heads["User-Agent"] == "Браузер-хаба" and "ru-RU" in heads["Accept-Language"]
     jar = next(h.cookiejar for h in fs.op.handlers if hasattr(h, "cookiejar"))
     assert [c.name for c in jar] == ["guard"]
+
+
+def test_fedstat_value_found_by_title_when_renumbered():
+    """С 2023 года у «К предыдущему месяцу» новый номер — хаб берёт оба (по названию)."""
+    from hub.sources.fedstat import FedstatSource
+    info = {"filters": {"57956": {"title": "Типы цен", "values": {
+        "1": "К предыдущему месяцу", "2": "К декабрю предыдущего года", "9": "к предыдущему месяцу "}}}}
+    warnings = []
+    sel = FedstatSource()._select(info, {"select": {"57956": ["1"]}}, warnings)
+    assert sel == {"57956": ["1", "9"]} and not warnings
+    # старый номер исчез совсем — находим по сохранённому названию
+    info["filters"]["57956"]["values"].pop("1")
+    sel = FedstatSource()._select(info, {"select": {"57956": ["1"]},
+                                         "select_titles": {"57956": ["К предыдущему месяцу"]}}, warnings)
+    assert sel == {"57956": ["9"]} and not warnings
+
+
+def test_fedstat_coverage_warning():
+    from hub.sources.base import FetchResult, Obs
+    from hub.sources.fedstat import FedstatSource
+    info = {"filters": {"3": {"title": "Год", "values": {"a": "2021", "b": "2022", "c": "2025", "d": "2026"}}}}
+    res = FetchResult(obs=[Obs(key="k", period_end=dt.date(2022, 12, 31), period_label="2022-12", value=1.0)])
+    FedstatSource._coverage(info, ["a", "b", "c", "d"], res)
+    assert "до 2026" in res.warnings[0] and "только до 2022" in res.warnings[0]
+    res2 = FetchResult(obs=[Obs(key="k", period_end=dt.date(2026, 8, 31), period_label="2026-08", value=1.0)])
+    FedstatSource._coverage(info, ["a", "b", "c", "d"], res2)
+    assert not res2.warnings

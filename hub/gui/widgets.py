@@ -111,7 +111,7 @@ class ScrollFrame(ttk.Frame):
         self.canvas = tk.Canvas(self, highlightthickness=0, background=bg)
         sb = ttk.Scrollbar(self, command=self.canvas.yview)
         self.inner = ttk.Frame(self.canvas)
-        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.inner.bind("<Configure>", lambda e: self._region())
         self._win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
         self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self._win, width=e.width))
         self.canvas.configure(yscrollcommand=sb.set)
@@ -126,9 +126,15 @@ class ScrollFrame(ttk.Frame):
         except (tk.TclError, KeyError):
             pass
 
+    def _region(self):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        if self.inner.winfo_reqheight() <= self.canvas.winfo_height():
+            self.canvas.yview_moveto(0)      # всё помещается — прокрутки нет, содержимое сверху
+
     def clear(self):
         for w in self.inner.winfo_children():
             w.destroy()
+        self.canvas.yview_moveto(0)          # новое содержимое показываем с начала
 
 
 class Collapsible(ttk.Frame):

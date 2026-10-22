@@ -237,8 +237,10 @@ class Runner:
         ctx = self.job_context(job, ctx, progress)
         timeout = max(int(ctx.settings.get("job_timeout_sec", 600)), int(src.timeout(params) or 0))
         try:
-            if use_cheap_check and job.get("schedule", "auto") == "auto" and not src.snapshot \
-                    and state.get("source_updated") and state.get("status") not in ("error", "retry", "new", None):
+            # источник сообщает дату обновления (ЦБ) — если она не изменилась, не скачиваем при любом расписании;
+            # «Обновить сейчас» (use_cheap_check=False) скачивает всегда
+            if use_cheap_check and not src.snapshot and state.get("source_updated") \
+                    and state.get("status") not in ("error", "retry", "new", "blocked", None):
                 try:
                     upd = src.check_updated(params, ctx)
                 except Exception as e:  # noqa: BLE001 — дешёвая проверка не обязательна

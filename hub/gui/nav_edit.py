@@ -71,4 +71,4 @@ class EditMode:
 
 
 # параметры выбора: если в новом выборе их нет — значит, «всё» (из старых параметров их не переносим)
-SELECTION_KEYS = {"select", "years_from", "indicators", "m1", "m2", "y1"}
+SELECTION_KEYS = {"select", "select_titles", "years_from", "indicators", "m1", "m2", "y1"}

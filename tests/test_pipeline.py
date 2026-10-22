@@ -351,3 +351,18 @@ def test_blocked_site_pauses_whole_host(runner, fakes):
     fakes["fedstat"].fail = None
     runner.run(job_ids=[a["id"]])
     assert HB.until(runner.store, "www.fedstat.ru") is None and HB.active(runner.store) == []
+
+
+def test_cbr_not_downloaded_when_unchanged_with_own_schedule(runner, fakes):
+    """Своё расписание («по средам»): если дата обновления у ЦБ та же — выгрузки нет."""
+    import datetime as dt
+    cbr = runner.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]},
+                             schedule="weekly:Wed@10:00")
+    runner.run(force=True)
+    calls = len([c for c in fakes["cbr"].calls if c[0] == "/dataNew"])
+    runner.store.set_state(cbr["id"], last_attempt=(dt.datetime.now() - dt.timedelta(days=8)).isoformat())
+    rep = runner.run()                                       # по расписанию
+    assert [o.status for o in rep.outcomes] == ["waiting"] or rep.outcomes[0].status in ("waiting", "delayed")
+    assert len([c for c in fakes["cbr"].calls if c[0] == "/dataNew"]) == calls
+    runner.run(job_ids=[cbr["id"]])                          # «Обновить сейчас» — скачивает всегда
+    assert len([c for c in fakes["cbr"].calls if c[0] == "/dataNew"]) == calls + 1

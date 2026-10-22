@@ -374,3 +374,26 @@ def test_scrub_keeps_field_key():
     from hub.core.claude_pack import scrub_obj
     out = scrub_obj({"fields": [{"key": "price", "name": "x"}], "api_key": "s", "csrf_token": "t"})
     assert out == {"fields": [{"key": "price", "name": "x"}], "api_key": "***", "csrf_token": "***"}
+
+
+def test_spimex_two_level_header_history(offline):
+    """СПбМТСБ: шапка в два этажа («Цена, руб.» над «Рыночная/Первая/Последняя»), в строках — даты торгов.
+    Каждый столбец — свой ряд, значения на своих местах, единицы — из шапки столбца."""
+    offline["spimex.com"] = "spimex_neftvam.html"
+    url = "https://spimex.com/markets/neft/instruments/list/detail.php?code=NEFTVAM500U30"
+    found = A.analyze(page("spimex_neftvam.html"), url)
+    t = next(t for t in found.tables if t.title.startswith("Результаты последних"))
+    assert t.header[1:4] == ["Цена, руб. — Рыночная", "Цена, руб. — Первая", "Цена, руб. — Последняя"]
+    params, _name = A.table_params(found, t)
+    assert params["mode"] == "history"
+    res = get("web_table").fetch(params, Context(now=NOW))
+    by = {s.name.split(" | ")[-1]: s for s in res.series}
+    assert set(by) == {"Цена, руб. — Рыночная", "Цена, руб. — Первая", "Цена, руб. — Последняя", "Объем, тонн",
+                       "Объем, руб.", "Договоров, штук"}
+    assert by["Цена, руб. — Рыночная"].unit == "руб." and by["Объем, тонн"].unit == "тонн"
+    assert by["Договоров, штук"].unit == "штук"
+    val = {(o.key.split("|", 1)[1], o.period_end): o.value for o in res.obs}
+    d = dt.date(2026, 10, 21)
+    assert val[("Цена, руб. — Рыночная", d)] == 67180 and val[("Объем, тонн", d)] == 6000
+    assert val[("Объем, руб.", d)] == 403080000 and val[("Договоров, штук", d)] == 2
+    assert val[("Цена, руб. — Рыночная", dt.date(2026, 10, 16))] == 74150
