@@ -395,3 +395,53 @@ def test_check_text_and_scheduler_watchdog(tmp_path):
     store.meta_set("scheduler_heartbeat", (start + dt.timedelta(minutes=50)).isoformat())
     assert O.scheduler_stale(store, start, now=start + dt.timedelta(hours=1)) is None
     assert "с 22.10.2026 09:50" in O.scheduler_stale(store, start, now=start + dt.timedelta(hours=3))
+
+
+def test_task_has_daily_triggers_for_schedule_times_and_self_heals(monkeypatch, tmp_path):
+    """Времена из графиков («по будням в 19:05») попадают в задачу планировщика отдельными ежедневными
+    запусками. Если путь к программе в задаче устарел (папку перенесли → 0x80070002) или поменялись
+    графики — sync() пересоздаёт задачу."""
+    from hub.core.config import Config
+    from hub.core.paths import Paths
+    cfg = Config(Paths(tmp_path).ensure())
+    cfg.add_job("cbr", "Ставки", {"category": 18}, schedule="weekly:Mon,Tue,Wed,Thu,Fri@19:05")
+    cfg.add_job("cbr", "Ставки 2", {"category": 18}, schedule="monthly:15@10:00;every:6h")
+    cfg.add_job("cbr", "Авто", {"category": 18})
+    times = winsched.rule_times(cfg)
+    assert times == ["10:00", "19:05"]
+    xml = winsched.task_xml(r"C:\Хаб\.venv\Scripts\pythonw.exe", winsched.ARGS, r"C:\Хаб", user="Аналитик",
+                            start=dt.datetime(2026, 10, 23, 12), times=times)
+    root = ET.fromstring(xml.replace('encoding="UTF-16"', ""))
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    starts = [e.text for e in root.findall("t:Triggers/t:CalendarTrigger/t:StartBoundary", ns)]
+    assert starts == ["2026-10-23T10:00:30", "2026-10-23T19:05:30"]
+    assert winsched.problems(xml, r"C:\Хаб\.venv\Scripts\pythonw.exe", r"C:\Хаб", times) == []
+    assert winsched.problems(xml, r"D:\Новая папка\Хаб\.venv\Scripts\pythonw.exe", r"D:\Новая папка\Хаб", times) \
+        == ["путь к программе", "папка программы"]
+    assert winsched.problems(xml, r"C:\Хаб\.venv\Scripts\pythonw.exe", r"C:\Хаб", ["19:05"]) == ["время из графиков"]
+    # sync: задача есть, но со старым путём → пересоздаётся
+    calls = []
+
+    class R:
+        def __init__(self, code, data=b""):
+            self.returncode, self.stdout, self.stderr = code, data, b""
+
+    def fake_run(args, **kw):
+        calls.append(args[:2])
+        if args[1] == "/Query":
+            return R(0, xml.encode("cp866", "replace"))
+        return R(0)
+    monkeypatch.setattr(winsched, "IS_WINDOWS", True)
+    monkeypatch.setattr(winsched.subprocess, "run", fake_run)
+    exe = tmp_path / "pythonw.exe"
+    exe.write_text("")
+    monkeypatch.setattr(winsched, "pythonw", lambda: exe)
+    fixed, what = winsched.sync(cfg)
+    assert fixed and "путь к программе" in what and ["schtasks", "/Create"] in calls
+    # код результата из «schtasks /Query /V /FO CSV»
+    csv_text = ('"Имя узла","Имя задачи","Время следующего запуска","Состояние","Режим входа","Время прошлого запуска",'
+                '"Последний результат"\n"PC","\\Хаб данных — обновление","23.10.2026 12:15:00","Готово","Интерактивно",'
+                '"22.10.2026 21:15:01","-2147024894"')
+    nxt, code = winsched.parse_status_csv(csv_text)
+    assert nxt == "23.10.2026 12:15" and code == 0x80070002
+    assert "не находит файл программы" in winsched.result_text(code)

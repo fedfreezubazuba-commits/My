@@ -57,7 +57,9 @@ class SettingsTab(ttk.Frame):
         ttk.Button(af, text="Открыть Планировщик заданий", command=winsched.open_scheduler).pack(side="left", padx=8)
         row("Автообновление", af,
             f"Задача называется «{winsched.TASK_NAME}» и лежит прямо в «Библиотеке планировщика заданий» "
-            "(слева вверху списка). Если её не видно — нажмите F5.")
+            "(слева вверху списка). Если её не видно — нажмите F5. Кроме запуска каждые 15 минут, в задаче есть "
+            "запуски точно во время из графиков показателей; хаб переписывает их сам, когда вы меняете графики, "
+            "и сам чинит задачу, если папку с программой перенесли.")
 
         for key, label, hint in (
                 ("notifications", "Показывать уведомления Windows", "Только когда есть новые данные в моделях или проблемы."),
@@ -98,7 +100,7 @@ class SettingsTab(ttk.Frame):
         self.app.status.set("Настройки сохранены")
 
     def toggle_auto(self):
-        ok, msg = winsched.enable() if self.auto.get() else winsched.disable()
+        ok, msg = winsched.enable(self.app.cfg) if self.auto.get() else winsched.disable()
         if not ok:
             self.auto.set(not self.auto.get())
             messagebox.showwarning("Автообновление", msg, parent=self)

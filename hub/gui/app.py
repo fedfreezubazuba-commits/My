@@ -42,6 +42,8 @@ class HubApp:
             root.after(300, self.first_run)
         else:
             root.after(200, lambda: (self._stage("заполняю списки"), self.refresh_all()))
+        self.sched_fixed = None
+        self._synced_times = None
         threading.Thread(target=self._upgrade_task, daemon=True).start()
         root.after(self.PERIODIC_MS, self._periodic)
 
@@ -60,12 +62,25 @@ class HubApp:
         if self.watch:
             self.watch.stage = text
 
-    @staticmethod
-    def _upgrade_task():
-        """Задача планировщика от прежней версии (раз в час) → каждые 15 минут."""
+    def _upgrade_task(self):
+        """Задача планировщика сверяется с нужной (путь к программе, времена из графиков) и при расхождении
+        пересоздаётся: папку с программой перенесли — Windows перестаёт находить файл (0x80070002)."""
         try:
             from ..core import winsched
-            winsched.upgrade()
+            self._synced_times = winsched.rule_times(self.cfg)
+            fixed, what = winsched.sync(self.cfg)
+            if fixed:
+                self.sched_fixed = what
+                self.log.info("Задача планировщика пересоздана: %s", ", ".join(what))
+        except Exception:  # noqa: BLE001
+            self.log.exception("Проверка задачи планировщика")
+
+    def _sync_if_changed(self):
+        """Поменялись времена в графиках показателей — переписать задачу планировщика (в фоне)."""
+        try:
+            from ..core import winsched
+            if winsched.rule_times(self.cfg) != getattr(self, "_synced_times", None):
+                threading.Thread(target=self._upgrade_task, daemon=True).start()
         except Exception:  # noqa: BLE001
             pass
 
@@ -129,6 +144,8 @@ class HubApp:
         self.nb.select(tab)
 
     def refresh_all(self):
+        if getattr(self, "_synced_times", None) is not None:
+            self._sync_if_changed()
         for tab in (self.overview, self.jobs, self.models, self.reports):
             try:
                 tab.refresh()

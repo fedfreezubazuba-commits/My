@@ -612,3 +612,16 @@ def test_overview_check_row_offers_human_check(app):
     pump(app, 0.2)
     texts = [w.cget("text") for w in _all_widgets(app.overview.body.inner) if w.winfo_class() in ("TLabel", "TButton")]
     assert "Пройти проверку" in texts and any("ползунок" in t and "Таможня Китая" in t for t in texts)
+
+
+def test_overview_shows_failed_scheduler_task(app, monkeypatch):
+    """Планировщик не может запустить хаб (0x80070002 — файл не найден) — сразу видно на «Обзоре»."""
+    from hub.core import winsched
+    monkeypatch.setattr(winsched, "status", lambda: (True, "23.10.2026 12:15", 0x80070002))
+    app.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37]}, schedule="weekly:Fri@19:05")
+    app.sched_fixed = None
+    app.overview.refresh()
+    pump(app, 0.2)
+    texts = [w.cget("text") for w in _all_widgets(app.overview.body.inner) if w.winfo_class() in ("TLabel", "TButton")]
+    assert any("не находит файл программы" in t for t in texts) and "Пересоздать задачу" in texts
+    assert app.overview.big.cget("text").startswith("Требует внимания")

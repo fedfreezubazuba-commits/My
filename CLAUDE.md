@@ -242,6 +242,15 @@ legacy/            исходные навигаторы пользовател�
   motCode=0, customsCode=C00; при ошибке — по одному месяцу; строки разбивок отбрасываются; «Средняя цена» USD/т),
   вкладка `gui/tab_comtrade.py`. Формат ответа — по документации/библиотеке comtradeapicall, вживую из облака не проверен.
 
+- **0.7.2 — планировщик**: у пользователя задача падала с 0x80070002 (файл не найден) — задача создаётся один раз
+  с путём к `pythonw.exe` текущей папки программы, папку переносили. Теперь `winsched.sync(cfg)` при каждом
+  запуске окна (в фоне, `app._upgrade_task`) и при смене времён в графиках (`app._sync_if_changed` из
+  `refresh_all`) сверяет XML задачи (`problems`: Command, WorkingDirectory, Interval, метка `hub-times:` в Description)
+  и пересоздаёт её. В задаче — `CalendarTrigger` на каждое время из графиков (`rule_times`, по часам компьютера,
+  ≤ 40), помимо 15-минутного и входа в Windows. Вывод schtasks — в нескольких кодировках (`_texts`: utf-8, cp866,
+  cp1251). `status()` → (есть, следующий запуск, код последнего результата) из `/V /FO CSV` (столбцы по номеру);
+  код не из `OK_RESULTS` → блок на «Обзоре» с `result_text` и «Пересоздать задачу».
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

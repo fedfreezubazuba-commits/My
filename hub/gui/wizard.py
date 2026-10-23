@@ -89,7 +89,7 @@ class FirstRunWizard(tk.Toplevel):
             self.app.cfg.update_settings(models_folder=self.models.get().strip())
         elif self.step == 2:
             if self.auto.get() and winsched.is_enabled() is False:
-                ok, msg = winsched.enable()
+                ok, msg = winsched.enable(self.app.cfg)
                 if not ok:
                     self.app.status.set(msg)
         elif self.step == 3:

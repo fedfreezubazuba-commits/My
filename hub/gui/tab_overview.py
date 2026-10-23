@@ -37,17 +37,28 @@ class OverviewTab(ttk.Frame):
         probs = [p for p in allp if ST.effective(p.job, p.state) != "delayed"]
         delayed = [p for p in allp if ST.effective(p.job, p.state) == "delayed"]
         stale = overview.runner_stale(store)
-        enabled, next_run = winsched.status()
+        enabled, next_run, last_code = winsched.status()
         last = store.meta_get("runner_heartbeat")
         if enabled is None:
             auto = "Автообновление работает через планировщик Windows (здесь не Windows)."
         elif enabled:
             auto = (f"Автообновление включено ({winsched.EVERY_TEXT}"
                     + (f", следующий запуск {next_run}). " if next_run else "). "))
+            if getattr(app, "sched_fixed", None):
+                auto += (f"Задача планировщика исправлена при запуске хаба ({', '.join(app.sched_fixed)} "
+                         "не совпадали). ")
         else:
             auto = "Автообновление выключено — данные обновляются только по кнопке (включить — в «Настройках»). "
         self.auto_info.configure(text=auto + (f"Последнее обновление: {fmt_date(last)}." if last else ""))
-        bad = len(probs) + (1 if stale and enabled or enabled and overview.scheduler_stale(store, app.started) else 0)
+        sched = overview.scheduler_stale(store, app.started) if enabled else None
+        failed = enabled and last_code not in winsched.OK_RESULTS and last_code is not None \
+            and not getattr(app, "sched_fixed", None)
+        if failed:
+            sched = (f"Планировщик Windows не смог запустить фоновое обновление: {winsched.result_text(last_code)}. "
+                     "Нажмите «Пересоздать задачу» — хаб пропишет в ней правильный путь к программе.")
+        elif sched and last_code is not None:
+            sched += f" Последний запуск задачи: {winsched.result_text(last_code)}."
+        bad = len(probs) + (1 if stale and enabled or sched else 0)
         if not cfg.jobs():
             self.big.configure(text="Добавьте первый показатель", style="Big.TLabel", foreground="")
         elif bad:
@@ -66,7 +77,6 @@ class OverviewTab(ttk.Frame):
                 "3. Отметьте, какие ряды получает модель. В модели нажмите «Данные → Обновить всё»."))).pack(fill="x")
             ttk.Button(inner, text="Найти данные →", command=lambda: self.app.show(self.app.find)).pack(anchor="w", pady=8)
 
-        sched = overview.scheduler_stale(store, app.started) if enabled else None
         if stale and enabled or sched:
             self._section(inner, "Фоновое обновление")
             W.autowrap(ttk.Label(inner, text=sched or stale, style="yellow.TLabel", justify="left")).pack(fill="x")
@@ -102,9 +112,12 @@ class OverviewTab(ttk.Frame):
             ttk.Button(row, text="Открыть модель", command=lambda nm=name: self.app.models.open_model(nm)).pack(side="left", padx=8)
 
     def recreate_task(self):
-        ok, msg = winsched.enable()
+        ok, msg = winsched.enable(self.app.cfg)
         if ok:
             msg += ". Первый запуск — в течение 15 минут; это сообщение исчезнет, когда планировщик запустит хаб."
+            self.app.sched_fixed = ["задача пересоздана вручную"]
+            self.app._synced_times = winsched.rule_times(self.app.cfg)
+            self.refresh()
         (messagebox.showinfo if ok else messagebox.showwarning)("Автообновление", msg, parent=self)
 
     # --- новые данные: фильтры, список, календарь ------------------------------------------
