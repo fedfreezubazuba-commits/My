@@ -325,6 +325,7 @@ legacy/            исходные навигаторы пользовател�
   (`download` для CSV, `get_html(offscreen)` для страницы); CSV принимается, только если похож на CSV; сработавший
   способ — `cache/fred_way.txt` и первым в следующий раз; метаданные — тем же способом + браузер. Ошибка —
   `HubError(NETWORK)` с `detail` по способам (вкладка показывает «Что пробовал хаб»). `_web.http_get(headers=…)`.
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.
