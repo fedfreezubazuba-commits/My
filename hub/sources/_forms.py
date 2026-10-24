@@ -154,6 +154,8 @@ def roles(flds, period) -> dict:
 def chunks(period, from_year, today: dt.date, by="year", since: dt.date | None = None) -> list[tuple[dict, dt.date, dt.date]]:
     """[(значения полей периода, начало, конец)] — по году (или по месяцу) от from_year по прошлый месяц.
     since — дозагрузка: только части, которые заканчиваются не раньше этой даты."""
+    if period and period.get("kind") == "year_months" and not period.get("start") and not period.get("end"):
+        by = "year"                     # в запросе только год (вкладки лет) — по месяцам спрашивать нечего
     out = []
     for y in range(int(from_year), today.year + 1):
         last_m = 12 if y < today.year else today.month - 1     # текущий месяц ещё не закончился — данных нет
@@ -211,22 +213,216 @@ def _json_records(data, depth=0):
     return best
 
 
+def _x_value(x):
+    """Значение оси X графика → дата текстом: миллисекунды/секунды с 1970 года → «2024-01-31»."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, (int, float)):
+        if 1e11 <= x <= 4.1e12:
+            return dt.datetime.fromtimestamp(x / 1000, dt.timezone.utc).date().isoformat()
+        if 1e9 <= x < 4.1e9:
+            return dt.datetime.fromtimestamp(x, dt.timezone.utc).date().isoformat()
+        return None
+    if isinstance(x, str) and x.strip():
+        return x.strip()
+    return None
+
+
+def _num_value(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str) and T._is_num(v):
+        return v
+    return None
+
+
+def _points(data):
+    """Точки ряда графика: [[x, y], …] или [{x/date…, y/value…}, …] → [(дата, значение)]."""
+    pts = []
+    if not isinstance(data, list):
+        return pts
+    for p in data:
+        if isinstance(p, (list, tuple)) and len(p) >= 2:
+            x, y = _x_value(p[0]), _num_value(p[1])
+        elif isinstance(p, dict):
+            xk = next((k for k in ("x", "date", "Date", "time", "t", "period", "week", "day") if k in p), None)
+            yk = next((k for k in ("y", "value", "Value", "price", "close", "v") if k in p), None)
+            x, y = (_x_value(p[xk]), _num_value(p[yk])) if xk and yk else (None, None)
+        else:
+            continue
+        if x is not None and y is not None:
+            pts.append((x, y))
+    return pts
+
+
+def _json_charts(data):
+    """Ряды для графиков внутри JSON (так страницы-приложения отдают историю цен): [(название, [(дата, значение)])].
+    Понимает {name, data:[[x,y]…]}, {labels:[…], datasets/series:[{label/name, data:[…]}]} и просто [[x,y]…]."""
+    found = []
+
+    def walk(node, key="", depth=0):
+        if depth > 8:
+            return
+        if isinstance(node, dict):
+            labels = next((node[k] for k in ("labels", "categories", "dates", "x", "xAxis") if
+                           isinstance(node.get(k), list) and node[k]), None)
+            groups = next((node[k] for k in ("datasets", "series", "data") if isinstance(node.get(k), list)), None)
+            if labels and groups and all(isinstance(g, dict) for g in groups):
+                xs = [_x_value(x) for x in labels]
+                for i, g in enumerate(groups):
+                    ys = g.get("data")
+                    if isinstance(ys, list) and len(ys) == len(xs) and all(not isinstance(y, (list, dict)) for y in ys):
+                        pts = [(x, _num_value(y)) for x, y in zip(xs, ys) if x is not None and _num_value(y) is not None]
+                        if pts:
+                            found.append((str(g.get("label") or g.get("name") or f"Ряд {i + 1}"), pts))
+                return
+            if isinstance(node.get("data"), list):
+                pts = _points(node["data"])
+                if len(pts) >= 3:
+                    found.append((str(node.get("name") or node.get("label") or node.get("title") or key or "Значение"),
+                                  pts))
+                    return
+            for k, v in node.items():
+                walk(v, str(k), depth + 1)
+        elif isinstance(node, list):
+            pts = _points(node)
+            if len(pts) >= 3 and len(pts) >= 0.8 * len(node):
+                found.append((key or "Значение", pts))
+                return
+            for v in node:
+                walk(v, key, depth + 1)
+    walk(data)
+    return found
+
+
+def _json_tables(data) -> list[list[dict]]:
+    """Записи из JSON, в том числе вложенные (годы → месяцы → недели): строки самого нижнего уровня получают
+    поля родителей (год, месяц). Списки на одинаковом месте (недели каждого месяца) складываются вместе.
+    Поле родителя, одинаковое во всех строках (название набора), не нужно — оно не различает ряды.
+    → таблицы записей, самые большие сначала."""
+    groups, inherited_keys = {}, {}
+
+    def scalars(d):
+        return {k: v for k, v in d.items() if not isinstance(v, (dict, list))}
+
+    def walk(node, path, inherited, depth):
+        if depth > 10:
+            return
+        if isinstance(node, list):
+            if node and all(isinstance(x, dict) for x in node):
+                for item in node:
+                    own = scalars(item)
+                    row = {**inherited, **own}
+                    groups.setdefault(path, []).append(row)
+                    inherited_keys.setdefault(path, set()).update(k for k in inherited if k not in own)
+                    for k, v in item.items():
+                        if isinstance(v, (list, dict)):
+                            walk(v, f"{path}/{k}", row, depth + 1)
+            else:
+                for v in node:
+                    if isinstance(v, (list, dict)):
+                        walk(v, path, inherited, depth + 1)
+        elif isinstance(node, dict):
+            here = {**inherited, **scalars(node)}
+            for k, v in node.items():
+                if isinstance(v, (list, dict)):
+                    walk(v, f"{path}/{k}", here, depth + 1)
+    walk(data, "", {}, 0)
+    for path, rows in groups.items():
+        for k in inherited_keys.get(path, ()):
+            vals = {str(r.get(k)) for r in rows}
+            if len(vals) == 1 and _num_value(rows[0].get(k)) is None:
+                for r in rows:
+                    r.pop(k, None)
+
+    def score(rows):
+        nums = sum(1 for r in rows[:200] for v in r.values() if _num_value(v) is not None)
+        return (len(rows) if nums else 0, nums)
+    return [rows for rows in sorted(groups.values(), key=score, reverse=True) if score(rows)[0]]
+
+
+YEAR_KEY = re.compile(r"year|^yr$|år|год", re.I)
+WEEK_KEY = re.compile(r"week|^wk$|uke|нед", re.I)
+MONTH_KEY = re.compile(r"month|^mnd$|måned|мес", re.I)
+
+
+def _int_in(v, lo, hi):
+    m = re.search(r"\d+", str(v or ""))
+    n = int(m.group(0)) if m else None
+    return n if n is not None and lo <= n <= hi else None
+
+
+def _add_date(keys, rows):
+    """Нет столбца с датой, но есть год и неделя (или месяц) — собрать дату: неделя → её воскресенье,
+    месяц → последний день. Год/неделя/месяц тогда убираются (иначе стали бы «числами»)."""
+    def col(rx, lo, hi):
+        found = []
+        for j, k in enumerate(keys):
+            vals = [r[j] for r in rows if r[j]]
+            if rx.search(k) and vals and all(_int_in(v, lo, hi) is not None for v in vals):
+                found.append((not all(re.fullmatch(r"\d+", v) for v in vals), j))
+        return min(found)[1] if found else None   # сначала столбец из одних чисел («32», а не «Weeks 32-35»)
+    if any(month_of(r[j]) for j in range(len(keys)) for r in rows[:5] if r[j] and not re.fullmatch(r"\d{1,4}", r[j])):
+        return keys, rows                       # дата уже есть
+    y = col(YEAR_KEY, 1990, 2100)
+    if y is None:
+        return keys, rows
+    w = col(WEEK_KEY, 1, 53)
+    m = next((j for j, k in enumerate(keys) if MONTH_KEY.search(k) and all(
+        _int_in(r[j], 1, 12) or P.month_from_word(str(r[j])[:3]) for r in rows if r[j])), None)
+    if w is None and m is None:
+        return keys, rows
+    # подписи периода родителей («Aug», «Weeks 32-35») после сборки даты не нужны — иначе дробили бы ряды
+    drop = {y, w, m} | {j for j, k in enumerate(keys) if (WEEK_KEY.search(k) or MONTH_KEY.search(k))
+                        and not any(T._is_num(r[j]) for r in rows if r[j])}
+    out = []
+    for r in rows:
+        year = _int_in(r[y], 1990, 2100)
+        d = None
+        try:
+            if w is not None and _int_in(r[w], 1, 53):        # неделя важнее месяца (месяц — от родителя)
+                d = dt.date.fromisocalendar(year, _int_in(r[w], 1, 53), 7).isoformat()
+            elif m is not None and r[m]:
+                mon = _int_in(r[m], 1, 12) or P.month_from_word(str(r[m])[:3])
+                d = P.month_end(year, mon).isoformat()
+        except (ValueError, TypeError):
+            d = None
+        out.append([d or ""] + [c for j, c in enumerate(r) if j not in drop])
+    return ["Дата"] + [k for j, k in enumerate(keys) if j not in drop], out
+
+
 def tables_in(text) -> list:
-    """Таблицы с числами в ответе: HTML-таблицы или список записей из JSON."""
+    """Таблицы с числами в ответе: HTML-таблицы, список записей из JSON или ряды графиков из JSON."""
     s = (text or "").lstrip()
     if s[:1] in "[{":
         try:
-            recs = _json_records(json.loads(s))
+            data = json.loads(s)
         except ValueError:
-            recs = []
-        if recs:
+            return []
+        out = []
+        for recs in _json_tables(data)[:3]:
             keys = []
             for r in recs:
                 keys += [k for k, v in r.items() if k not in keys and not isinstance(v, (dict, list))]
             rows = [["" if r.get(k) is None else str(r.get(k)) for k in keys] for r in recs]
-            if any(T._is_num(c) for row in rows for c in row):
-                return [T.Table("html", rows, "", 0, keys)]
-        return []
+            keys, rows = _add_date(keys, rows)
+            if any(T._is_num(c) for row in rows for c in row) and len(keys) >= 2:
+                out.append(T.Table("html", rows, "", len(out), keys))
+        charts = _json_charts(data)
+        if charts:
+            names, by_x = [], {}
+            for name, pts in charts:
+                while name in names:
+                    name += " (2)"
+                names.append(name)
+                for x, y in pts:
+                    by_x.setdefault(x, {})[name] = y
+            rows = [[x] + [str(by_x[x].get(n, "")) for n in names] for x in sorted(by_x)]
+            if len(rows) >= 3:
+                out.append(T.Table("html", rows, "График", len(out), ["Дата"] + names))
+        return out
     try:
         return T.html_tables(W.parse_html(text))
     except Exception:  # noqa: BLE001
@@ -307,6 +503,9 @@ def layout(table) -> dict:
 
 
 def unit_for(header, row_unit=""):
+    m = re.search(r"([A-Za-zА-Яа-я$€₽]{1,4})\s*/\s*(kg|кг|t|т|tonne|ton|lb|bbl|MWh|л|l)\b", header or "", re.I)
+    if m:
+        return f"{m.group(1)}/{m.group(2)}"           # «EUR/kg», «руб./т» — цена за единицу
     for rx, cur in CURRENCY:
         if rx.search(header or ""):
             return cur

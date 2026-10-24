@@ -113,9 +113,9 @@ FORM_BANNER_JS = r"""
   b.id = '__hub_banner';
   b.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:2147483647;background:#1565c0;color:#fff;' +
                     'font:15px Segoe UI,Arial;padding:8px 14px;text-align:center;pointer-events:none';
-  b.textContent = 'Хаб данных: заполните форму (коды, страна, импорт/экспорт) и выберите ОДИН месяц — так сайт не ' +
-                  'предупреждает о большом периоде; годы и месяцы хаб потом переберёт сам. Нажмите поиск; если сайт ' +
-                  'покажет ползунок — сдвиньте его. Когда появится таблица — закройте это окно.';
+  b.textContent = 'Хаб данных: откройте на сайте нужные данные. Если есть форма — заполните её (лучше ОДИН месяц: годы и ' +
+                  'месяцы хаб переберёт сам) и нажмите поиск; если сайт покажет ползунок — сдвиньте его. ' +
+                  'Когда таблица или график с данными появится — закройте это окно.';
   document.documentElement.appendChild(b);
 })();
 """
@@ -189,8 +189,9 @@ class Browser:
         if headless or offscreen:
             kw["viewport"] = {"width": 1280, "height": 900}
         else:
-            # окно для человека: страница растягивается вместе с окном (кнопка «развернуть» работает)
-            args.append("--window-size=1280,900")
+            # окно для человека: страница растягивается вместе с окном (кнопка «развернуть» работает);
+            # место — явно на экране: профиль общий с окнами «за краем экрана» и помнит их положение
+            args += ["--window-size=1280,900", "--window-position=80,60"]
             kw["no_viewport"] = True
         exe = os.environ.get("HUB_CHROMIUM")
         if exe:
@@ -302,6 +303,7 @@ class Browser:
             ctx = self._launch(p, headless=False)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                _show_window(page)
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 try:
                     got["user_agent"] = page.evaluate("navigator.userAgent")
@@ -367,6 +369,8 @@ class Browser:
             ctx.on("response", on_response)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                if not headless:
+                    _show_window(page)
                 page.goto(url, wait_until="domcontentloaded", timeout=90000)
                 if on_page:
                     on_page(page)              # для тестов: заполнить форму программно
@@ -444,6 +448,48 @@ class Browser:
                     pass
         return out
 
+    def capture(self, start_url, req, headless=False, timeout_ms=90000):
+        """Открыть страницу (окно за краем экрана) и взять тот же ответ с данными, который страница запрашивает
+        сама при открытии, — со всеми её ключами доступа. → текст ответа или None, если страница его не запросила."""
+        from urllib.parse import urlsplit
+        want = urlsplit(req["url"])
+        hits = []
+
+        def on_response(resp):
+            try:
+                u = urlsplit(resp.url)
+                if u.netloc == want.netloc and u.path == want.path and resp.request.method == (req.get("method") or "GET") \
+                        and resp.status == 200:
+                    hits.append(resp)
+            except Exception:  # noqa: BLE001
+                pass
+
+        with _lock, self._sync() as p:
+            ctx = self._launch(p, headless=headless, offscreen=not headless)
+            ctx.on("response", on_response)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                try:
+                    page.goto(start_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                except Exception as e:  # noqa: BLE001
+                    raise E.HubError(E.NETWORK, "Встроенный браузер не смог открыть сайт", detail=str(e))
+                end = time.time() + timeout_ms / 1000
+                while not hits and time.time() < end:
+                    page.wait_for_timeout(300)
+                if not hits:
+                    return None
+                page.wait_for_timeout(500)
+                best = next((h for h in hits if urlsplit(h.url).query == want.query), hits[-1])
+                text = best.text()
+                if is_check(200, text, page):
+                    raise E.HubError(E.BOT, CHECK_MESSAGE)
+                return text
+            finally:
+                try:
+                    ctx.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
     @staticmethod
     def _xhr(page, req, timeout_ms):
         for _attempt in range(3):
@@ -499,6 +545,8 @@ class Browser:
             ctx = self._launch(p, headless=headless)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                if not headless:
+                    _show_window(page)
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 _settle(page)
                 _in_frames(page, PICKER_JS)

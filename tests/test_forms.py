@@ -270,3 +270,64 @@ def test_accepted_missing_series_are_not_asked_again(workdir):
         assert r.run(job_ids=[job["id"]]).outcomes[0].status == "quarantine"
     finally:
         r.close()
+
+
+def test_nested_price_history_weeks_become_weekly_series():
+    """Ответ страницы: годы → месяцы → недели. Хаб берёт недели (самая подробная таблица), дату собирает из
+    года и номера недели (воскресенье недели), месяц-родитель не дробит ряды; единицы — «EUR/kg»."""
+    import json
+    import salmon_site as SS
+    params = {"url": "https://salmonprice.com/fishpool/#/public/priceHistory",
+              "request": {"method": "GET", "url": "https://salmonprice.com/fishpool/api/public/priceHistory"},
+              "period": None, "periodicity": "auto"}
+    res = get("web_form").fetch(params, Context(now=NOW, clients={
+        "web_form_capture": lambda start, req: json.dumps(SS.history())}))
+    by = {s.name: s for s in res.series}
+    assert set(by) == {"eur", "nok"} and {s.periodicity for s in res.series} == {"week"}
+    obs = sorted((o.period_end, o.value) for o in res.obs if o.key.endswith("|eur"))
+    assert len(obs) == 16 and obs[0][0] == dt.date(2024, 8, 11) and obs[0][0].weekday() == 6
+    assert F.unit_for("EUR/kg") == "EUR/kg" and F.unit_for("NOK / kg") == "NOK/kg"
+
+
+@pytest.mark.skipif(not os.environ.get("HUB_CHROMIUM"), reason="нужен Chromium (HUB_CHROMIUM)")
+def test_record_public_app_page_and_capture(tmp_path):
+    """Страница-приложение: данные грузятся скриптом с ключом страницы (простой повтор запроса без ключа
+    получил бы отказ). Хаб записывает ответ при просмотре, а при обновлении открывает страницу и берёт тот же
+    ответ — с ключом, который страница получила сама."""
+    pytest.importorskip("playwright")
+    import functools
+    import salmon_site as SS
+    from hub.core.paths import Paths
+    from hub.sources.browser import Browser
+    srv, base = SS.start()
+    try:
+        br = Browser(Paths(tmp_path))
+        url = base + "/fishpool/#/public/priceHistory"
+
+        def look(page):
+            page.locator("#app table").wait_for(timeout=10000)
+            page.wait_for_timeout(300)
+        cands = br.record(url, headless=True, on_page=look)
+        cand, table = F.best_candidate(cands)
+        assert cand and cand["url"].endswith("/fishpool/api/public/priceHistory") and len(table.rows) == 16
+        params = {"url": url, "request": {k: v for k, v in cand.items() if k != "text"},
+                  "period": F.detect_period(F.fields(cand), NOW.date()), "periodicity": "auto"}
+        assert params["period"] is None
+        ctx = Context(now=NOW, clients={"web_form_capture": functools.partial(br.capture, headless=True)})
+        res = get("web_form").fetch(params, ctx)
+        assert len([o for o in res.obs if o.key.endswith("|nok")]) == 16
+    finally:
+        srv.shutdown()
+
+
+def test_chart_json_becomes_table():
+    """Данные графика: {labels, datasets} и ряды точек [[время, значение]] → таблица «Дата | ряды»."""
+    import json
+    t = F.tables_in(json.dumps({"labels": ["2024-01-07", "2024-01-14", "2024-01-21"],
+                                "datasets": [{"label": "EUR/kg", "data": [7.1, 7.3, 7.0]}]}))
+    chart = [x for x in t if x.title == "График"][0]
+    assert chart.header == ["Дата", "EUR/kg"] and chart.rows[0] == ["2024-01-07", "7.1"]
+    ms = int(dt.datetime(2024, 1, 7, tzinfo=dt.timezone.utc).timestamp() * 1000)
+    t = F.tables_in(json.dumps({"series": [{"name": "NOK/kg", "data": [[ms + i * 7 * 86400000, 80 + i] for i in range(3)]}]}))
+    chart = [x for x in t if x.title == "График"][0]
+    assert chart.header == ["Дата", "NOK/kg"] and chart.rows[0][0].startswith("2024-01-07")

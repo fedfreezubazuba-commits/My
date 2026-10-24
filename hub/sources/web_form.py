@@ -82,6 +82,24 @@ class WebForm(Source):
         plan = requests_for(params, today, since)
         if not plan:                           # январь: прошлый год уже загружен, а новый месяц ещё не кончился
             return FetchResult(url=params.get("url") or "", unchanged=True, partial=True)
+        start = params.get("url") or params["request"].get("frame_url") or params["request"]["url"]
+        if not params.get("period") and len(plan) == 1:
+            # период не меняем — проще всего открыть страницу и взять тот же ответ, что она получает сама
+            # (страницы-приложения подписывают запросы своими ключами — так они тоже подходят)
+            capture = (ctx.clients.get("web_form_capture") if ctx and ctx.clients else None)
+            if capture is None and ctx is not None and ctx.browser is not None and ctx.browser.available():
+                capture = ctx.browser.capture
+            text = capture(start, params["request"]) if capture else None
+            if text is not None:
+                self.say(ctx, "Данные взяты со страницы")
+                res = FetchResult(url=params.get("url") or "")
+                table = F.result_table(text, params.get("table"))
+                if table is None:
+                    raise E.StructureError("Страница загрузила данные, но в них нет таблицы с числами — возможно, "
+                                           "сайт изменился")
+                self._rows(table, params, None, None, res, {})
+                res.raw, res.raw_ext = text[:2_000_000].encode("utf-8"), "json" if text.lstrip()[:1] in "[{" else "html"
+                return res
         replay = (ctx.clients.get("web_form") if ctx and ctx.clients else None)
         if replay is None:
             if ctx is None or ctx.browser is None or not ctx.browser.available():
@@ -115,14 +133,21 @@ class WebForm(Source):
         if not lay["values"]:
             raise E.StructureError("В таблице ответа не найден столбец с числами")
         prefix = params.get("code_prefix") or prefix_for(params["request"]["url"])
-        per = params.get("periodicity") or (P.MONTH if lay["date"] is not None or params.get("by") == "month"
-                                            else P.YEAR if a and b and (a.month, b.month) == (1, 12) else P.MONTH)
+        per = params.get("periodicity") or "auto"
+        if per == "auto":
+            if lay["date"] is not None:            # по датам в ответе: недели, месяцы… (история цен — часто недели)
+                from ._dataset import guess_periodicity
+                per = guess_periodicity([d for d in (F.month_of(r[lay["date"]]) for r in lay["rows"]) if d])
+            else:
+                per = P.YEAR if a and b and (a.month, b.month) == (1, 12) else P.MONTH if a else P.DAY
         for r in lay["rows"]:
             if lay["date"] is not None:
                 end = F.month_of(r[lay["date"]])
                 src = r[lay["date"]]
+            elif b is not None:
+                end, src = b, f"{a:%Y-%m}–{b:%Y-%m}"
             else:
-                end, src = b, (f"{a:%Y-%m}–{b:%Y-%m}" if a else None)
+                end, src = dt.date.today(), None     # в ответе нет дат и период не задавали — снимок на сегодня
             if end is None:
                 continue                       # строка «Итого» без даты и т. п.
             end = P.end_of_period(per, end) if per in P.ORDER else end
@@ -136,7 +161,8 @@ class WebForm(Source):
                 key = f"{label}|{head[j]}"
                 if key not in seen:
                     seen[key] = SeriesInfo(
-                        key=key, name=f"{label} | {head[j]}"[:200], unit=F.unit_for(head[j], row_unit),
+                        key=key, name=(f"{label} | {head[j]}" if labels else head[j])[:200],
+                        unit=F.unit_for(head[j], row_unit),
                         periodicity=per, code=f"{prefix}_{slug(label, 18)}_{slug(head[j], 10)}".upper(),
                         url=params.get("url") or "", dims=labels + [("Показатель", head[j])],
                         date_rule="месяц из ответа сайта → конец месяца" if lay["date"] is not None

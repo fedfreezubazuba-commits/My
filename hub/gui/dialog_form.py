@@ -35,7 +35,7 @@ class FormDialog(tk.Toplevel):
         self.cand = {k: v for k, v in cand.items() if k != "text"}     # ответ сайта в настройках не храним
         old = (job or {}).get("params", {}).get("values") or {}
         cand = with_values = F.with_fields(self.cand, old) if old else self.cand
-        self.title("Данные из формы на сайте")
+        self.title("Данные страницы")
         self.geometry("980x720")
         self.transient(app.root)
         self.flds = F.fields(with_values)
@@ -95,8 +95,10 @@ class FormDialog(tk.Toplevel):
         jp = (job or {}).get("params", {})
         self.from_year = tk.StringVar(value=str(jp.get("from_year") or min(rec_year, this_year - 5)))
         # по месяцу — мелкие запросы: сайты реже предупреждают о «большом периоде» и реже просят проверку
-        self.by = tk.StringVar(value=jp.get("by") or ("month" if (self.period or {}).get("kind") == "year_months"
-                                                       or lay is None or lay["date"] is None else "year"))
+        months_in_query = (self.period or {}).get("kind") == "year_months" and (self.period.get("start")
+                                                                                 or self.period.get("end"))
+        self.by = tk.StringVar(value=jp.get("by") or ("month" if months_in_query or lay is not None and lay["date"] is None
+                                                       else "year"))
         if self.period:
             ttk.Label(opts, text="Загружать с года:").pack(side="left")
             ttk.Spinbox(opts, from_=1990, to=this_year, textvariable=self.from_year, width=6,
@@ -106,8 +108,10 @@ class FormDialog(tk.Toplevel):
             ttk.Radiobutton(opts, text="запрос на год (быстрее)", value="year", variable=self.by,
                             command=self._count).pack(side="left", padx=6)
         else:
-            ttk.Label(opts, text="Поля периода в запросе не нашлись — хаб будет повторять запрос как есть.",
-                      style="yellow.TLabel").pack(side="left")
+            W.autowrap(ttk.Label(opts, justify="left", text=(
+                "Период в запросе не задаётся — при каждом обновлении хаб откроет эту страницу (окно за краем экрана) "
+                "и возьмёт те же данные, что получает она сама; обычно это вся история."))).pack(side="left", fill="x",
+                                                                                                expand=True)
         self.count = W.autowrap(ttk.Label(body, style="Hint.TLabel", justify="left"))
         self.count.pack(fill="x", pady=(4, 0))
         self.from_year.trace_add("write", lambda *_: self._count())
@@ -139,7 +143,7 @@ class FormDialog(tk.Toplevel):
         if self.job:
             return {**self.job["params"], "from_year": self._year(), "by": self.by.get(), "values": values}
         return {"url": self.start_url, "request": self.cand, "period": self.period, "from_year": self._year(),
-                "by": self.by.get(), "values": values, "periodicity": "month",
+                "by": self.by.get(), "values": values, "periodicity": "auto",
                 "table": {"title": self.table.title, "index": self.table.index},
                 "code_prefix": WF.prefix_for(self.cand["url"]), "fetch_mode": "browser"}
 

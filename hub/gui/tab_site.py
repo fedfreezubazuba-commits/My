@@ -37,10 +37,10 @@ class SiteTab(ttk.Frame):
         tools.pack(fill="x", pady=(6, 0))
         ttk.Button(tools, text="🖱 Выбрать на странице…", command=self.pick).pack(side="left")
         ttk.Button(tools, text="🔑 Войти на сайт…", command=self.login).pack(side="left", padx=6)
-        W2.icon_button(tools, "✍", "Для сайтов, где данные выдаются после заполнения формы (коды товаров, страна, "
-                                  "импорт/экспорт, период): заполните форму один раз — хаб запомнит запрос и будет "
-                                  "повторять его сам, по годам", self.record_form,
-                       text="Заполнить форму…").pack(side="left")
+        W2.icon_button(tools, "✍", "Для сайтов-приложений, где данные подгружаются скриптом (история цен на графике, "
+                                  "таблица после заполнения формы): откройте данные в окне браузера — хаб запомнит, "
+                                  "откуда страница их берёт, и будет брать их сам (по годам, если есть период)",
+                       self.record_form, text="Записать данные страницы…").pack(side="left")
         ttk.Button(tools, text="Не получилось — Отправить Claude", command=self.claude).pack(side="right")
         self.info = ttk.Label(self, style="Muted.TLabel", wraplength=1100, justify="left",
                               text="Вставьте ссылку на страницу с ценой, таблицей или файлом отчёта. "
@@ -105,7 +105,8 @@ class SiteTab(ttk.Frame):
     def _failed(self, exc):
         from ..core import errors as E
         cat = E.classify(exc)
-        hint = {E.LOGIN: "Нажмите «Войти на сайт», войдите и попробуйте ещё раз.",
+        hint = {E.LOGIN: "Нажмите «Войти на сайт», войдите и попробуйте ещё раз. Если нужные данные на сайте открываются "
+                         "и без входа (публичная страница, график цен) — нажмите «✍ Записать данные страницы…».",
                 E.BOT: "Нажмите «Выбрать на странице» — во встроенном браузере сайт откроется как обычно.",
                 E.STRUCTURE: "Попробуйте «Выбрать на странице» и щёлкнуть по нужному числу."}.get(cat, "")
         self.info.configure(text=f"Не получилось: {E.human_message(exc)}. {hint}", style="red.TLabel")
@@ -264,8 +265,8 @@ class SiteTab(ttk.Frame):
             if not url:
                 messagebox.showinfo("Ссылка", "Сначала вставьте ссылку на страницу с формой.", parent=self)
             return
-        self.info.configure(text="Откроется окно браузера. Заполните форму на сайте (коды, страна, импорт/экспорт, "
-                                 "период) и нажмите поиск. Когда появится таблица с нужными данными — закройте окно.",
+        self.info.configure(text="Откроется окно браузера. Откройте на сайте нужные данные (если есть форма — заполните "
+                                 "её и нажмите поиск). Когда таблица или график появятся — закройте окно.",
                             style="Muted.TLabel")
         self.app.bg(lambda: br.record(url), lambda c: self._recorded(url, c),
                     "Жду, пока вы заполните форму в окне браузера…", error=self._failed)
@@ -282,11 +283,12 @@ class SiteTab(ttk.Frame):
             return
         cand, table = F.best_candidate(cands)
         if cand is None:
-            self.info.configure(text="В ответах сайта не нашлось таблицы с числами. Нажмите «Не получилось — "
+            self.info.configure(text="В ответах сайта не нашлось таблицы или графика с числами. Нажмите «Не получилось — "
                                      "Отправить Claude» — записанные ответы сайта приложатся к запросу.",
                                 style="red.TLabel")
             return
-        self.info.configure(text=f"Записан запрос формы: таблица из {len(table.rows)} строк.", style="green.TLabel")
+        self.info.configure(text=f"Записано, откуда страница берёт данные: таблица из {len(table.rows)} строк.",
+                            style="green.TLabel")
         FormDialog(self.app, url, cand, table)
 
     def login(self):
