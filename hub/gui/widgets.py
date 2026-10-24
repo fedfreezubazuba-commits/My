@@ -19,6 +19,36 @@ UPDATED_FG = "#1b5e20"
 ICON_FONT = ("Segoe UI Symbol", 13) if IS_WIN else ("DejaVu Sans", 12)   # значки — символы из шрифта
 
 
+ASSETS = __import__("pathlib").Path(__file__).resolve().parent / "assets"
+ICON_ICO = ASSETS / "hub.ico"
+APP_ID = "MarketData.Hub"         # своя «группа» на панели задач Windows — со своим значком, а не значком Python
+
+
+def set_app_id():
+    """До создания окна: Windows показывает на панели задач значок окна хаба, а не значок pythonw.exe."""
+    if IS_WIN:
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def set_icon(root):
+    """Значок хаба у главного окна и всех остальных окон (вместо «пёрышка» Tk)."""
+    try:
+        root._hub_icon = tk.PhotoImage(file=str(ASSETS / "hub.png"))
+        root._hub_icon_small = tk.PhotoImage(file=str(ASSETS / "hub_64.png"))
+        root.iconphoto(True, root._hub_icon, root._hub_icon_small)
+    except tk.TclError:
+        pass
+    if IS_WIN:
+        try:
+            root.iconbitmap(default=str(ICON_ICO))     # чёткий значок 16×16 в заголовке и на панели задач
+        except tk.TclError:
+            pass
+
+
 def apply_style(root):
     style = ttk.Style(root)
     for theme in (("vista", "clam") if IS_WIN else ("clam",)):

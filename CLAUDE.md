@@ -267,6 +267,12 @@ legacy/            исходные навигаторы пользовател�
   первая полная загрузка после изменения не откладывает «исчезли ряды», а снимает их (`result.retire_codes`) с
   замечанием; после неё `edited:` очищается. То же для web_form (`FormDialog.save`).
 
+- **0.7.5 — значок**: `gui/assets/hub.ico|hub.png|hub_64.png` (нарисован Pillow, исходник — синий квадрат со
+  столбиками и линией). `widgets.set_app_id` (AppUserModelID до создания окна — своя группа на панели задач),
+  `widgets.set_icon` (iconphoto для всех окон + iconbitmap .ico в Windows). Ярлык: `setup.make_shortcut` с
+  `hub.ico`, у старого ярлыка значок меняется при запуске окна (`setup.update_shortcut_icon`, meta `shortcut_icon`).
+  Значка в области уведомлений (трее) у хаба нет — фоновое обновление идёт через планировщик.
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

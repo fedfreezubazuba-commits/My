@@ -29,6 +29,7 @@ class HubApp:
         root.geometry("1320x820")
         root.minsize(980, 620)
         W.apply_style(root)
+        W.set_icon(root)
         self.q = queue.Queue()
         self.tasks = 0
         self.clients = {}       # подмена сетевых клиентов (тесты)
@@ -45,6 +46,7 @@ class HubApp:
         self.sched_fixed = None
         self._synced_times = None
         threading.Thread(target=self._upgrade_task, daemon=True).start()
+        threading.Thread(target=self._shortcut_icon, daemon=True).start()
         root.after(self.PERIODIC_MS, self._periodic)
 
     PERIODIC_MS = 10 * 60 * 1000
@@ -74,6 +76,15 @@ class HubApp:
                 self.log.info("Задача планировщика пересоздана: %s", ", ".join(what))
         except Exception:  # noqa: BLE001
             self.log.exception("Проверка задачи планировщика")
+
+    def _shortcut_icon(self):
+        """Ярлык «Хаб данных» на рабочем столе — со значком хаба (один раз)."""
+        try:
+            from ..core import setup
+            if self.store.meta_get("shortcut_icon") != setup.ICON_VERSION and setup.update_shortcut_icon():
+                self.store.meta_set("shortcut_icon", setup.ICON_VERSION)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _sync_if_changed(self):
         """Поменялись времена в графиках показателей — переписать задачу планировщика (в фоне)."""
@@ -249,6 +260,7 @@ def main():
     from ..core.crash import StartupWatch
     watch = StartupWatch()
     watch.stage = "создаю окно"
+    W.set_app_id()
     root = tk.Tk()
     root.report_callback_exception = _callback_error(root)
     HubApp(root, watch)

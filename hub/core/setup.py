@@ -28,6 +28,24 @@ def run(folder=None, shortcut=False) -> str:
     return "\n".join(lines)
 
 
+ICON = PROJECT / "hub" / "gui" / "assets" / "hub.ico"
+ICON_VERSION = "1"
+
+
+def update_shortcut_icon() -> bool:
+    """У существующего ярлыка на рабочем столе — значок хаба (ярлык, созданный прежней версией, был со
+    стандартным значком Windows). Нет ярлыка или не Windows — ничего не делаем."""
+    if not IS_WINDOWS or not ICON.exists():
+        return False
+    ps = ("$s=(New-Object -ComObject WScript.Shell);"
+          "$p=(Join-Path ([Environment]::GetFolderPath('Desktop')) 'Хаб данных.lnk');"
+          "if (Test-Path $p) { $l=$s.CreateShortcut($p);"
+          f"$l.IconLocation='{ICON},0'; $l.Save(); 'ok' }}")
+    r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                       capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return r.returncode == 0
+
+
 def make_shortcut() -> str:
     if not IS_WINDOWS:
         return "Ярлык создаётся только в Windows"
@@ -39,7 +57,7 @@ def make_shortcut() -> str:
         f"$l.TargetPath='{target}';"
         f"$l.WorkingDirectory='{PROJECT}';"
         "$l.WindowStyle=7;"
-        "$l.IconLocation='%SystemRoot%\\System32\\imageres.dll,170';"
+        f"$l.IconLocation='{ICON},0';"
         "$l.Save()"
     )
     r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],

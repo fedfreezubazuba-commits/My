@@ -674,3 +674,11 @@ def test_change_dataset_warns_about_dropped_series_and_models(app, fakes, monkey
     nav._auto_confirm = False
     assert real(nav, job, app.store.series_of_job(job["id"])[:2], [("Модель", 2)]) is False
     assert impact.dropped_series(app.store, app.cfg.job(job["id"]), app.cfg.job(job["id"])["params"], nav.info) == []
+
+
+def test_app_icon_files_and_window_icon(app):
+    from hub.core import setup
+    from hub.gui import widgets as W
+    assert (W.ASSETS / "hub.png").exists() and W.ICON_ICO.exists() and setup.ICON == W.ICON_ICO
+    assert getattr(app.root, "_hub_icon", None) is not None          # значок хаба вместо «пёрышка» Tk
+    assert W.ICON_ICO.read_bytes()[:4] == b"\x00\x00\x01\x00"          # настоящий .ico
