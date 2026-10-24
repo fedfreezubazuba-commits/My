@@ -12,6 +12,7 @@ Playwright необязателен: без него всё остальное �
 что браузер не установлен. Путь к Chromium можно задать переменной HUB_CHROMIUM.
 """
 import os
+import re
 import threading
 import time
 
@@ -136,8 +137,12 @@ async (a) => await new Promise((resolve) => {
 
 CHECK_MESSAGE = ("Сайт просит пройти проверку «я не робот» (ползунок). Хаб не проходит её сам: нажмите на «Обзоре» "
                  "«Пройти проверку» или обновите показатель кнопкой — окно браузера откроется, сдвиньте ползунок")
-CHECK_MARKERS = ("captcha", "滑块", "滑动验证", "向右滑动", "拖动滑块", "请完成安全验证", "slide to verify",
+CHECK_MARKERS = ("滑块", "滑动验证", "向右滑动", "拖动滑块", "请完成安全验证", "slide to verify",
                  "slider-verify", "nc_wrapper", "nc-container", "geetest", "tcaptcha", "verify-slider")
+# просто слово «captcha» есть и на обычных больших страницах (форма обратной связи cbr.ru) — это признак проверки,
+# только если сама страница маленькая (страница-проверка), а не весь сайт с меню и таблицами
+GENERIC_MARKERS = ("captcha",)
+SMALL_PAGE = 40000
 
 CHECK_BANNER_JS = r"""
 (() => {
@@ -627,7 +632,12 @@ def _frame_for(page, req):
 
 def has_check_markers(html) -> bool:
     low = (html or "")[:300000].lower()
-    return any(m in low for m in CHECK_MARKERS)
+    if any(m in low for m in CHECK_MARKERS):
+        return True
+    if any(m in low for m in GENERIC_MARKERS):
+        visible = re.sub(r"<script.*?</script>|<style.*?</style>|<!--.*?-->", "", low, flags=re.S)
+        return len(visible) < SMALL_PAGE
+    return False
 
 
 def is_check(status, text, page=None) -> bool:

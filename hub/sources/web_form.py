@@ -20,15 +20,18 @@
 """
 import datetime as dt
 import re
+import time
 from urllib.parse import urlparse
 
 from ..core import errors as E
 from ..core import periods as P
 from ..core.config import slug
 from . import _forms as F
+from . import _web as W
 from .base import FetchResult, Obs, SeriesInfo, Source
 
 DAYS_BACK = 7          # дозагрузка формы с датами: с последней загруженной даты минус неделя (поправки задним числом)
+HTTP_PAUSE_S = 1.5     # пауза между обычными запросами страниц (без браузера)
 PAUSE_S = 4            # пауза между запросами к сайту (сайты с формами обычно медленные и не любят спешки)
 TITLES = {"stats.customs.gov.cn": "Таможня Китая"}
 
@@ -107,6 +110,9 @@ class WebForm(Source):
                 self._rows(table, params, None, None, res, {})
                 res.raw, res.raw_ext = text[:2_000_000].encode("utf-8"), "json" if text.lstrip()[:1] in "[{" else "html"
                 return res
+        answers = self._plain(params, plan, ctx)
+        if answers is not None:
+            return self._result(params, plan, answers, since)
         replay = (ctx.clients.get("web_form") if ctx and ctx.clients else None)
         if replay is None:
             if ctx is None or ctx.browser is None or not ctx.browser.available():
@@ -120,6 +126,35 @@ class WebForm(Source):
                          [r for r, _a, _b in plan], pause_s=PAUSE_S,
                          progress=lambda i, msg=None: self.say(ctx, msg or f"Запрос {i} из {len(plan)}"),
                          interactive=bool(getattr(ctx, "interactive", False)))
+        return self._result(params, plan, answers, since)
+
+    def _plain(self, params, plan, ctx):
+        """Запрос — сама страница сайта (GET, «document»: форма отправляется обычной ссылкой, как курсы на cbr.ru)
+        — сначала обычными запросами, без браузера: быстрее и без окон. Первый ответ без таблицы, защита или
+        ошибка — None (тогда через встроенный браузер, как раньше)."""
+        req0 = params["request"]
+        if (req0.get("method") or "GET").upper() != "GET" or req0.get("resource_type") != "document" \
+                or req0.get("body"):
+            return None
+        get = (ctx.clients.get("web_form_http") if ctx and ctx.clients else None) or W.http_get
+        out = []
+        for i, (req, a, b) in enumerate(plan):
+            if i:
+                time.sleep(HTTP_PAUSE_S)
+            self.say(ctx, f"Запрос {i + 1} из {len(plan)}")
+            try:
+                status, ct, data, _final = get(req["url"], ctx, timeout=60)
+            except Exception as e:  # noqa: BLE001
+                if ctx is not None:
+                    ctx.info(f"web_form: обычный запрос не прошёл ({e}) — через встроенный браузер")
+                return None
+            text = W.decode(data, ct)
+            if status != 200 or W.detect_block(status, text) or not out and F.result_table(text, params.get("table")) is None:
+                return None
+            out.append(text)
+        return out
+
+    def _result(self, params, plan, answers, since):
         res = FetchResult(url=params.get("url") or "", partial=since is not None)
         seen = {}
         raw = []
@@ -129,7 +164,8 @@ class WebForm(Source):
             if table is None:
                 if a is None:
                     raise E.StructureError("В ответе сайта нет таблицы с данными — возможно, сайт изменил форму")
-                res.warnings.append(f"За {a:%m.%Y}–{b:%m.%Y} сайт не вернул таблицу (данных ещё нет?)")
+                f = "%d.%m.%Y" if (params.get("period") or {}).get("kind") == "dates" else "%m.%Y"
+                res.warnings.append(f"За {a:{f}}–{b:{f}} сайт не вернул таблицу (данных ещё нет?)")
                 continue
             self._rows(table, params, a, b, res, seen)
         res.raw, res.raw_ext = "\n\n".join(raw).encode("utf-8"), "html"

@@ -381,3 +381,48 @@ def test_full_reload_days_from_settings_and_job(workdir):
         assert r.cfg.full_reload_days(job) == 7
     finally:
         r.close()
+
+
+def test_date_form_page_loads_without_browser(workdir, monkeypatch):
+    """Запрос — сама страница (GET, document, как курсы на cbr.ru): хаб берёт её обычными запросами, без окна
+    браузера; если обычный запрос не прошёл — через встроенный браузер."""
+    import cbr_rates_site as RS
+    from hub.core.paths import Paths
+    from hub.runner import Runner
+    from hub.sources import web_form as WF
+    monkeypatch.setattr(WF, "HTTP_PAUSE_S", 0)
+    now = {"t": dt.datetime(2026, 10, 24, 17, 50)}
+    browser_site = RS.make_site(now)
+    got = []
+
+    def http(url, ctx=None, timeout=60, headers=None):
+        got.append({k: v[0] for k, v in parse_qs(urlsplit(url).query).items()})
+        return 200, "text/html; charset=utf-8", RS.page(url, now["t"].date()).encode(), url
+    req = dict(RS.REQ, resource_type="document", frame_url="about:blank")
+    r = Runner(Paths(workdir), ctx_clients={"web_form": browser_site, "web_form_http": http}, now=now["t"])
+    try:
+        params = {"url": RS.URL, "request": req, "from_year": 2026, "by": "month", "periodicity": "auto",
+                  "period": F.detect_period(F.fields(req), now["t"].date()), "table": {"title": "", "index": 0}}
+        job = r.cfg.add_job("web_form", "Курс доллара", params)
+        out = r.run(job_ids=[job["id"]]).outcomes[0]
+        assert out.status == "updated", out.message
+        assert len(got) == 10 and got[-1]["UniDbQuery.To"] == "24.10.2026" and browser_site.calls == []
+        assert r.store.state(job["id"])["last_period"] == "2026-10-23"          # пятница — последний рабочий день
+
+        def broken(url, ctx=None, timeout=60, headers=None):
+            raise ConnectionError("нет связи")
+        r.clients["web_form_http"] = broken
+        out = r.run(job_ids=[job["id"]]).outcomes[0]
+        assert browser_site.calls and browser_site.calls[0]["UniDbQuery.From"] == "16.10.2026"
+    finally:
+        r.close()
+
+
+def test_big_page_with_captcha_word_is_not_a_check():
+    """На обычной большой странице (меню, форма обратной связи с капчей) слово «captcha» — не проверка «я не робот»;
+    маленькая страница-проверка — проверка."""
+    from hub.sources.browser import is_check
+    big = "<html><body>" + "<div class='menu'>Раздел сайта</div>" * 3000 + \
+          "<form class='feedback'><div class='captcha'>введите код</div></form><p>Нет данных</p></body></html>"
+    assert not is_check(200, big)
+    assert is_check(200, "<html><body><div id='captcha'>Подтвердите, что вы не робот</div></body></html>")
