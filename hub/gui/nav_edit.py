@@ -3,7 +3,12 @@
 с уже отмеченными значениями, кнопка «＋ В обновления» становится «✔ Сохранить изменения».
 Показатель остаётся тем же (id, коды рядов, расписание, выборки моделей) — меняются только параметры.
 """
+import datetime as dt
+import tkinter as tk
 from tkinter import messagebox, ttk
+
+from ..core import impact
+from . import widgets as W
 
 
 class EditMode:
@@ -59,12 +64,19 @@ class EditMode:
         if new == (job.get("params") or {}):
             messagebox.showinfo("Набор данных", "Ничего не изменилось.", parent=self)
             return
-        if not messagebox.askyesno(
-                "Сохранить изменения", f"Изменить набор данных показателя «{job['name']}»?\n\n"
-                "Показатель, его расписание и выборки моделей останутся прежними. Новые ряды появятся после "
-                "загрузки, ряды, которые вы сняли, больше не будут обновляться (их история сохранится).", parent=self):
+        dropped = impact.dropped_series(self.app.store, job, new, getattr(self, "info", None))
+        codes = [r["code"] for r in dropped]
+        models = impact.affected_models(self.app.cfg, self.app.store, codes) if codes else []
+        answer = confirm_edit(self, job, dropped, models)
+        if answer is None:
             return
         self.app.cfg.update_job(job["id"], params=new)
+        if codes:
+            self.app.store.retire(codes)               # сняты пользователем — не ждём, тревоги «исчезли ряды» не будет
+            if answer:
+                for name, _n in models:
+                    self.app.cfg.unsubscribe_codes(name, codes, exclude=True)
+        impact.mark_edited(self.app.store, job["id"], dt.datetime.now().isoformat(timespec="seconds"))
         self.cancel_edit()
         self.status.set(f"Набор данных показателя «{job['name']}» изменён — загружаю")
         self.app.update_jobs([job["id"]])
@@ -72,3 +84,56 @@ class EditMode:
 
 # параметры выбора: если в новом выборе их нет — значит, «всё» (из старых параметров их не переносим)
 SELECTION_KEYS = {"select", "select_titles", "years_from", "indicators", "m1", "m2", "y1"}
+
+
+def confirm_edit(parent, job, dropped, models):
+    """Окно подтверждения: что перестанет обновляться и какие модели это затронет.
+    → None — отмена; True — сохранить и убрать снятые ряды из моделей; False — сохранить, в моделях оставить."""
+    w = tk.Toplevel(parent)
+    w.title("Изменить набор данных")
+    w.transient(parent.winfo_toplevel())
+    body = ttk.Frame(w, padding=14)
+    body.pack(fill="both", expand=True)
+    lines = [f"Изменить набор данных показателя «{job['name']}»?",
+             "Показатель, его расписание и выборки моделей останутся прежними. Следующая загрузка будет полной — "
+             "у добавленных значений будет вся история."]
+    if dropped:
+        names = [r["name"] or r["code"] for r in dropped[:5]]
+        lines.append(f"Перестанут обновляться рядов: {len(dropped)}, например:\n  • " + "\n  • ".join(names)
+                     + ("\n  …" if len(dropped) > 5 else ""))
+        lines.append("Их история сохранится в базе; хаб больше не будет их ждать и не будет предупреждать, что они "
+                     "«исчезли».")
+        if models:
+            lines.append("Эти ряды сейчас получают модели: " +
+                         ", ".join(f"«{m}» ({n})" for m, n in models) + ".")
+    else:
+        lines.append("Ряды, которые вы сняли, перестанут обновляться (их история сохранится). Хаб не смог заранее "
+                     "посчитать, какие именно, — он поймёт это при следующей загрузке и не будет из-за них тревожить.")
+    for t in lines:
+        W.autowrap(ttk.Label(body, text=t, justify="left"), initial=560).pack(fill="x", pady=(0, 8))
+    remove = tk.BooleanVar(value=False)
+    if models:
+        ttk.Radiobutton(body, variable=remove, value=False, text="Оставить их в моделях с прежними значениями "
+                        "(формулы не сломаются, новых значений не будет)").pack(anchor="w")
+        ttk.Radiobutton(body, variable=remove, value=True, text="Убрать их из моделей (после «Данные → Обновить "
+                        "всё» в модели их не станет)").pack(anchor="w")
+    result = {"v": None}
+    bar = ttk.Frame(w, padding=(14, 0, 14, 14))
+    bar.pack(fill="x")
+
+    def ok():
+        result["v"] = bool(remove.get())
+        w.destroy()
+    ttk.Button(bar, text="Сохранить изменения", style="Accent.TButton", command=ok).pack(side="right")
+    ttk.Button(bar, text="Отмена", command=w.destroy).pack(side="right", padx=8)
+    W.center(w, parent.winfo_toplevel())
+    try:
+        w.grab_set()
+    except tk.TclError:
+        pass
+    if getattr(parent, "_auto_confirm", None) is not None:      # тесты: ответ без окна
+        result["v"] = parent._auto_confirm
+        w.destroy()
+    else:
+        w.wait_window()
+    return result["v"]

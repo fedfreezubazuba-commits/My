@@ -445,3 +445,17 @@ def test_task_has_daily_triggers_for_schedule_times_and_self_heals(monkeypatch, 
     nxt, code = winsched.parse_status_csv(csv_text)
     assert nxt == "23.10.2026 12:15" and code == 0x80070002
     assert "не находит файл программы" in winsched.result_text(code)
+
+
+def test_dropped_series_cbr_by_ids():
+    from hub.core import impact
+
+    class Store:
+        def series_of_job(self, _id):
+            return [{"code": c, "ident": ident, "retired": None, "dims": "[]", "name": c}
+                    for c, ident in (("A", "37|2|None|%|month"), ("B", "37|3|None|%|month"),
+                                     ("C", "38|2|None|%|month"))]
+    job = {"id": "j", "source": "cbr", "params": {"indicators": [37, 38], "m1": [2, 3]}}
+    got = impact.dropped_series(Store(), job, {"indicators": [37], "m1": [2]})
+    assert [r["code"] for r in got] == ["B", "C"]
+    assert impact.dropped_series(Store(), job, {"indicators": [37, 38], "m1": []}) == []

@@ -1,4 +1,5 @@
 """Окно собирается и основные сценарии проходят (нужен дисплей: xvfb-run -a pytest)."""
+import json
 import os
 import time
 
@@ -432,6 +433,7 @@ def test_change_dataset_in_navigator(app, fakes, monkeypatch):
                                                       {t.strip()[:4] for t in labels.values()}}
     assert "Сохранить" in str(nav.add_btn.cget("text"))
     region[0].add("1558900")                                         # добавили регион
+    nav._auto_confirm = False
     nav._add_to_updates()
     new = app.cfg.job(job["id"])
     assert new["params"]["id"] == 31074 and "0" not in new["params"].get("select", {})   # теперь «все регионы»
@@ -625,3 +627,50 @@ def test_overview_shows_failed_scheduler_task(app, monkeypatch):
     texts = [w.cget("text") for w in _all_widgets(app.overview.body.inner) if w.winfo_class() in ("TLabel", "TButton")]
     assert any("не находит файл программы" in t for t in texts) and "Пересоздать задачу" in texts
     assert app.overview.big.cget("text").startswith("Требует внимания")
+
+
+def test_change_dataset_warns_about_dropped_series_and_models(app, fakes, monkeypatch):
+    """Сняли регион в наборе данных: до сохранения — сколько рядов перестанет обновляться и какие модели их
+    получают; сохранили — ряды больше не ждём (никаких «исчезли ряды»), по желанию — убраны из моделей."""
+    from hub.core import impact
+    from hub.gui import nav_edit
+    job = app.cfg.add_job("fedstat", "Зарплата", {"id": 31074, "select": {"0": ["1558883", "1558900"]}})
+    r = app.runner()
+    r.run(force=True)
+    r.close()
+    series = app.store.series_of_job(job["id"])
+    regions = {json.loads(x["dims"])[1][1] for x in series}
+    assert len(regions) == 2
+    app.cfg.add_model("Модель", str(app.paths.root / "m.xlsx"))
+    app.cfg.subscribe("Модель", job_id=job["id"])
+    monkeypatch.setattr(app, "update_jobs", lambda ids=None, **k: None)
+    app.jobs.refresh()
+    app.jobs.tree.selection_set(job["id"])
+    app.jobs.change_data()
+    nav = app.find.fedstat
+    assert pump(app, 5, until=lambda: "0" in nav.dim_lists and not nav.busy)
+    pump(app, 0.3)
+    nav.dim_lists["0"][0].discard("1558900")                         # сняли второй регион
+    seen = {}
+    real = nav_edit.confirm_edit
+
+    def spy(parent, job_, dropped, models):
+        seen.update(dropped=len(dropped), models=models)
+        return True                                                  # «Убрать их из моделей»
+    monkeypatch.setattr(nav_edit, "confirm_edit", spy)
+    nav._add_to_updates()
+    dropped_n = len(series) // 2
+    assert seen == {"dropped": dropped_n, "models": [("Модель", dropped_n)]}
+    gone = [x["code"] for x in app.store.series_of_job(job["id"]) if x["retired"]]
+    assert len(gone) == dropped_n and set(gone) <= set(app.cfg.model("Модель")["exclude"])
+    assert app.store.meta_get(f"full:{job['id']}") == "" and app.store.meta_get(f"edited:{job['id']}")
+    # следующая (полная) загрузка: снятые ряды не приходят — это не тревога
+    r = app.runner()
+    out = r.run(job_ids=[job["id"]]).outcomes[0]
+    r.close()
+    assert out.status != "quarantine", out.problems
+    assert not app.store.meta_get(f"edited:{job['id']}")
+    # окно подтверждения само по себе собирается и отвечает
+    nav._auto_confirm = False
+    assert real(nav, job, app.store.series_of_job(job["id"])[:2], [("Модель", 2)]) is False
+    assert impact.dropped_series(app.store, app.cfg.job(job["id"]), app.cfg.job(job["id"])["params"], nav.info) == []

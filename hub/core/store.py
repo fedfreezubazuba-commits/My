@@ -255,6 +255,13 @@ class Store:
         n_new = r["n_new"] or 0
         return n_new, (r["n"] or 0) - n_new
 
+    def retire(self, codes) -> int:
+        """Эти ряды больше не ждём (их сняли в наборе данных или источник перестал их давать)."""
+        with self.tx() as c:
+            c.executemany("UPDATE series SET retired=? WHERE code=? AND retired IS NULL",
+                          [(now_iso(), code) for code in codes])
+        return len(codes)
+
     def retire_lost(self, qid) -> int:
         """Принято «исчезли ряды»: ряды показателя, которых не было в ответе этой загрузки, больше не ждём —
         проверка не будет спрашивать о них снова. Их прежние значения остаются. → сколько рядов."""

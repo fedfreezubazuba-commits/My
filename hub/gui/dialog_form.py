@@ -148,8 +148,9 @@ class FormDialog(tk.Toplevel):
         if self.period and self._year() is None:
             messagebox.showwarning("Год", "Укажите год числом, например 2020.", parent=self)
             return
+        from ..core import impact
         self.app.cfg.update_job(self.job["id"], params=self.params())
-        self.app.store.meta_set(f"full:{self.job['id']}", "")
+        impact.mark_edited(self.app.store, self.job["id"], dt.datetime.now().isoformat(timespec="seconds"))
         self.destroy()
         self.app.refresh_all()
         if messagebox.askyesno("Изменить набор данных", "Сохранено. Загрузить данные сейчас?", parent=self.app.root):

@@ -387,6 +387,12 @@ class Runner:
         qid = self.store.new_quarantine(job["id"], run_id, problems) if problems else None
         if qid and getattr(res, "lost_codes", None):    # какие ряды пропали — чтобы при «Принять» больше их не ждать
             self.store.meta_set(f"lost:{qid}", json.dumps(res.lost_codes))
+        if getattr(res, "retire_codes", None):            # после изменения набора данных — сняты пользователем
+            self.store.retire(res.retire_codes)
+            out.warnings.append(f"После изменения набора данных не приходят {len(res.retire_codes)} рядов — "
+                                "хаб их больше не ждёт (история сохранена)")
+        if not getattr(res, "partial", False) and not qid:
+            self.store.meta_set(f"edited:{job['id']}", "")    # полная загрузка после изменения прошла
         by_key, upto = {}, None
         for o in res.obs:
             if o.value is not None:

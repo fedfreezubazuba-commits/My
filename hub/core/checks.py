@@ -61,7 +61,10 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
             result.lost_codes = [r["code"] for r in lost]
         except AttributeError:
             pass
-        if lost and not job.get("params", {}).get("allow_missing"):
+        if lost and store.meta_get(f"edited:{job['id']}"):
+            # набор данных недавно меняли — пропавшие ряды сняты пользователем: не тревога, просто больше не ждём
+            result.retire_codes = [r["code"] for r in lost]
+        elif lost and not job.get("params", {}).get("allow_missing"):
             names = ", ".join(r["name"] or r["code"] for r in lost[:3])
             problems.append(f"Исчезли ряды ({len(lost)}): {names}" + ("…" if len(lost) > 3 else ""))
 
