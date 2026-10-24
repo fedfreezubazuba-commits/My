@@ -12,6 +12,7 @@
 """
 import copy
 import datetime as dt
+import json
 import os
 import queue
 import threading
@@ -384,6 +385,8 @@ class Runner:
             return out
         fetched_at = now.isoformat(timespec="seconds")
         qid = self.store.new_quarantine(job["id"], run_id, problems) if problems else None
+        if qid and getattr(res, "lost_codes", None):    # какие ряды пропали — чтобы при «Принять» больше их не ждать
+            self.store.meta_set(f"lost:{qid}", json.dumps(res.lost_codes))
         by_key, upto = {}, None
         for o in res.obs:
             if o.value is not None:

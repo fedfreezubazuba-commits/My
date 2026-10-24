@@ -222,3 +222,51 @@ def test_check_in_background_pauses_site(workdir):
         assert seen == [False, True]
     finally:
         r.close()
+
+
+def test_accepted_missing_series_are_not_asked_again(workdir):
+    """«Исчезли ряды»: пользователь принял — хаб больше не ждёт эти ряды и не спрашивает каждый день снова
+    (раньше спрашивал: ряды оставались в списке ожидаемых). Ряд вернулся — снова ждём."""
+    from hub.core.paths import Paths
+    from hub.runner import Runner
+    partners = ["Russian Federation", "Qatar"]
+
+    def site(start_url, reqs, pause_s=0, progress=None, interactive=False):
+        out = []
+        for _r in reqs:
+            rows = "".join(f"<tr><td>2026{m:02d}</td><td>{p}</td><td>{1000 * m + i}</td></tr>"
+                           for i, p in enumerate(partners) for m in range(1, 10))
+            out.append("<table><thead><tr><th>Date of data</th><th>Trading partner</th><th>US dollar</th></tr></thead>"
+                       f"<tbody>{rows}</tbody></table>")
+        return out
+    r = Runner(Paths(workdir), ctx_clients={"web_form": site}, now=NOW)
+    try:
+        params = {"url": "http://stats.customs.gov.cn/indexEn", "request": REQ, "from_year": 2026,
+                  "period": F.detect_period(F.fields(REQ), NOW.date()), "by": "year", "periodicity": "month"}
+        job = r.cfg.add_job("web_form", "СПГ", params)
+        assert r.run(job_ids=[job["id"]]).outcomes[0].status == "updated"
+        full = lambda: r.store.meta_set(f"full:{job['id']}", "")  # noqa: E731 — полная загрузка (раз в 30 дней)
+        partners[:] = ["Russian Federation"]                      # Катар пропал
+        full()
+        out = r.run(job_ids=[job["id"]]).outcomes[0]
+        assert out.status == "quarantine" and out.problems[0].startswith("Исчезли ряды (1)")
+        qid = r.store.pending_quarantine(job["id"])[0]["id"]
+        # отложено прежней версией (без списка пропавших) — пропавшие находятся по «давно не приходил»
+        r.store.meta_set(f"lost:{qid}", "")
+        with r.store.tx() as c:
+            c.execute("UPDATE series SET last_seen='2000-01-01T00:00:00' WHERE job_id=? AND name LIKE '%Qatar%'",
+                      (job["id"],))
+        assert r.store.retire_lost(qid) == 1
+        r.store.accept_quarantine(qid)
+        full()
+        out = r.run(job_ids=[job["id"]]).outcomes[0]               # на следующий день — не спрашивает снова
+        assert out.status != "quarantine", out.problems
+        partners[:] = ["Russian Federation", "Qatar"]              # Катар вернулся — снова ждём его
+        full()
+        r.run(job_ids=[job["id"]])
+        assert not any(s["retired"] for s in r.store.series_of_job(job["id"]))
+        partners[:] = ["Russian Federation"]
+        full()
+        assert r.run(job_ids=[job["id"]]).outcomes[0].status == "quarantine"
+    finally:
+        r.close()

@@ -375,6 +375,7 @@ def review_quarantine(app, qid, job):
     for one in qids:
         a_, b_ = app.store.quarantine_counts(one)
         n_new, n_changed = n_new + a_, n_changed + b_
+    lost_only = all(r.startswith("Исчезли ряды") for r in reasons) and reasons
     ttk.Label(body, text="Что изменится, если принять", style="Title.TLabel").pack(anchor="w", pady=(10, 0))
     if n_new or n_changed:
         W.autowrap(ttk.Label(body, justify="left", text=(
@@ -391,6 +392,12 @@ def review_quarantine(app, qid, job):
                 cur = app.store.current(r["code"]).get(r["period_end"])
                 tree.insert("", "end", values=(r["name"], r["period_label"], fmt(cur[0]) if cur else "—", fmt(r["value"])))
                 shown += 1
+    elif lost_only:
+        W.autowrap(ttk.Label(body, justify="left", text=(
+            "Новых чисел нет. Принять — значит согласиться, что этих рядов у источника больше нет: хаб перестанет "
+            "их ждать и больше не будет спрашивать о них. Их прежние значения останутся в базе и в моделях. Если ряды "
+            "снова появятся у источника — хаб подхватит их сам. Если ряды пропасть не должны (например, вы их "
+            "по-прежнему видите на сайте) — «Отклонить» и «Отправить Claude» на этом показателе."))).pack(fill="x")
     else:
         W.autowrap(ttk.Label(body, justify="left", text=(
             "Числа не меняются — меняются только подписи (единицы измерения или названия). "
@@ -408,27 +415,34 @@ def review_quarantine(app, qid, job):
             from ..core.store import Store
             st = Store(app.paths.db)
             try:
-                n = 0
+                n = gone = 0
                 for one in qids:
-                    n += st.accept_quarantine(one) if accept else 0
-                    if not accept:
+                    if accept:
+                        gone = max(gone, st.retire_lost(one))     # исчезнувшие ряды больше не ждём
+                        n += st.accept_quarantine(one)
+                    else:
                         st.reject_quarantine(one)
                 st.set_state(job["id"], status="updated" if accept else "unchanged", category=None,
                              message="Отложенные данные приняты" if accept else "Отложенные данные отклонены")
                 st.refresh_summary(job["id"])
                 from ..excel import packet
                 packet.rebuild(app.cfg, st, app.paths)
-                return n
+                return n, gone
             finally:
                 st.close()
 
-        def done(n):
+        def done(res):
+            n, gone = res
             if checks != (job.get("checks") or {}):
                 app.cfg.update_job(job["id"], checks=checks)
             w.destroy()
             app.refresh_all()
-            if accept:
+            if accept and not n and gone:
+                text = (f"Готово: хаб больше не ждёт исчезнувшие ряды ({gone:,}) и не будет спрашивать о них снова. "
+                        "Их прежние значения остались в моделях. Статус показателя — «Обновлено».").replace(",", " ")
+            elif accept:
                 text = (f"Готово: данные приняты ({n:,} значений).".replace(",", " ") +
+                        (f" Исчезнувшие ряды ({gone}) хаб больше не ждёт." if gone else "") +
                         " Они уже в файлах для моделей — в модели нажмите «Данные → Обновить всё». "
                         "Статус показателя — «Обновлено».")
             else:

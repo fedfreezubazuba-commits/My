@@ -121,6 +121,8 @@ class Store:
         have = {r[1] for r in self.conn.execute("PRAGMA table_info(series)")}
         if "dims" not in have:
             self.conn.execute("ALTER TABLE series ADD COLUMN dims TEXT")
+        if "retired" not in have:          # источник перестал давать ряд, пользователь согласился — не ждём его
+            self.conn.execute("ALTER TABLE series ADD COLUMN retired TEXT")
 
     def close(self):
         self.conn.close()
@@ -187,9 +189,9 @@ class Store:
     def update_series_meta(self, code, info):
         dims = json.dumps(info.dims, ensure_ascii=False) if getattr(info, "dims", None) else None
         with self.tx() as c:
-            c.execute("UPDATE series SET name=?, unit=?, periodicity=?, url=?, date_rule=?, last_seen=?, dims=?"
-                      " WHERE code=?", (info.name, info.unit, info.periodicity, info.url, info.date_rule,
-                                        now_iso(), dims, code))
+            c.execute("UPDATE series SET name=?, unit=?, periodicity=?, url=?, date_rule=?, last_seen=?, dims=?,"
+                      " retired=NULL WHERE code=?", (info.name, info.unit, info.periodicity, info.url, info.date_rule,
+                                                     now_iso(), dims, code))      # ряд снова пришёл — снова ждём
 
     # --- наблюдения ----------------------------------------------------------
     def current(self, code):
@@ -252,6 +254,26 @@ class Store:
                     "FROM observations o WHERE o.qid=? AND o.state='quarantine'", (qid,))
         n_new = r["n_new"] or 0
         return n_new, (r["n"] or 0) - n_new
+
+    def retire_lost(self, qid) -> int:
+        """Принято «исчезли ряды»: ряды показателя, которых не было в ответе этой загрузки, больше не ждём —
+        проверка не будет спрашивать о них снова. Их прежние значения остаются. → сколько рядов."""
+        q = self.q1("SELECT q.job_id, q.reasons, r.started FROM quarantine q LEFT JOIN runs r ON r.id=q.run_id "
+                    "WHERE q.id=?", (qid,))
+        if not q or "Исчезли ряды" not in (q["reasons"] or ""):
+            return 0
+        saved = self.meta_get(f"lost:{qid}")
+        with self.tx() as c:
+            if saved:                       # список пропавших рядов записан при загрузке
+                codes = json.loads(saved)
+                c.executemany("UPDATE series SET retired=? WHERE code=? AND job_id=? AND retired IS NULL",
+                              [(now_iso(), code, q["job_id"]) for code in codes])
+                return len(codes)
+            # отложено прежней версией: пропавшие — ряды, которых не было в ответе (не обновлялись с загрузки)
+            since = q["started"] or self.q1("SELECT created FROM quarantine WHERE id=?", (qid,))["created"]
+            cur = c.execute("UPDATE series SET retired=? WHERE job_id=? AND retired IS NULL "
+                            "AND (last_seen IS NULL OR last_seen < ?)", (now_iso(), q["job_id"], since))
+            return cur.rowcount
 
     def reject_quarantine(self, qid):
         with self.tx() as c:

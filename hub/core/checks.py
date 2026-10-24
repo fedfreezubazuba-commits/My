@@ -55,8 +55,12 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
     partial = getattr(result, "partial", False)    # дозагрузка свежих лет: старые ряды могли не попасть
     if known and checks.get("missing_series", True) and not partial:
         got = set(codes.values())
-        active_before = [r for r in known if store.last_values(r["code"], 1)]
+        active_before = [r for r in known if not r["retired"] and store.last_values(r["code"], 1)]
         lost = [r for r in active_before if r["code"] not in got]
+        try:
+            result.lost_codes = [r["code"] for r in lost]
+        except AttributeError:
+            pass
         if lost and not job.get("params", {}).get("allow_missing"):
             names = ", ".join(r["name"] or r["code"] for r in lost[:3])
             problems.append(f"Исчезли ряды ({len(lost)}): {names}" + ("…" if len(lost) > 3 else ""))
