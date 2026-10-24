@@ -36,7 +36,8 @@ SERIES_COLS = ["Код", "Название", "Единицы", "Периодич
 N_CUTS = 4
 SOURCE_TITLES = {"cbr": "Банк России", "fedstat": "ЕМИСС", "web_value": "Сайт (значение)",
                  "web_table": "Сайт (таблица)", "file_link": "Файл по ссылке", "folder_inbox": "Папка «Входящие»",
-                 "web_form": "Форма на сайте", "comtrade": "ООН (UN Comtrade)"}
+                 "web_form": "Форма на сайте", "comtrade": "ООН (UN Comtrade)",
+                 "fred": "FRED (ФРС Сент-Луиса)"}
 
 
 def safe_name(name) -> str:

@@ -311,6 +311,14 @@ legacy/            исходные навигаторы пользовател�
   повтор XHR. `periodicity: auto` — по шагу дат. Тест-сайт — `tests/salmon_site.py` (ключ из /api/session);
   формат живого ответа salmonprice не проверен (из облака недоступен).
 
+- **0.8.4 — FRED** (`sources/fred.py`, вкладка `gui/tab_fred.py`): ряд по коду (`ids`), данные —
+  `graph/fredgraph.csv?id=<код>` (вся история, без ключа; ссылка «Download» сайта содержит даты — не нужна),
+  заголовок `observation_date` или `DATE`, «.» — пропуск. Метаданные (`meta`: title/units/frequency/seasonal) —
+  `fetch_meta` со страницы `series/<код>` (запасной — `data/<код>.txt`) при добавлении, хранятся в params.
+  Дата FRED — начало периода → конец периода; у дневных/недельных — как есть. Код `FRED_<код>`, ключ `fred|<код>`.
+  Ссылка FRED во вкладках «Сайт»/«Файл» → `FindTab.open_fred`. Образцы `samples/web/fred_PFISHUSDM.*` —
+  синтетические (fred.stlouisfed.org из облака недоступен).
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

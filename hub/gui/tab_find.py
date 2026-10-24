@@ -106,7 +106,15 @@ class FindTab(ttk.Frame):
         from .tab_comtrade import ComtradeTab
         self.comtrade = ComtradeTab(self.nb, app)
         self.nb.add(self.comtrade, text="ООН (Comtrade)")
+        from .tab_fred import FredTab
+        self.fred = FredTab(self.nb, app)
+        self.nb.add(self.fred, text="FRED (США)")
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self._on_source())
+
+    def open_fred(self, link):
+        """Ссылку на FRED вставили во вкладку «Сайт» или «Файл»: у FRED своя вкладка — открыть её."""
+        self.nb.select(self.fred)
+        self.fred.show_link(link)
 
     def refresh(self):
         self._on_source()

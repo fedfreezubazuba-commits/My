@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -719,3 +720,26 @@ def test_file_tab_dataset_dialog(app, monkeypatch):
     src, params, name = opened[0]
     assert src == "file_link" and params["mode"] == "dataset" and params["filters"] == {"region": ["Москва"]}
     assert params["url"] == url and name == "Sberindex: ver izmenenie trat po kategoriyam"
+
+
+def test_fred_link_in_site_tab_opens_fred_tab(app, monkeypatch):
+    from hub.gui.dialog_add import AddDialog
+    from hub.sources import _web as Wb, fred as FR
+    page = (Path(__file__).parent.parent / "samples" / "web")
+
+    def fake_get(url, ctx=None, timeout=60):
+        if url == FR.csv_url("PFISHUSDM"):
+            return 200, "text/csv", (page / "fred_PFISHUSDM.csv").read_bytes(), url
+        return 200, "text/html", (page / "fred_PFISHUSDM.html").read_bytes(), url
+    monkeypatch.setattr(Wb, "http_get", fake_get)
+    app.find.site.url.set("https://fred.stlouisfed.org/graph/fredgraph.csv?id=PFISHUSDM&cosd=1992-01-01")
+    app.find.site.analyze()
+    tab = app.find.fred
+    assert app.find.nb.select() == str(tab)
+    assert pump(app, 10, until=lambda: "1 ряд" in tab.info.cget("text"))
+    assert len(tab.tree.get_children()) == 5
+    opened = []
+    monkeypatch.setattr(AddDialog, "__init__", lambda self, app_, src, params, name, **kw: opened.append((src, params, name)))
+    tab.add()
+    assert opened[0][0] == "fred" and opened[0][1]["ids"] == ["PFISHUSDM"]
+    assert opened[0][2] == "FRED: Global price of Fish meal (PFISHUSDM)"

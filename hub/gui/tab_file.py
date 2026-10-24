@@ -75,6 +75,10 @@ class FileTab(ttk.Frame):
         url = W.clean_url(self.url.get())
         if not url:
             return
+        from ..sources import fred
+        if fred.is_fred(url) and fred.ids_from_text(url):
+            self.app.find.open_fred(url)          # у FRED постоянная ссылка на CSV по коду ряда — своя вкладка
+            return
         self.url.set(url)
 
         from ..sources import Context
