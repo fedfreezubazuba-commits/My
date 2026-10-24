@@ -265,6 +265,12 @@ def best_candidate(cands):
 def month_of(text) -> dt.date | None:
     """Дата строки: «2024-01», «2024/01», «202401», «2024年1月», «Jan 2024», «31.01.2024»."""
     s = str(text or "").strip()
+    m = re.fullmatch(r"(\d{4})-?W(\d{1,2})(?:-?\d)?", s, re.I)        # ISO-неделя «2024-W05» → её воскресенье
+    if m and 1 <= int(m.group(2)) <= 53:
+        try:
+            return dt.date.fromisocalendar(int(m.group(1)), int(m.group(2)), 7)
+        except ValueError:
+            return None
     m = MONTH_ROW.match(s)
     if m and 1990 <= int(m.group(1)) <= 2100 and 1 <= int(m.group(2)) <= 12:
         return P.month_end(int(m.group(1)), int(m.group(2)))

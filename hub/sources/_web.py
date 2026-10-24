@@ -87,6 +87,66 @@ def _system_trust_adapter():
     return SystemTrust()
 
 
+def ca_issuers(der: bytes) -> list[str]:
+    """Адреса, где выдавший центр публикует свой (промежуточный) сертификат — поле AIA «CA Issuers»."""
+    import os
+    import ssl
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".pem")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(ssl.DER_cert_to_PEM_cert(der))
+        info = ssl._ssl._test_decode_cert(path)       # noqa: SLF001 — разбор сертификата без сторонних библиотек
+    finally:
+        os.remove(path)
+    return [u for u in info.get("caIssuers", ()) if u.startswith("http")]
+
+
+def aia_bundle(url, timeout=30):
+    """Сайт не отдаёт промежуточный сертификат (так у sberindex.ru): Chrome сам скачивает его по адресу из
+    сертификата сайта, Python — нет и пишет «нет связи». Делаем как Chrome: берём сертификат сайта,
+    скачиваем промежуточный по адресу из него и проверяем цепочку обычным образом (проверка не отключается).
+    → путь к файлу с доверенными сертификатами (certifi + промежуточный) или None."""
+    import os
+    import socket
+    import ssl
+    import tempfile
+    from urllib.parse import urlsplit
+    import certifi
+    import requests
+    u = urlsplit(url)
+    host, port = u.hostname, u.port or 443
+    insecure = ssl.create_default_context()
+    insecure.check_hostname = False
+    insecure.verify_mode = ssl.CERT_NONE          # только чтобы прочитать сертификат сайта, данные так не берём
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        with insecure.wrap_socket(sock, server_hostname=host) as tls:
+            der = tls.getpeercert(binary_form=True)
+    pems = []
+    for _hop in range(3):                          # промежуточный может быть выдан ещё одним промежуточным
+        links = ca_issuers(der)
+        if not links:
+            break
+        r = requests.get(links[0], timeout=timeout)
+        if r.status_code != 200 or not r.content:
+            break
+        data = r.content
+        if data.lstrip().startswith(b"-----BEGIN"):
+            pem = data.decode("ascii", "ignore")
+            der = ssl.PEM_cert_to_DER_cert(pem.split("-----END CERTIFICATE-----")[0] + "-----END CERTIFICATE-----\n")
+        else:
+            der, pem = data, ssl.DER_cert_to_PEM_cert(data)
+        pems.append(pem)
+    if not pems:
+        return None
+    path = os.path.join(tempfile.gettempdir(), f"hub_aia_{host}.pem")
+    with open(certifi.where(), encoding="ascii", errors="ignore") as fh:
+        base = fh.read()
+    with open(path, "w", encoding="ascii") as fh:
+        fh.write(base + "\n" + "\n".join(pems))
+    return path
+
+
 def http_get(url, ctx=None, timeout=60):
     """(status, content_type, bytes, final_url) через requests."""
     import requests
@@ -95,9 +155,20 @@ def http_get(url, ctx=None, timeout=60):
                       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
     try:
         r = s.get(url, timeout=timeout, allow_redirects=True)
-    except requests.exceptions.SSLError:
-        s.mount("https://", _system_trust_adapter())
-        r = s.get(url, timeout=timeout, allow_redirects=True)
+    except requests.exceptions.SSLError as first:
+        try:                                       # хранилище Windows (российские центры, как в Chrome)
+            s.mount("https://", _system_trust_adapter())
+            r = s.get(url, timeout=timeout, allow_redirects=True)
+        except requests.exceptions.SSLError:
+            try:                                   # сайт не отдаёт промежуточный сертификат — докачиваем его
+                bundle = aia_bundle(url)
+            except Exception:  # noqa: BLE001
+                bundle = None
+            if not bundle:
+                raise first from None
+            s2 = requests.Session()
+            s2.headers.update(s.headers)
+            r = s2.get(url, timeout=timeout, allow_redirects=True, verify=bundle)
     return r.status_code, r.headers.get("Content-Type", ""), r.content, r.url
 
 

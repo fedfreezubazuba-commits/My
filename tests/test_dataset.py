@@ -102,3 +102,78 @@ def test_browser_download_attachment_and_inline(tmp_path):
             assert data.startswith(b"date,value"), path
     finally:
         srv.shutdown()
+
+
+@pytest.mark.skipif(__import__("shutil").which("openssl") is None, reason="нужен openssl")
+def test_site_without_intermediate_certificate(tmp_path, monkeypatch):
+    """Сайт отдаёт только свой сертификат, без промежуточного (как sberindex.ru): Chrome докачивает
+    промежуточный по адресу из сертификата — хаб теперь тоже. Проверка подлинности при этом не отключается."""
+    import http.server
+    import ssl
+    import subprocess
+    import threading
+    import certifi
+
+    def sh(*args):
+        subprocess.run(args, cwd=tmp_path, check=True, capture_output=True)
+    plain = http.server.ThreadingHTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+    plain.RequestHandlerClass = type("H", (http.server.SimpleHTTPRequestHandler,), {
+        "log_message": lambda *a: None,
+        "__init__": lambda self, *a, **k: http.server.SimpleHTTPRequestHandler.__init__(self, *a, directory=str(tmp_path),
+                                                                                         **k)})
+    aia = f"http://127.0.0.1:{plain.server_address[1]}/inter.cer"
+    (tmp_path / "ca.ext").write_text("basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n")
+    (tmp_path / "leaf.ext").write_text(f"subjectAltName=IP:127.0.0.1\nauthorityInfoAccess=caIssuers;URI:{aia}\n")
+    sh("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "root.key", "-out", "root.pem",
+       "-days", "2", "-subj", "/CN=Test Root")
+    sh("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", "inter.key", "-out", "inter.csr", "-subj", "/CN=Test Inter")
+    sh("openssl", "x509", "-req", "-in", "inter.csr", "-CA", "root.pem", "-CAkey", "root.key", "-CAcreateserial",
+       "-out", "inter.pem", "-days", "2", "-extfile", "ca.ext")
+    sh("openssl", "x509", "-in", "inter.pem", "-outform", "DER", "-out", "inter.cer")
+    sh("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-keyout", "leaf.key", "-out", "leaf.csr", "-subj", "/CN=127.0.0.1")
+    sh("openssl", "x509", "-req", "-in", "leaf.csr", "-CA", "inter.pem", "-CAkey", "inter.key", "-CAcreateserial",
+       "-out", "leaf.pem", "-days", "2", "-extfile", "leaf.ext")
+    (tmp_path / "data.csv").write_text("date;category;value\n2026-10-11;Продукты;1.5\n", encoding="utf-8")
+
+    class Quiet(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **k):
+            super().__init__(*a, directory=str(tmp_path), **k)
+
+        def log_message(self, *a):
+            pass
+    secure = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Quiet)
+    sctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    sctx.load_cert_chain(tmp_path / "leaf.pem", tmp_path / "leaf.key")       # только свой, без промежуточного
+    secure.socket = sctx.wrap_socket(secure.socket, server_side=True)
+    for srv in (plain, secure):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    bundle = tmp_path / "trusted.pem"                       # «общепризнанные» корни: certifi + наш тестовый корень
+    bundle.write_text(open(certifi.where()).read() + (tmp_path / "root.pem").read_text())
+    monkeypatch.setattr(certifi, "where", lambda: str(bundle))
+    monkeypatch.setattr("requests.utils.DEFAULT_CA_BUNDLE_PATH", str(bundle), raising=False)
+    monkeypatch.setattr("requests.adapters.DEFAULT_CA_BUNDLE_PATH", str(bundle), raising=False)
+    monkeypatch.setattr(W, "_system_trust_adapter", lambda: __import__("requests").adapters.HTTPAdapter())
+    try:
+        url = f"https://127.0.0.1:{secure.server_address[1]}/data.csv"
+        status, _ct, data, _f = W.http_get(url)
+        assert status == 200 and data.startswith(b"date;category;value")
+    finally:
+        plain.shutdown()
+        secure.shutdown()
+
+
+def test_real_sberindex_format():
+    """Формат настоящей выгрузки «изменение трат по категориям»: UTF-8 с BOM, «;», date;category;value,
+    недели — датой воскресенья, пустые значения пропускаются."""
+    data = (SAMPLE.parent / "sberindex_izmenenie_trat.csv").read_bytes()
+    assert data[:3] == b"\xef\xbb\xbf"
+    t = F.read_tables(data, F.detect_format(data, URL))[0]
+    info = D.analyze(t)
+    assert info["date"] == "date" and list(info["dims"]) == ["category"] and info["periodicity"] == "week"
+    res = D.to_result(t, D.params_for(info), "SBERINDEX", URL)
+    assert len(res.series) == 6 and {o.period_end.weekday() for o in res.obs} == {6}
+    assert res.series[0].name == "Продукты" and res.series[0].code.startswith("SBERINDEX_")
+    rows = len([ln for ln in data.decode("utf-8-sig").splitlines()[1:] if not ln.endswith(";")])
+    assert len(res.obs) == rows                                       # пустые значения — не точки ряда
+    from hub.sources import _forms as Fm
+    assert Fm.month_of("2024-W05") == dt.date(2024, 2, 4)

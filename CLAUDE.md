@@ -286,6 +286,13 @@ legacy/            исходные навигаторы пользовател�
   `shortcut_mark` с путём); «Настройки» показывают папку программы и версию. Образец — синтетический
   `samples/web/sberindex_dataset.csv` (сайт из облака недоступен).
 
+- **0.8.1 — СберИндекс**: открытого API нет (`/api/dataset/v1/meta/…` закрыт защитой TSPD, 403); рабочие —
+  CSV «Скачать» `/api/dataset/deprecated/csv/ru/<набор>.csv`: UTF-8 с BOM, «;», `date;category;value`, недели —
+  датой воскресенья, пустые значения. sberindex.ru не отдаёт промежуточный сертификат → `_web.aia_bundle`
+  (сертификат сайта → «CA Issuers» через `ssl._ssl._test_decode_cert` → промежуточный → certifi + он, verify
+  не отключается), третьим шагом после certifi и хранилища Windows. `_forms.month_of` понимает «2024-W05».
+  Образец формата — `samples/web/sberindex_izmenenie_trat.csv` (синтетический).
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.
