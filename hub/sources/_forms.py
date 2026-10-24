@@ -151,6 +151,44 @@ def roles(flds, period) -> dict:
     return out
 
 
+def select_options(*texts) -> dict:
+    """Выпадающие списки форм на страницах: {имя поля: {"label": подпись поля, "options": [(значение, название)]}}
+    — чтобы перебирать значения поля (валюты, товары, страны) без знания кодов."""
+    from lxml import html as LH
+    out = {}
+    for text in texts:
+        if not text or "<select" not in text.lower():
+            continue
+        try:
+            doc = LH.fromstring(text)
+        except Exception:  # noqa: BLE001
+            continue
+        labels = {lb.get("for"): " ".join(lb.text_content().split()) for lb in doc.iter("label") if lb.get("for")}
+        for sel in doc.iter("select"):
+            name = sel.get("name")
+            if not name or name in out:
+                continue
+            opts = []
+            for o in sel.iter("option"):
+                title = " ".join(o.text_content().split())
+                value = (o.get("value") if o.get("value") is not None else title).strip()
+                if value and [value, title or value] not in opts:
+                    opts.append([value, title or value])       # списки, а не кортежи — так сохраняются в jobs.yaml
+            if len(opts) >= 2:
+                out[name] = {"label": labels.get(sel.get("id")) or "", "options": opts}
+    return out
+
+
+def vary_combos(vary) -> list[list[tuple[str, str, str]]]:
+    """Все сочетания перебираемых значений: [[(поле, значение, название), …], …]; без перебора — [[]]."""
+    combos = [[]]
+    for v in vary or []:
+        vals = [(v["field"], str(x[0]), str(x[1] if len(x) > 1 else x[0])) for x in v.get("values") or []]
+        if vals:
+            combos = [c + [x] for c in combos for x in vals]
+    return combos
+
+
 def chunks(period, from_year, today: dt.date, by="year", since: dt.date | None = None) -> list[tuple[dict, dt.date, dt.date]]:
     """[(значения полей периода, начало, конец)] — по году (или по месяцу) от from_year по прошлый месяц.
     since — дозагрузка: только части, которые заканчиваются не раньше этой даты."""

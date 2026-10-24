@@ -776,3 +776,41 @@ def test_full_reload_days_in_add_dialog_job_window_and_settings(app, monkeypatch
     tab.vars["full_reload_days"].set("14")
     tab.save()
     assert app.cfg.full_reload_days(app.cfg.job(job["id"])) == 14
+
+
+def test_form_dialog_vary_values_from_page_list(app):
+    """Курсы ЦБ: в окне «Данные страницы» у поля валюты — «☰ Несколько…» со списком валют со страницы; отмеченные
+    валюты попадают в params.vary (каждая — свой ряд, за все даты). В «Изменить набор данных» список тот же."""
+    import datetime as dt
+    import cbr_rates_site as RS
+    from hub.gui.dialog_add import AddDialog
+    from hub.gui.dialog_form import FormDialog, VaryDialog
+    from hub.sources import _forms as F
+    page = RS.page(RS.URL, dt.date(2026, 10, 24))
+    cand = dict(RS.REQ, resource_type="document", text=page)
+    _c, table = F.best_candidate([cand])
+    d = FormDialog(app, RS.URL, cand, table, pages=[page])
+    pump(app, 0.3)
+    field = "UniDbQuery.VAL_NM_RQ"
+    assert field in d.choices and field in d.vars and "UniDbQuery.From" not in d.vars
+    d.open_vary(field)
+    pump(app, 0.3)
+    v = [w for w in d.winfo_children() if isinstance(w, VaryDialog)][0]
+    assert v.label.get() == "Валюта" and v.values() == [["R01235", "Доллар США"]]   # отмечена валюта из формы
+    v.entry[0].add("R01375")
+    v.done()
+    assert "перебирать 2" in d.vary_hints[field][0].cget("text")
+    opened = []
+    orig = AddDialog.__init__
+    AddDialog.__init__ = lambda self, app_, src, params, name, **kw: opened.append((src, params, name))
+    try:
+        d.next()
+    finally:
+        AddDialog.__init__ = orig
+    p = opened[0][1]
+    assert p["vary"] == [{"field": field, "label": "Валюта", "values": [["R01235", "Доллар США"], ["R01375", "Юань"]]}]
+    assert p["vary_choices"][field]["options"][1] == ["R01239", "Евро"] and "Юань" in opened[0][2]
+    job = app.cfg.add_job("web_form", "Курсы", p)
+    e = FormDialog(app, p["url"], p["request"], None, job=app.cfg.job(job["id"]))
+    pump(app, 0.2)
+    assert field in e.choices and len(e.vary[field]["values"]) == 2

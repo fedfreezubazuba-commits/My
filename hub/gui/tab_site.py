@@ -293,7 +293,7 @@ class SiteTab(ttk.Frame):
             return
         self.info.configure(text=f"Записано, откуда страница берёт данные: таблица из {len(table.rows)} строк.",
                             style="green.TLabel")
-        FormDialog(self.app, url, cand, table)
+        FormDialog(self.app, url, cand, table, pages=[c.get("text") for c in cands[-30:]])
 
     def login(self):
         url = W.clean_url(self.url.get())

@@ -44,17 +44,27 @@ def prefix_for(url) -> str:
 
 
 def requests_for(params, today: dt.date, since: dt.date | None = None):
-    """[(запрос, начало, конец)] — что спросить у сайта."""
+    """[(запрос, начало, конец, перебор)] — что спросить у сайта: каждое сочетание перебираемых значений полей
+    (params.vary — например, коды валют) × каждый период. перебор — [(поле, значение, название)]."""
     req = params["request"]
     flds = F.fields(req)
     fixed = {**F.page_size_values(flds), **(params.get("values") or {})}
     period = params.get("period")
-    if not period:
-        return [(F.with_fields(req, fixed), None, None)]
     out = []
-    for vals, a, b in F.chunks(period, params.get("from_year") or today.year, today, params.get("by", "year"), since):
-        out.append((F.with_fields(req, {**fixed, **vals}), a, b))
+    for var in F.vary_combos(params.get("vary")):
+        own = {**fixed, **{f: v for f, v, _t in var}}
+        if not period:
+            out.append((F.with_fields(req, own), None, None, var))
+            continue
+        for vals, a, b in F.chunks(period, params.get("from_year") or today.year, today, params.get("by", "year"),
+                                   since):
+            out.append((F.with_fields(req, {**own, **vals}), a, b, var))
     return out
+
+
+def base_values(params) -> dict:
+    """Значения полей, как их записал пользователь (с правками в окне настройки)."""
+    return {**{n: v for _w, n, v in F.fields(params["request"])}, **(params.get("values") or {})}
 
 
 class WebForm(Source):
@@ -123,7 +133,7 @@ class WebForm(Source):
         else:
             self.say(ctx, f"Запросов к сайту: {len(plan)} (по одному на {'год' if params.get('by', 'year') == 'year' else 'месяц'})")
         answers = replay(params.get("url") or params["request"].get("frame_url") or params["request"]["url"],
-                         [r for r, _a, _b in plan], pause_s=PAUSE_S,
+                         [x[0] for x in plan], pause_s=PAUSE_S,
                          progress=lambda i, msg=None: self.say(ctx, msg or f"Запрос {i} из {len(plan)}"),
                          interactive=bool(getattr(ctx, "interactive", False)))
         return self._result(params, plan, answers, since)
@@ -138,7 +148,7 @@ class WebForm(Source):
             return None
         get = (ctx.clients.get("web_form_http") if ctx and ctx.clients else None) or W.http_get
         out = []
-        for i, (req, a, b) in enumerate(plan):
+        for i, (req, a, b, _var) in enumerate(plan):
             if i:
                 time.sleep(HTTP_PAUSE_S)
             self.say(ctx, f"Запрос {i + 1} из {len(plan)}")
@@ -158,22 +168,34 @@ class WebForm(Source):
         res = FetchResult(url=params.get("url") or "", partial=since is not None)
         seen = {}
         raw = []
-        for (req, a, b), text in zip(plan, answers):
+        base = base_values(params)
+        for (req, a, b, var), text in zip(plan, answers):
             raw.append(f"<!-- {req['method']} {req['url']} {req.get('body') or ''} -->\n{text[:200000]}")
             table = F.result_table(text, params.get("table"))
+            what = " (" + ", ".join(t for _f, _v, t in var) + ")" if var else ""
             if table is None:
-                if a is None:
+                if a is None and not var:
                     raise E.StructureError("В ответе сайта нет таблицы с данными — возможно, сайт изменил форму")
+                if a is None:
+                    res.warnings.append(f"Сайт не вернул таблицу{what}")
+                    continue
                 f = "%d.%m.%Y" if (params.get("period") or {}).get("kind") == "dates" else "%m.%Y"
-                res.warnings.append(f"За {a:{f}}–{b:{f}} сайт не вернул таблицу (данных ещё нет?)")
+                res.warnings.append(f"За {a:{f}}–{b:{f}}{what} сайт не вернул таблицу (данных ещё нет?)")
                 continue
-            self._rows(table, params, a, b, res, seen)
+            self._rows(table, params, a, b, res, seen, var, base)
         res.raw, res.raw_ext = "\n\n".join(raw).encode("utf-8"), "html"
         if not res.obs and not res.warnings:
             raise E.StructureError("Сайт ответил, но в таблице нет чисел")
         return res
 
-    def _rows(self, table, params, a, b, res, seen):
+    def _rows(self, table, params, a, b, res, seen, var=(), base=None):
+        """var — перебираемые значения полей этого запроса. Ряды записанного значения (как в форме) сохраняют
+        прежний ключ — код ряда не меняется, когда к показателю добавляют другие значения."""
+        labels_of = {v["field"]: v.get("label") or "Вариант" for v in params.get("vary") or []}
+        own = [(f, v, t) for f, v, t in var if str((base or {}).get(f)) != v]
+        key_prefix = "".join(f"{f}={v}|" for f, v, _t in own)
+        var_dims = [(labels_of.get(f, "Вариант"), t) for f, _v, t in var]
+        var_name = " | ".join(t for _f, _v, t in var)
         lay = F.layout(table)
         head = lay["head"]
         if not lay["values"]:
@@ -204,13 +226,16 @@ class WebForm(Source):
                 v = P.parse_number(r[j]) if r[j] else None
                 if v is None:
                     continue
-                key = f"{label}|{head[j]}"
+                key = f"{key_prefix}{label}|{head[j]}"
                 if key not in seen:
+                    name = f"{label} | {head[j]}" if labels else head[j]
+                    code = (f"{prefix}_{slug(var_name, 14)}_{slug(head[j], 10)}" if own and not labels
+                            else f"{prefix}_{slug(label, 18)}_{slug(head[j], 10)}")
                     seen[key] = SeriesInfo(
-                        key=key, name=(f"{label} | {head[j]}" if labels else head[j])[:200],
+                        key=key, name=((f"{var_name} | " if var_name else "") + name)[:200],
                         unit=F.unit_for(head[j], row_unit),
-                        periodicity=per, code=f"{prefix}_{slug(label, 18)}_{slug(head[j], 10)}".upper(),
-                        url=params.get("url") or "", dims=labels + [("Показатель", head[j])],
+                        periodicity=per, code=code.upper()[:40],
+                        url=params.get("url") or "", dims=var_dims + labels + [("Показатель", head[j])],
                         date_rule="месяц из ответа сайта → конец месяца" if lay["date"] is not None
                         else "период запроса → конец периода")
                     res.series.append(seen[key])

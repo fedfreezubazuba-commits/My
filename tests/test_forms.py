@@ -426,3 +426,52 @@ def test_big_page_with_captcha_word_is_not_a_check():
           "<form class='feedback'><div class='captcha'>введите код</div></form><p>Нет данных</p></body></html>"
     assert not is_check(200, big)
     assert is_check(200, "<html><body><div id='captcha'>Подтвердите, что вы не робот</div></body></html>")
+
+
+def test_vary_field_values_for_all_dates(workdir, monkeypatch):
+    """Перебор значений поля (коды валют из выпадающего списка страницы) за все даты: каждая валюта — свой ряд;
+    у ряда записанной валюты ключ (и код) прежний — он не меняется, когда к показателю добавили другие."""
+    import cbr_rates_site as RS
+    from hub.core.paths import Paths
+    from hub.runner import Runner
+    from hub.sources import web_form as WF
+    monkeypatch.setattr(WF, "HTTP_PAUSE_S", 0)
+    now = {"t": dt.datetime(2026, 10, 24, 17, 50)}
+    got = []
+
+    def http(url, ctx=None, timeout=60, headers=None):
+        got.append({k: v[0] for k, v in parse_qs(urlsplit(url).query).items()})
+        return 200, "text/html; charset=utf-8", RS.page(url, now["t"].date()).encode(), url
+    page = RS.page(RS.URL, now["t"].date())
+    opts = F.select_options(page)["UniDbQuery.VAL_NM_RQ"]
+    assert opts["label"] == "Валюта" and opts["options"][0] == ["R01235", "Доллар США"]
+    req = dict(RS.REQ, resource_type="document")
+    params = {"url": RS.URL, "request": req, "from_year": 2026, "by": "year", "periodicity": "auto",
+              "period": F.detect_period(F.fields(req), now["t"].date()), "table": {"title": "", "index": 0}}
+    r = Runner(Paths(workdir), ctx_clients={"web_form_http": http}, now=now["t"])
+    try:
+        job = r.cfg.add_job("web_form", "Курс доллара", params)
+        assert r.run(job_ids=[job["id"]]).outcomes[0].status == "updated"
+        usd = r.store.series_of_job(job["id"])[0]["code"]
+        params = dict(params, vary=[{"field": "UniDbQuery.VAL_NM_RQ", "label": "Валюта",
+                                     "values": [["R01235", "Доллар США"], ["R01375", "Юань"]]}])
+        r.cfg.update_job(job["id"], params=params)
+        from hub.core import impact
+        impact.mark_edited(r.store, job["id"], now["t"].isoformat())       # так делает окно «Изменить набор данных»
+        got.clear()
+        out = r.run(job_ids=[job["id"]]).outcomes[0]
+        assert {g["UniDbQuery.VAL_NM_RQ"] for g in got} == {"R01235", "R01375"}
+        rows = {s["name"]: s for s in r.store.series_of_job(job["id"])}
+        assert set(rows) == {"Доллар США | Курс", "Юань | Курс"}, rows.keys()
+        assert rows["Доллар США | Курс"]["code"] == usd                     # код доллара не изменился
+        assert rows["Юань | Курс"]["code"] != usd
+        import json
+        assert ["Валюта", "Юань"] in json.loads(rows["Юань | Курс"]["dims"])
+        last = r.store.conn.execute("SELECT value FROM observations WHERE code=? ORDER BY period_end DESC LIMIT 1",
+                                    (rows["Юань | Курс"]["code"],)).fetchone()[0]
+        assert 11 < last < 20
+        first = r.store.conn.execute("SELECT MIN(period_end) FROM observations WHERE code=?",
+                                     (rows["Юань | Курс"]["code"],)).fetchone()[0]
+        assert first.startswith("2026-01")                                  # у новой валюты — вся история
+    finally:
+        r.close()

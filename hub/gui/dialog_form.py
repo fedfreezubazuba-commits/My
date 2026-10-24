@@ -27,11 +27,98 @@ def job_name(url, table) -> str:
     return f"{WF.TITLES.get(host, host)}: {', '.join(words[:3]) or table.title or 'данные формы'}"[:150]
 
 
+class VaryDialog(tk.Toplevel):
+    """«Несколько значений» поля формы: какие значения перебирать (например, коды валют) — для каждого хаб
+    повторит запрос за все даты, каждое значение станет своим рядом."""
+
+    def __init__(self, parent, field, current, options, vary, on_done):
+        super().__init__(parent)
+        self.field, self.on_done = field, on_done
+        self.title(f"Несколько значений: {field}")
+        self.geometry("620x560")
+        self.transient(parent)
+        bar = ttk.Frame(self, padding=12)
+        bar.pack(side="bottom", fill="x")
+        body = ttk.Frame(self, padding=(12, 10, 12, 0))
+        body.pack(fill="both", expand=True)
+        opts = (options or {}).get("options") or []
+        names = {str(v): t for v, t in opts}
+        W.autowrap(ttk.Label(body, justify="left", text=(
+            "Отметьте значения, которые нужно загружать. Для каждого хаб повторит запрос за все даты, и каждое станет "
+            "своим рядом (например, курс каждой валюты)." + ("" if opts else
+            " Списка значений на странице не нашлось — впишите их сами, по одному в строке; можно с названием: "
+            "«R01235 = Доллар США».")))).pack(fill="x")
+        r = ttk.Frame(body)
+        r.pack(fill="x", pady=(8, 4))
+        ttk.Label(r, text="Как назвать поле (столбец в Excel):").pack(side="left")
+        self.label = tk.StringVar(value=(vary or {}).get("label") or (options or {}).get("label") or "Вариант")
+        ttk.Entry(r, textvariable=self.label, width=24).pack(side="left", padx=6)
+        chosen_now = [str(x[0]) for x in (vary or {}).get("values") or []] or [str(current)]
+        self.entry = self.text = None
+        if opts:
+            from .dimlist import add_dim_tab
+            nb = ttk.Notebook(body)
+            nb.pack(fill="both", expand=True, pady=(4, 0))
+            items = [(str(v), f"{t} ({v})" if t != str(v) else str(v)) for v, t in opts]
+            self.entry = add_dim_tab(nb, "Значения", items, lambda: None)
+            self.entry[0].clear()
+            self.entry[0].update(v for v in chosen_now if v in names)
+            self.names = names
+        else:
+            self.text = tk.Text(body, height=14, width=60)
+            self.text.pack(fill="both", expand=True, pady=(4, 0))
+            given = (vary or {}).get("values") or [[current, current]]
+            self.text.insert("1.0", "\n".join(f"{v} = {t}" if str(t) != str(v) else str(v) for v, t in given))
+        ttk.Button(bar, text="Готово", style="Accent.TButton", command=self.done).pack(side="right")
+        ttk.Button(bar, text="Только одно значение (как в форме)", command=self.single).pack(side="right", padx=8)
+        W.center(self, parent)
+
+    def values(self):
+        if self.entry is not None:
+            chosen, all_ids, _t, _n = self.entry
+            return [[v, self.names.get(v, v)] for v in all_ids if v in chosen]
+        out = []
+        for line in self.text.get("1.0", "end").splitlines():
+            if not line.strip():
+                continue
+            v, _sep, t = line.partition("=")
+            out.append([v.strip(), t.strip() or v.strip()])
+        return out
+
+    def done(self):
+        vals = self.values()
+        if not vals:
+            messagebox.showwarning("Несколько значений", "Отметьте хотя бы одно значение.", parent=self)
+            return
+        self.destroy()
+        self.on_done(self.field, {"field": self.field, "label": self.label.get().strip() or "Вариант", "values": vals}
+                     if len(vals) > 1 else None)
+
+    def single(self):
+        self.destroy()
+        self.on_done(self.field, None)
+
+
 class FormDialog(tk.Toplevel):
-    def __init__(self, app, start_url, cand, table, job=None):
-        """job — уже добавленный показатель («Изменить набор данных»): тогда без превью ответа, «Сохранить»."""
+    def __init__(self, app, start_url, cand, table, job=None, pages=None):
+        """job — уже добавленный показатель («Изменить набор данных»): тогда без превью ответа, «Сохранить».
+        pages — тексты записанных страниц (в них — выпадающие списки формы с вариантами значений полей)."""
         super().__init__(app.root)
         self.app, self.start_url, self.table, self.job = app, start_url, table, job
+        jp0 = (job or {}).get("params", {})
+        names_in_request = {n for _w, n, _v in F.fields(cand)}
+        found = F.select_options(cand.get("text"), *(pages or [])) if not job else {}
+        self.choices = {k: v for k, v in found.items() if k in names_in_request} or dict(jp0.get("vary_choices") or {})
+        self.vary = {v["field"]: v for v in jp0.get("vary") or []}
+        if job and "vary_choices" not in jp0 and start_url:
+            # показатель добавлен до 0.8.8 — списков значений нет: прочитать их со страницы (без браузера, в фоне)
+            def load():
+                from ..sources import _web as Wb
+                status, ct, data, _f = Wb.http_get(start_url, None, timeout=30)
+                return F.select_options(Wb.decode(data, ct)) if status == 200 else {}
+            app.bg(load, lambda found: self.choices.update(
+                {k: v for k, v in (found or {}).items() if k in names_in_request}),
+                "Читаю списки значений со страницы…", error=lambda _e: None)
         self.cand = {k: v for k, v in cand.items() if k != "text"}     # ответ сайта в настройках не храним
         old = (job or {}).get("params", {}).get("values") or {}
         cand = with_values = F.with_fields(self.cand, old) if old else self.cand
@@ -67,12 +154,14 @@ class FormDialog(tk.Toplevel):
             ttk.Label(body, style="Hint.TLabel", text=f"Ряды: {what}. Дата: {when}.").pack(anchor="w")
 
         ttk.Label(body, text="Поля запроса", style="Title.TLabel").pack(anchor="w", pady=(10, 2))
+        ttk.Label(body, style="Hint.TLabel", text="«☰ Несколько…» — загружать сразу несколько значений поля "
+                  "(например, несколько валют): для каждого хаб повторит запрос за все даты.").pack(anchor="w")
         sf = W.ScrollFrame(body)
         sf.canvas.configure(height=150)            # список полей прокручивается; год и кнопки всегда видны
         sf.pack(fill="both", expand=True)
         grid = sf.inner
-        grid.columnconfigure(2, weight=1)
-        self.vars, self._keep = {}, []
+        grid.columnconfigure(3, weight=1)
+        self.vars, self._keep, self.vary_hints = {}, [], {}
         for i, (_where, name, value) in enumerate(self.flds):
             ttk.Label(grid, text=name).grid(row=i, column=0, sticky="w", padx=(0, 8))
             var = tk.StringVar(value=value)
@@ -84,8 +173,13 @@ class FormDialog(tk.Toplevel):
                 e.state(["readonly"])
             else:
                 self.vars[name] = var
-            ttk.Label(grid, text=role or FIELD_HINTS.get(name, ""), style="Hint.TLabel").grid(
-                row=i, column=2, sticky="w", padx=8)
+                more = "Несколько…" + (f" ({len(self.choices[name]['options'])})" if name in self.choices else "")
+                W.icon_button(grid, "☰", "Загружать несколько значений этого поля",
+                              lambda n=name: self.open_vary(n), text=more).grid(row=i, column=2, sticky="w", padx=(6, 0))
+            hint = ttk.Label(grid, text=role or FIELD_HINTS.get(name, ""), style="Hint.TLabel")
+            hint.grid(row=i, column=3, sticky="w", padx=8)
+            self.vary_hints[name] = (hint, role or FIELD_HINTS.get(name, ""))
+            self._show_vary(name)
 
         opts = ttk.Frame(body)
         opts.pack(fill="x", pady=(10, 0))
@@ -122,6 +216,29 @@ class FormDialog(tk.Toplevel):
         ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="right", padx=8)
         W.center(self, app.root)
 
+    def open_vary(self, name):
+        VaryDialog(self, name, self.vars[name].get(), self.choices.get(name), self.vary.get(name), self._vary_done)
+
+    def _vary_done(self, name, vary):
+        if vary:
+            self.vary[name] = vary
+        else:
+            self.vary.pop(name, None)
+        self._show_vary(name)
+        self._count()
+
+    def _show_vary(self, name):
+        hint, base = self.vary_hints.get(name, (None, ""))
+        if hint is None:
+            return
+        v = self.vary.get(name)
+        if v:
+            titles = [t for _v, t in v["values"]]
+            hint.configure(text=f"перебирать {len(titles)}: " + ", ".join(titles[:4]) + ("…" if len(titles) > 4 else ""),
+                           style="green.TLabel")
+        else:
+            hint.configure(text=base, style="Hint.TLabel")
+
     def _year(self):
         try:
             return max(1990, min(int(self.from_year.get()), dt.date.today().year))
@@ -129,11 +246,13 @@ class FormDialog(tk.Toplevel):
             return None
 
     def _count(self):
+        if not hasattr(self, "count"):
+            return
         y = self._year()
         if not self.period or y is None:
             self.count.configure(text="")
             return
-        n = len(F.chunks(self.period, y, dt.date.today(), self.by.get()))
+        n = len(F.chunks(self.period, y, dt.date.today(), self.by.get())) * len(F.vary_combos(list(self.vary.values())))
         from ..core.overview import plural
         days = self.app.cfg.full_reload_days(self.job)
         fresh = ("последние дни (с последней загруженной даты минус неделю)" if self.period.get("kind") == "dates"
@@ -144,12 +263,14 @@ class FormDialog(tk.Toplevel):
 
     def params(self):
         values = {n: var.get() for n, var in self.vars.items() if var.get() != self.base.get(n)}
+        vary = [self.vary[n] for _w, n, _v in self.flds if n in self.vary]
+        more = {"vary": vary, "vary_choices": self.choices}
         if self.job:
-            return {**self.job["params"], "from_year": self._year(), "by": self.by.get(), "values": values}
+            return {**self.job["params"], "from_year": self._year(), "by": self.by.get(), "values": values, **more}
         return {"url": self.start_url, "request": self.cand, "period": self.period, "from_year": self._year(),
                 "by": self.by.get(), "values": values, "periodicity": "auto",
                 "table": {"title": self.table.title, "index": self.table.index},
-                "code_prefix": WF.prefix_for(self.cand["url"]), "fetch_mode": "browser"}
+                "code_prefix": WF.prefix_for(self.cand["url"]), "fetch_mode": "browser", **more}
 
     def save(self):
         """«Изменить набор данных»: тот же показатель, другие поля; при следующем обновлении — вся история."""
@@ -170,6 +291,9 @@ class FormDialog(tk.Toplevel):
             return
         params = self.params()
         name = job_name(self.cand["url"], self.table)
+        if params["vary"]:
+            titles = [t for v in params["vary"] for _x, t in v["values"]]
+            name = f"{name.split(':')[0]}: {', '.join(titles[:4])}{'…' if len(titles) > 4 else ''}"[:150]
         self.destroy()
         AddDialog(self.app, "web_form", params, name,
                   note="Сайт с формой читается встроенным браузером (окно за краем экрана), по одному запросу с "
