@@ -29,17 +29,25 @@ def run(folder=None, shortcut=False) -> str:
 
 
 ICON = PROJECT / "hub" / "gui" / "assets" / "hub.ico"
-ICON_VERSION = "1"
+ICON_VERSION = "2"
+
+
+def shortcut_mark() -> str:
+    """Отметка «ярлык уже настроен» — с папкой программы: перенесли папку — ярлык настраивается заново."""
+    return f"{ICON_VERSION}|{PROJECT}"
 
 
 def update_shortcut_icon() -> bool:
-    """У существующего ярлыка на рабочем столе — значок хаба (ярлык, созданный прежней версией, был со
-    стандартным значком Windows). Нет ярлыка или не Windows — ничего не делаем."""
+    """Ярлык «Хаб данных» на рабочем столе — на ту папку программы, из которой хаб запущен сейчас, и со значком
+    хаба. Так старый ярлык (на прежнюю папку, со стандартным значком Windows) больше не запускает старую копию.
+    Нет ярлыка или не Windows — ничего не делаем."""
     if not IS_WINDOWS or not ICON.exists():
         return False
+    target = PROJECT / "Хаб данных.bat"
     ps = ("$s=(New-Object -ComObject WScript.Shell);"
           "$p=(Join-Path ([Environment]::GetFolderPath('Desktop')) 'Хаб данных.lnk');"
           "if (Test-Path $p) { $l=$s.CreateShortcut($p);"
+          f"$l.TargetPath='{target}'; $l.WorkingDirectory='{PROJECT}'; $l.WindowStyle=7;"
           f"$l.IconLocation='{ICON},0'; $l.Save(); 'ok' }}")
     r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
                        capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

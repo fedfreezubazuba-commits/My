@@ -62,6 +62,8 @@ class FileTab(ttk.Frame):
         self.mode = tk.StringVar(value="history")
         ttk.Radiobutton(bar, text="История: в строках даты", value="history", variable=self.mode).pack(side="left")
         ttk.Radiobutton(bar, text="Снимок: каждая строка — ряд", value="snapshot", variable=self.mode).pack(side="left", padx=10)
+        ttk.Radiobutton(bar, text="Набор данных: дата, разрезы и числа в строках (как в API)", value="dataset",
+                        variable=self.mode).pack(side="left")
         ttk.Label(bar, text="Периодичность:").pack(side="left", padx=(16, 4))
         self.per = tk.StringVar(value="month")
         ttk.Combobox(bar, textvariable=self.per, values=["day", "week", "month", "quarter", "year"], width=9,
@@ -75,8 +77,11 @@ class FileTab(ttk.Frame):
             return
         self.url.set(url)
 
+        from ..sources import Context
+        ctx = Context(paths=self.app.paths, browser=self.app.browser())
+
         def work():
-            data, final = download(url, None)
+            data, final = download(url, ctx)
             return data, F.read_tables(data, F.detect_format(data, url))
         self.app.bg(work, lambda r: self._show(("url", url), *r), "Скачиваю файл…",
                     error=lambda e: self.info.configure(text="Не получилось: " + human_message(e), style="red.TLabel"))
@@ -119,6 +124,15 @@ class FileTab(ttk.Frame):
         f.pack(fill="both", expand=True)
         for r in rows:
             self.preview.insert("", "end", values=list(r) + [""] * (width - len(r)))
+        from ..sources import _dataset as D
+        self.dataset = D.analyze(t)
+        if self.dataset and self.dataset["dims"]:
+            self.mode.set("dataset")
+            dims = ", ".join(f"{d} ({len(v)})" for d, v in self.dataset["dims"].items())
+            self.info.configure(text=f"Похоже на набор данных: дата — «{self.dataset['date']}», разрезы — {dims}, "
+                                     f"числа — {', '.join(self.dataset['values'])}. «＋ В обновления» — выбрать "
+                                     "значения и поля.", style="Muted.TLabel")
+            return
         has_dates = any(p["date"] >= 0.6 for p in T.column_profile(t.rows))
         self.mode.set("history" if has_dates else "snapshot")
 
@@ -130,14 +144,32 @@ class FileTab(ttk.Frame):
         spec = {"sheet": t.title} if t.kind == "file" and not getattr(t, "page", None) else {"page": getattr(t, "page", None),
                                                                                           "index": t.index}
         params = {"table": spec, "mode": self.mode.get(), "periodicity": self.per.get()}
+        if self.mode.get() == "dataset":
+            from ..sources import _dataset as D
+            from .dialog_dataset import DatasetDialog
+            info = D.analyze(t)
+            if not info:
+                messagebox.showwarning("Набор данных", "В этой таблице не нашлось столбца с датами и столбцов с числами. "
+                                       "Выберите «История» или «Снимок».", parent=self)
+                return
+            DatasetDialog(self.app, t, info, lambda p: self._add(t, {"table": spec, **p}))
+            return
+        self._add(t, params)
+
+    def _add(self, t, params):
         kind, where = self.source
         if kind == "url":
             if self.page_url.get().strip() and self.pattern.get().strip():
                 params.update(page_url=W.clean_url(self.page_url.get()), link_pattern=self.pattern.get().strip())
             else:
                 params["url"] = where
-            name = f"{W.site_name(where).capitalize()}: {t.title}"
-            AddDialog(self.app, "file_link", params, name)
+            title = t.title
+            if params.get("mode") == "dataset" or title == "CSV":    # у CSV нет листов — название по имени файла
+                title = where.split("?")[0].rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0].replace("-", " ")
+            name = f"{W.site_name(where).capitalize()}: {title}"
+            AddDialog(self.app, "file_link", params, name,
+                      note="При каждом обновлении хаб скачивает файл заново и берёт из него новые и уточнённые "
+                           "периоды." if params.get("mode") == "dataset" else "")
         else:
             src = Path(where)
             folder = slug(src.stem, 24)

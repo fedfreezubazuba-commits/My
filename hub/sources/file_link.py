@@ -12,6 +12,7 @@
     mode: history                  # history (даты в строках) | snapshot
     value_cols: [1, 2]             # необязательно: номера столбцов со значениями (с 0)
     periodicity: month             # для history: day | week | month | quarter | year
+    # mode: dataset — «набор данных»: дата, разрезы и числа в строках, с отбором значений (см. _dataset.py)
 """
 import datetime as dt
 
@@ -22,8 +23,7 @@ from . import _web as W
 from .base import FetchResult, Source
 
 
-def download(url, ctx):
-    status, ctype, data, final = W.http_get(url, ctx)
+def _check(status, ctype, data):
     if status >= 400:
         cat = W.detect_block(status, data[:20000].decode("utf-8", "ignore"))
         raise E.HubError(cat or (E.NETWORK if status >= 500 else E.STRUCTURE), f"Сайт ответил ошибкой {status}")
@@ -33,13 +33,35 @@ def download(url, ctx):
             raise E.LoginRequired("Файл доступен только после входа на сайт")
         if W.detect_block(200, text) == E.BOT:
             raise E.HubError(E.BOT, "Сайт показывает проверку «я не робот»")
-    return data, final
+
+
+def download(url, ctx):
+    """Файл по ссылке. Сначала обычная загрузка; не вышло (нет связи по мнению Python, защита сайта, 403) —
+    через встроенный браузер, как в Chrome."""
+    try:
+        status, ctype, data, final = W.http_get(url, ctx)
+        _check(status, ctype, data)
+        return data, final
+    except E.LoginRequired:
+        raise
+    except Exception as first:  # noqa: BLE001
+        br = getattr(ctx, "browser", None) if ctx is not None else None
+        if br is None or not br.available() or E.classify(first) not in (E.NETWORK, E.BOT, E.RATE_LIMIT, E.STRUCTURE):
+            raise
+        if ctx is not None:
+            ctx.info(f"Обычная загрузка не удалась ({first}) — скачиваю встроенным браузером")
+        data, final, ctype = br.download(url)
+        _check(200, ctype, data)
+        return data, final
 
 
 def parse(data, name, params, url, today, prefix):
     fmt = params.get("format") or F.detect_format(data, name)
     tables = F.read_tables(data, fmt, params)
     table = F.pick_file_table(tables, params.get("table") or {})
+    if params.get("mode") == "dataset":                  # строки: дата + разрезы + числа (как ответ API)
+        from . import _dataset as D
+        return D.to_result(table, params, prefix, url)
     mode = params.get("mode") or ("history" if any(p["date"] >= 0.6 for p in T.column_profile(table.rows))
                                   else "snapshot")
     spec = dict(params, mode=mode)

@@ -29,13 +29,15 @@ class HubApp:
         root.geometry("1320x820")
         root.minsize(980, 620)
         W.apply_style(root)
-        W.set_icon(root)
+        problems = W.set_icon(root)
         self.q = queue.Queue()
         self.tasks = 0
         self.clients = {}       # подмена сетевых клиентов (тесты)
         self.started = dt.datetime.now()
         self._stage("открываю рабочую папку и базу данных")
         self.open_paths()
+        if problems:
+            self.log.warning("Значок окна не установлен: %s", "; ".join(problems))
         self._stage("строю вкладки")
         self._build()
         root.after(100, self._poll)
@@ -81,10 +83,11 @@ class HubApp:
         """Ярлык «Хаб данных» на рабочем столе — со значком хаба (один раз)."""
         try:
             from ..core import setup
-            if self.store.meta_get("shortcut_icon") != setup.ICON_VERSION and setup.update_shortcut_icon():
-                self.store.meta_set("shortcut_icon", setup.ICON_VERSION)
+            if self.store.meta_get("shortcut_icon") != setup.shortcut_mark() and setup.update_shortcut_icon():
+                self.store.meta_set("shortcut_icon", setup.shortcut_mark())
+                self.log.info("Ярлык на рабочем столе: значок хаба, папка программы %s", setup.PROJECT)
         except Exception:  # noqa: BLE001
-            pass
+            self.log.exception("Ярлык на рабочем столе")
 
     def _sync_if_changed(self):
         """Поменялись времена в графиках показателей — переписать задачу планировщика (в фоне)."""

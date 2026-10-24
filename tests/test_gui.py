@@ -682,3 +682,40 @@ def test_app_icon_files_and_window_icon(app):
     assert (W.ASSETS / "hub.png").exists() and W.ICON_ICO.exists() and setup.ICON == W.ICON_ICO
     assert getattr(app.root, "_hub_icon", None) is not None          # значок хаба вместо «пёрышка» Tk
     assert W.ICON_ICO.read_bytes()[:4] == b"\x00\x00\x01\x00"          # настоящий .ico
+
+
+def test_file_tab_dataset_dialog(app, monkeypatch):
+    """«Файл» → длинный CSV: хаб узнаёт набор данных, окно отбора значений, «＋ В обновления» с mode=dataset."""
+    from pathlib import Path
+    from hub.gui.dialog_add import AddDialog
+    from hub.gui.dialog_dataset import DatasetDialog
+    from hub.sources import _files as F
+    data = (Path(__file__).resolve().parents[1] / "samples" / "web" / "sberindex_dataset.csv").read_bytes()
+    url = "https://sberindex.ru/api/dataset/deprecated/csv/ru/ver-izmenenie-trat-po-kategoriyam.csv"
+    tab = app.find.file
+    tab._show(("url", url), data, F.read_tables(data, "csv"))
+    pump(app, 0.3)
+    tab.show()
+    assert tab.mode.get() == "dataset" and "region (4)" in tab.info.cget("text")
+    dialogs = []
+    orig_init = DatasetDialog.__init__
+
+    def spy(self, *a, **k):
+        orig_init(self, *a, **k)
+        dialogs.append(self)
+    monkeypatch.setattr(DatasetDialog, "__init__", spy)
+    opened = []
+    monkeypatch.setattr(AddDialog, "__init__", lambda self, app_, src, params, name, **kw: opened.append((src, params, name)))
+    tab.add()
+    d = dialogs[0]
+    pump(app, 0.4)
+    assert "Рядов будет: 16" in d.count.cget("text")
+    chosen, _all, _t, _n = d.lists["region"]
+    chosen.clear()
+    chosen.add("Москва")
+    d._count()
+    assert "Рядов будет: 4" in d.count.cget("text")
+    d.done()
+    src, params, name = opened[0]
+    assert src == "file_link" and params["mode"] == "dataset" and params["filters"] == {"region": ["Москва"]}
+    assert params["url"] == url and name == "Sberindex: ver izmenenie trat po kategoriyam"

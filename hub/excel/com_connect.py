@@ -21,6 +21,7 @@ from ..core.errors import FileBusy, HubError, INTERNAL
 from . import mcode
 
 SHEET = "Хаб"
+UPDATES_SHEET = "Хаб_Обновления"
 XL_SRC_EXTERNAL = 0
 XL_CMD_SQL = 2
 XL_YES = 1
@@ -360,7 +361,43 @@ def _step(name, fn, *args, log):
 def _fill(wb, packet_path, log, prefer=None, layout="long"):
     _step("Добавляю запросы Power Query", _add_queries, wb, packet_path, log, False, layout, log=log)
     ws = _step("Готовлю лист «Хаб»", _sheet, wb, log, log=log)
-    return ws, _load_tables(wb, ws, packet_path, log, prefer, layout)
+    way = _load_tables(wb, ws, packet_path, log, prefer, layout)
+    _load_updates(wb, log, way)
+    return ws, way
+
+
+def _load_updates(wb, log, way):
+    """Лист «Хаб_Обновления» с таблицей истории обновлений. Не получилось — модель всё равно подключена
+    (запрос есть, его можно вывести вручную), поэтому ошибка здесь не останавливает подключение."""
+    try:
+        ws = next((w for w in wb.Worksheets if w.Name == UPDATES_SHEET), None)
+        if ws is None:
+            log("Создаю лист «Хаб_Обновления» в конце книги")
+            ws = wb.Worksheets.Add(After=wb.Worksheets(wb.Worksheets.Count))
+            ws.Name = UPDATES_SHEET
+        lo = _existing_table(ws, "Хаб_Обновления")
+        if lo is not None:
+            log("Таблица Хаб_Обновления уже есть — обновляю")
+            lo.QueryTable.Refresh(False)
+            return True
+        names = mcode.query_names(bool((way or {}).get("ascii")))
+        ways = [t for t, _ in TABLE_WAYS]
+        if (way or {}).get("way") in ways:
+            ways.remove(way["way"])
+            ways.insert(0, way["way"])
+        _set_visible(wb, bool((way or {}).get("visible")), log)       # в том же окружении, что сработало для «Хаб»
+        try:
+            lo, _w, errors = _try_ways(ws, names["Хаб_Обновления"], "A1", log, ways)
+        finally:
+            _set_visible(wb, False, log)
+        if lo is None:
+            log("Таблицу Хаб_Обновления вывести не удалось: " + "; ".join(errors[-3:]))
+            return False
+        _finish_table(lo, names["Хаб_Обновления"], "Хаб_Обновления", log)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"Лист «Хаб_Обновления» не создан: {e!r}")
+        return False
 
 
 def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None, layout="long") -> dict:
@@ -526,7 +563,7 @@ def make_connection_file(target: Path, packet_path, log=print, layout="long") ->
                 raise
             log(f"Таблицы не загрузились ({e.detail}); файл-подключение будет только с запросами")
         for ws in list(wb.Worksheets):
-            if ws.Name != SHEET and wb.Worksheets.Count > 1:
+            if ws.Name not in (SHEET, UPDATES_SHEET) and wb.Worksheets.Count > 1:
                 ws.Delete()
         if target.exists():
             target.unlink()

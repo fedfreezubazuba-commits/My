@@ -73,13 +73,31 @@ def looks_like_login(text: str) -> bool:
     return 'type="password"' in low and any(m in low for m in LOGIN_MARKERS + ("вход", "login"))
 
 
+def _system_trust_adapter():
+    """Проверка сертификатов по хранилищу Windows (как в Chrome), а не только по списку Python: у части
+    российских сайтов (Сбер, госсайты) сертификат российского центра (Минцифры) — Chrome ему доверяет, если
+    сертификат установлен в Windows, а Python без этого пишет «нет связи». Проверка не отключается."""
+    import ssl
+    from requests.adapters import HTTPAdapter
+
+    class SystemTrust(HTTPAdapter):
+        def init_poolmanager(self, *a, **kw):
+            kw["ssl_context"] = ssl.create_default_context()      # в Windows — корневые сертификаты системы
+            return super().init_poolmanager(*a, **kw)
+    return SystemTrust()
+
+
 def http_get(url, ctx=None, timeout=60):
     """(status, content_type, bytes, final_url) через requests."""
     import requests
     s = requests.Session()
     s.headers.update({"User-Agent": UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
                       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
-    r = s.get(url, timeout=timeout, allow_redirects=True)
+    try:
+        r = s.get(url, timeout=timeout, allow_redirects=True)
+    except requests.exceptions.SSLError:
+        s.mount("https://", _system_trust_adapter())
+        r = s.get(url, timeout=timeout, allow_redirects=True)
     return r.status_code, r.headers.get("Content-Type", ""), r.content, r.url
 
 

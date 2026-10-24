@@ -37,6 +37,14 @@ class SettingsTab(ttk.Frame):
         ttk.Button(wf, text="Открыть", command=lambda: open_file(self.app.paths.root)).pack(side="left")
         row("Рабочая папка", wf, "Здесь база, файлы для моделей, отчёты и выгрузки.")
 
+        from ..core.paths import PROJECT
+        from .. import VERSION
+        pf = ttk.Frame(g)
+        ttk.Label(pf, text=f"{PROJECT}  (версия {VERSION})").pack(side="left")
+        ttk.Button(pf, text="Открыть", command=lambda: open_file(PROJECT)).pack(side="left", padx=4)
+        row("Папка программы", pf, "Обновление распаковывайте именно в эту папку (с заменой файлов). Ярлык «Хаб данных» "
+                                   "на рабочем столе хаб сам направляет сюда.")
+
         self.vars["models_folder"] = tk.StringVar()
         mf = ttk.Frame(g)
         ttk.Entry(mf, textvariable=self.vars["models_folder"], width=50).pack(side="left")

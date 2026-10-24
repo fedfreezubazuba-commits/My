@@ -54,6 +54,7 @@ hub/
     file_link.py   xlsx/xls/csv/pdf по ссылке или «свежий файл со страницы по шаблону ссылки»
     folder_inbox.py файлы из Входящие/<папка>/ → объединение с историей → обработано/
     _web.py        загрузка (requests → встроенный браузер), очистка utm, защита/вход, JSON-LD, NUXT, дата отчёта
+    _dataset.py    «набор данных» в длинном виде (дата + разрезы + числа, как ответ API) с отбором значений
     _tables.py     поиск таблиц и плиток, угадывание столбцов (подпись/значение/дата/изменение), → ряды
     _files.py      чтение таблиц из файлов; _analyze.py — что показать в мастере «Сайт»
     browser.py     Playwright (необязателен): get_html, login (входит пользователь), pick (выбор элемента)
@@ -272,6 +273,18 @@ legacy/            исходные навигаторы пользовател�
   `widgets.set_icon` (iconphoto для всех окон + iconbitmap .ico в Windows). Ярлык: `setup.make_shortcut` с
   `hub.ico`, у старого ярлыка значок меняется при запуске окна (`setup.update_shortcut_icon`, meta `shortcut_icon`).
   Значка в области уведомлений (трее) у хаба нет — фоновое обновление идёт через планировщик.
+
+- **0.8.0**: история обновлений в модели — `packet.updates_table` → «<модель> — обновления.csv» (строка на
+  загрузка × ряд из `observations` GROUP BY code, run_id: первая загрузка / новые (`was_new`) / уточнение), шаблон
+  `Хаб_Обновления.m`, `com_connect._load_updates` — лист «Хаб_Обновления» (не мешает подключению при сбое; то же
+  окружение visible/ascii, что для «Хаб»). Файл по ссылке: `_web.http_get` при SSLError повторяет с хранилищем
+  сертификатов Windows (`ssl.create_default_context`, российские центры), `file_link.download` при сбое —
+  `browser.download` (скачивание как в браузере, download-событие или тело ответа). Режим `mode: dataset`
+  (`_dataset.py`: `analyze` через `_forms.layout`, `params_for`, `to_result`, `guess_periodicity`; столбцы — по
+  названиям; filters — только неполные разрезы) + окно `gui/dialog_dataset.py` (вкладки `dimlist`). Значок: ярлык
+  на рабочем столе перенаправляется на текущую папку программы (`setup.update_shortcut_icon`, отметка
+  `shortcut_mark` с путём); «Настройки» показывают папку программы и версию. Образец — синтетический
+  `samples/web/sberindex_dataset.csv` (сайт из облака недоступен).
 
 ## Категории ошибок
 

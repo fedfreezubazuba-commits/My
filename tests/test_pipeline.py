@@ -409,3 +409,29 @@ def test_missed_slot_caught_up_then_retried_until_new_data(runner, fakes):
     runner.store.set_state(job["id"], last_change=st["last_attempt"])       # данные пришли
     if later < S.next_slot(job["schedule"], now):
         assert runner.due_jobs(later) == []                                 # ждём следующий срок
+
+
+def test_updates_history_file_for_model(runner, fakes):
+    """«<модель> — обновления.csv»: когда какие ряды модели обновлялись (первая загрузка, новые данные,
+    уточнение прошлых периодов) — свежие сверху; есть шаблон Power Query Хаб_Обновления."""
+    import csv
+    import io
+    from hub.excel import mcode, packet
+    job = runner.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]})
+    runner.cfg.add_model("М", "")
+    runner.cfg.subscribe("М", job_id=job["id"])
+    runner.run(force=True)
+    code = runner.store.series_of_job(job["id"])[0]["code"]
+    last = runner.store.last_values(code, 1)[0]
+    # «источник уточнил» последнее значение и добавил новый месяц
+    with runner.store.tx() as c:
+        c.execute("UPDATE observations SET value=value+1 WHERE id=?", (last["id"],))
+    runner.run(job_ids=[job["id"]])
+    path = packet.updates_path(packet.packet_path(runner.paths, "М"))
+    rows = list(csv.DictReader(io.StringIO(path.read_bytes().decode("utf-8-sig")), delimiter=";"))
+    assert rows[0].keys() >= {"Обновлено", "Что", "Новых значений", "Изменено значений", "Код", "Показатель"}
+    assert rows[-1]["Что"] == "первая загрузка" and int(rows[-1]["Новых значений"]) > 10
+    assert rows[0]["Что"] == "уточнение прошлых периодов" and rows[0]["Изменено значений"] == "1"
+    assert rows[0]["Обновлено"] >= rows[-1]["Обновлено"] and rows[0]["Код"] == code
+    names = [n for n, _c in mcode.queries(path)]
+    assert "Хаб_Обновления" in names and not mcode.check_syntax(dict(mcode.queries(path))["Хаб_Обновления"])

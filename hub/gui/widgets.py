@@ -34,19 +34,21 @@ def set_app_id():
             pass
 
 
-def set_icon(root):
-    """Значок хаба у главного окна и всех остальных окон (вместо «пёрышка» Tk)."""
+def set_icon(root) -> list[str]:
+    """Значок хаба у главного окна и всех остальных окон (вместо «пёрышка» Tk). → что не получилось (для журнала)."""
+    problems = []
     try:
         root._hub_icon = tk.PhotoImage(file=str(ASSETS / "hub.png"))
         root._hub_icon_small = tk.PhotoImage(file=str(ASSETS / "hub_64.png"))
         root.iconphoto(True, root._hub_icon, root._hub_icon_small)
-    except tk.TclError:
-        pass
+    except tk.TclError as e:
+        problems.append(f"iconphoto: {e}")
     if IS_WIN:
         try:
             root.iconbitmap(default=str(ICON_ICO))     # чёткий значок 16×16 в заголовке и на панели задач
-        except tk.TclError:
-            pass
+        except tk.TclError as e:
+            problems.append(f"iconbitmap: {e}")
+    return problems
 
 
 def apply_style(root):

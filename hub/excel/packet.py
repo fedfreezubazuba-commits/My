@@ -35,7 +35,8 @@ SERIES_COLS = ["Код", "Название", "Единицы", "Периодич
                "Показатель", "Разрез 1", "Разрез 2", "Разрез 3", "Разрез 4"]
 N_CUTS = 4
 SOURCE_TITLES = {"cbr": "Банк России", "fedstat": "ЕМИСС", "web_value": "Сайт (значение)",
-                 "web_table": "Сайт (таблица)", "file_link": "Файл по ссылке", "folder_inbox": "Папка «Входящие»"}
+                 "web_table": "Сайт (таблица)", "file_link": "Файл по ссылке", "folder_inbox": "Папка «Входящие»",
+                 "web_form": "Форма на сайте", "comtrade": "ООН (UN Comtrade)"}
 
 
 def safe_name(name) -> str:
@@ -228,6 +229,55 @@ def cut_values(dims) -> list:
     return [head] + cuts + [""] * (N_CUTS - len(cuts))
 
 
+UPDATES_COLS = ["Обновлено", "Дата обновления", "Что", "Новых значений", "Изменено значений", "Период с", "Период по",
+                "Код", "Название", "Показатель", "Периодичность", "Источник"]
+MAX_UPDATE_ROWS = 200_000
+
+
+def updates_path(packet: Path) -> Path:
+    """История обновлений рядов модели — рядом с посылкой (так же вычисляет M-шаблон)."""
+    return packet.with_name(packet.stem + " — обновления.csv")
+
+
+def updates_table(store, codes) -> bytes:
+    """Когда какие ряды модели обновлялись: строка на «загрузка × ряд» — сколько новых значений, сколько
+    изменённых (источник уточнил прошлые периоды), за какие периоды. Свежие сверху.
+    Удобно сравнивать с датой последнего пересчёта модели: всё, что «Обновлено» позже, — новое."""
+    rows = []
+    codes = list(dict.fromkeys(codes))
+    info = {}
+    for i in range(0, len(codes), 500):
+        part = codes[i:i + 500]
+        marks = ",".join("?" * len(part))
+        for s in store.q(f"SELECT code, name, periodicity, source, dims FROM series WHERE code IN ({marks})", part):
+            info[s["code"]] = s
+        rows += store.q(
+            "SELECT code, run_id, MAX(fetched_at) AS f, COUNT(*) AS n, SUM(was_new) AS nn, MIN(period_end) AS a, "
+            "MAX(period_end) AS b, MIN(period_label) AS la, MAX(period_label) AS lb FROM observations "
+            f"WHERE code IN ({marks}) AND state IN ('current', 'old') AND run_id IS NOT NULL "
+            "GROUP BY code, run_id", part)
+    first = {}
+    for r in rows:
+        first[r["code"]] = min(first.get(r["code"], r["run_id"]), r["run_id"])
+    out = []
+    for r in sorted(rows, key=lambda x: (x["f"] or "", x["run_id"], x["code"]), reverse=True)[:MAX_UPDATE_ROWS]:
+        s = info.get(r["code"])
+        if s is None:
+            continue
+        initial = r["run_id"] == first[r["code"]]
+        new, changed = (r["n"], 0) if initial else (r["nn"] or 0, r["n"] - (r["nn"] or 0))
+        what = "первая загрузка" if initial else ("новые данные" if new and not changed else
+                                                  "уточнение прошлых периодов" if changed and not new else
+                                                  "новые данные и уточнение")
+        dims = series_dims(s)
+        head = dims[0][1] if dims and dims[0][0] == "Показатель" else (s["name"] or "")
+        when = (r["f"] or "").replace("T", " ")[:19]
+        out.append([when, when[:10], what, str(new), str(changed), r["a"], r["b"], r["code"], s["name"] or "",
+                    head, P.PERIODICITY_RU.get(s["periodicity"], s["periodicity"] or ""),
+                    SOURCE_TITLES.get(s["source"], s["source"] or "")])
+    return _csv(out, UPDATES_COLS)
+
+
 def write_if_changed(path: Path, data: bytes) -> bool:
     """True, если файл переписан. Атомарно: временный файл в той же папке → замена."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,6 +313,7 @@ def rebuild(cfg, store, paths, models=None, log=None) -> dict:
             changed = write_if_changed(path, packet)
             changed_s = write_if_changed(series_path(path), series)
             changed_t = write_if_changed(table_path(path), table)
+            changed_u = write_if_changed(updates_path(path), updates_table(store, codes))
         except FileBusy as e:
             out[m["name"]] = f"busy: {e}"
             store.set_model_state(m["name"], last_error=str(e))
@@ -279,7 +330,7 @@ def rebuild(cfg, store, paths, models=None, log=None) -> dict:
             kw["last_error"] = (f"В модели «{m['name']}» {n_rows:,} строк — больше, чем вмещает лист Excel. "
                                 "Сузьте выборку (меньше рядов или период короче).").replace(",", " ")
         store.set_model_state(m["name"], **kw)
-        out[m["name"]] = "changed" if (changed or changed_s or changed_t) else "same"
+        out[m["name"]] = "changed" if (changed or changed_s or changed_t or changed_u) else "same"
     return out
 
 

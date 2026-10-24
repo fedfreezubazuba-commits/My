@@ -153,7 +153,7 @@ def test_connect_uses_fallback_ways(fake_excel, tmp_path, mode):
     r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=lambda m: None)
     wb = fake_excel["xl"].books[0]
     assert not r["partial"] and wb.saved
-    assert [q.Name for q in wb.Queries] == ["Хаб_Посылка", "Хаб", "Хаб_Ряды"]
+    assert [q.Name for q in wb.Queries] == ["Хаб_Посылка", "Хаб", "Хаб_Ряды", "Хаб_Обновления"]
     hub = next(ws for ws in wb.Worksheets if ws.Name == "Хаб")
     assert [lo.Name for lo in hub.ListObjects] == ["Хаб", "Хаб_Ряды"]
     assert wb.Queries.FastCombine is True
@@ -167,7 +167,7 @@ def test_connect_partial_when_tables_impossible(fake_excel, tmp_path):
     r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=steps.append)
     assert r["partial"] is True
     wb = fake_excel["xl"].books[0]
-    assert wb.saved and len(wb.Queries) == 3        # запросы сохранены — осталось «Загрузить в…»
+    assert wb.saved and len(wb.Queries) == 4        # запросы сохранены — осталось «Загрузить в…»
     assert any("не сработал" in s for s in steps)
 
 
@@ -222,11 +222,14 @@ def test_connect_tries_ascii_names_and_visible_excel(fake_excel, tmp_path, mode,
     assert {k: r["way"][k] for k in expect} == expect
     wb = xl.books[0]
     names = [q.Name for q in wb.Queries]
-    assert names == (["Hub_Packet", "Hub", "Hub_Series"] if expect["ascii"] else ["Хаб_Посылка", "Хаб", "Хаб_Ряды"])
+    assert names == (["Hub_Packet", "Hub", "Hub_Series", "Hub_Updates"] if expect["ascii"]
+                     else ["Хаб_Посылка", "Хаб", "Хаб_Ряды", "Хаб_Обновления"])
     if expect["ascii"]:
         assert "Hub_Packet" in next(q.Formula for q in wb.Queries if q.Name == "Hub")
     hub = next(ws for ws in wb.Worksheets if ws.Name == "Хаб")
     assert [lo.Name for lo in hub.ListObjects] == ["Хаб", "Хаб_Ряды"]      # таблицы — всегда по-русски
+    upd = next(ws for ws in wb.Worksheets if ws.Name == "Хаб_Обновления")  # история обновлений — своим листом
+    assert [lo.Name for lo in upd.ListObjects] == ["Хаб_Обновления"]
     assert xl.Visible is False                                             # Excel снова спрятан
 
 

@@ -183,7 +183,7 @@ class Browser:
         from ._web import UA
         # обычный браузер, а не «робот»: некоторые сайты не показывают данные «безголовому» Chrome
         args = ["--disable-blink-features=AutomationControlled"]
-        kw = {"headless": headless, "locale": "ru-RU", "user_agent": UA, "args": args}
+        kw = {"headless": headless, "locale": "ru-RU", "user_agent": UA, "args": args, "accept_downloads": True}
         if offscreen:
             args += ["--window-position=-32000,-32000", "--window-size=1280,900"]
         if headless or offscreen:
@@ -240,6 +240,53 @@ class Browser:
                 return page.content(), page.url
             finally:
                 ctx.close()
+
+    def download(self, url, headless=False, timeout_ms=120000):
+        """Файл по прямой ссылке — так же, как его скачивает браузер (окно за краем экрана): для сайтов, которые
+        не отдают файл обычной программе (защита, сертификаты). → (байты, итоговый адрес, тип содержимого)."""
+        with _lock, self._sync() as p:
+            ctx = self._launch(p, headless=headless, offscreen=not headless)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                for attempt in range(2):
+                    got = {}
+                    page.on("download", lambda d: got.setdefault("d", d))
+                    resp = None
+                    try:
+                        resp = page.goto(url, wait_until="commit", timeout=timeout_ms)
+                    except Exception as e:  # noqa: BLE001 — «Download is starting»: файл скачивается, а не открывается
+                        if "download" not in str(e).lower() and "ERR_ABORTED" not in str(e):
+                            raise E.HubError(E.NETWORK, "Встроенный браузер не смог скачать файл", detail=str(e))
+                    end = time.time() + 15
+                    while "d" not in got and resp is None and time.time() < end:
+                        page.wait_for_timeout(200)
+                    if "d" in got:
+                        from pathlib import Path
+                        path = got["d"].path()
+                        return Path(path).read_bytes(), url, ""
+                    if resp is None:
+                        raise E.HubError(E.NETWORK, "Встроенный браузер не получил файл")
+                    try:
+                        page.wait_for_load_state("load", timeout=30000)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if "d" in got:
+                        from pathlib import Path
+                        return Path(got["d"].path()).read_bytes(), url, ""
+                    ctype = (resp.headers.get("content-type") or "").lower()
+                    body = resp.body()
+                    if "html" in ctype and attempt == 0 and _block_category(resp.status, body[:30000].decode(
+                            "utf-8", "ignore")):
+                        _settle(page)              # страница защиты: она ставит куку и пускает дальше — ещё раз
+                        page.wait_for_timeout(3000)
+                        continue
+                    return body, resp.url, ctype
+                raise E.HubError(E.BOT, "Сайт показывает проверку вместо файла")
+            finally:
+                try:
+                    ctx.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def login(self, url, timeout_s=900, banner=None):
         """Окно для входа (или для проверки «я не робот»). Возвращается, когда пользователь закрыл окно
