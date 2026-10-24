@@ -47,7 +47,7 @@ class FileTab(ttk.Frame):
         ttk.Label(r3, text="слова в ссылке:").pack(side="left")
         self.pattern = tk.StringVar()
         ttk.Entry(r3, textvariable=self.pattern, width=20).pack(side="left", padx=6)
-        self.info = ttk.Label(self, style="Muted.TLabel", text="Поддерживаются Excel (xlsx, xls), CSV и PDF с таблицами.")
+        self.info = ttk.Label(self, style="Muted.TLabel", text="Поддерживаются Excel (xlsx, xls), CSV, PDF с таблицами и архивы zip с такими файлами.")
         self.info.pack(anchor="w", pady=6)
         pw = ttk.PanedWindow(self, orient="horizontal")
         pw.pack(fill="both", expand=True)
@@ -88,7 +88,7 @@ class FileTab(ttk.Frame):
 
     def load_inbox(self):
         path = filedialog.askopenfilename(parent=self, title="Файл с данными",
-                                          filetypes=[("Таблицы", "*.xlsx *.xls *.csv *.pdf"), ("Все файлы", "*.*")])
+                                          filetypes=[("Таблицы", "*.xlsx *.xls *.csv *.pdf *.zip"), ("Все файлы", "*.*")])
         if not path:
             return
         data = Path(path).read_bytes()
@@ -164,8 +164,8 @@ class FileTab(ttk.Frame):
             else:
                 params["url"] = where
             title = t.title
-            if params.get("mode") == "dataset" or title == "CSV":    # у CSV нет листов — название по имени файла
-                title = where.split("?")[0].rstrip("/").rsplit("/", 1)[-1].rsplit(".", 1)[0].replace("-", " ")
+            if params.get("mode") == "dataset" or title == "CSV" or getattr(t, "archive", False):
+                title = F.name_from_url(where) or title       # у CSV нет листов — название по адресу
             name = f"{W.site_name(where).capitalize()}: {title}"
             AddDialog(self.app, "file_link", params, name,
                       note="При каждом обновлении хаб скачивает файл заново и берёт из него новые и уточнённые "

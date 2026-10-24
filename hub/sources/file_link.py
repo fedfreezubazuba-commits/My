@@ -33,6 +33,10 @@ def _check(status, ctype, data):
             raise E.LoginRequired("Файл доступен только после входа на сайт")
         if W.detect_block(200, text) == E.BOT:
             raise E.HubError(E.BOT, "Сайт показывает проверку «я не робот»")
+        head = text[:3000].lower()
+        if "<html" in head or "<script" in head or "<!doctype" in head:
+            # вместо файла — страница (защита сайта проверяет браузер скриптом) — дальше встроенным браузером
+            raise E.HubError(E.BOT, "Сайт вместо файла прислал веб-страницу")
 
 
 def download(url, ctx):

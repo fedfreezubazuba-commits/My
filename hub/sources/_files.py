@@ -15,11 +15,45 @@ def detect_format(data: bytes, name: str = "") -> str:
     n = (name or "").lower()
     if data[:4] == b"%PDF" or n.endswith(".pdf"):
         return "pdf"
-    if data[:2] == b"PK" or n.endswith((".xlsx", ".xlsm")):
+    if data[:2] == b"PK":
+        return "xlsx" if _is_xlsx(data) else "zip"       # xlsx — тоже zip-архив, но со своей начинкой
+    if n.endswith((".xlsx", ".xlsm")):
         return "xlsx"
+    if n.endswith(".zip"):
+        return "zip"
     if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" or n.endswith(".xls"):
         return "xls"
     return "csv"
+
+
+def _is_xlsx(data: bytes) -> bool:
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            return "[Content_Types].xml" in z.namelist()
+    except zipfile.BadZipFile:
+        return False
+
+
+INNER = (".csv", ".txt", ".xlsx", ".xlsm", ".xls", ".pdf")
+MAX_UNZIPPED = 1_500_000_000      # больше — скорее всего не таблица, а что-то другое
+
+
+def zip_members(data: bytes) -> list[tuple[str, bytes]]:
+    """[(имя, байты)] файлов с таблицами внутри архива (папки и служебные файлы пропускаются)."""
+    import zipfile
+    out = []
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        infos = [i for i in z.infolist() if not i.is_dir() and i.filename.lower().endswith(INNER)
+                 and not i.filename.split("/")[-1].startswith((".", "__MACOSX", "~$"))
+                 and "__MACOSX/" not in i.filename]
+        if sum(i.file_size for i in infos) > MAX_UNZIPPED:
+            raise StructureError("Архив слишком большой: больше 1,5 ГБ после распаковки")
+        for i in infos:
+            out.append((i.filename.split("/")[-1], z.read(i)))
+    if not out:
+        raise StructureError("В архиве нет файлов с таблицами (CSV, Excel, PDF)")
+    return out
 
 
 def _cell(v) -> str:
@@ -61,6 +95,16 @@ def read_tables(data: bytes, fmt: str, spec=None):
     spec = spec or {}
     fmt = fmt or "csv"
     tables = []
+    if fmt == "zip":
+        # архив: таблицы всех файлов внутри; название — имя файла (и листа для Excel)
+        members = zip_members(data)
+        for name, blob in members:
+            for t in read_tables(blob, detect_format(blob, name), spec):
+                t.title = name if t.title in ("CSV", "") else f"{name} — {t.title}"
+                t.index = len(tables)
+                t.archive = True
+                tables.append(t)
+        return tables
     if fmt == "xlsx":
         from openpyxl import load_workbook
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -127,6 +171,11 @@ def pick_file_table(tables, spec):
         s = spec["sheet"]
         cands = [t for t in tables if str(t.title).lower() == str(s).lower()] or \
                 ([tables[int(s) - 1]] if str(s).isdigit() and int(s) <= len(tables) else [])
+        if not cands:
+            # имя файла в архиве часто с датой выгрузки («…_2026-10-20.csv») — сравниваем без цифр
+            def bare(x):
+                return re.sub(r"[\d_\-. ]+", "", str(x).lower())
+            cands = [t for t in tables if bare(t.title) == bare(s)] or (tables if len(tables) == 1 else [])
     if spec.get("page"):
         cands = [t for t in cands if getattr(t, "page", None) == int(spec["page"])]
     if spec.get("after_text"):
@@ -140,6 +189,18 @@ def pick_file_table(tables, spec):
     if not cands:
         raise StructureError(f"В файле не найдена нужная таблица ({spec})")
     return cands[0]
+
+
+def name_from_url(url) -> str:
+    """Название набора по адресу: …/csv/ru/ver-izmenenie-trat.csv → «ver izmenenie trat»;
+    …/download/inflyaciya-s-sezonnoj-korrektirovkoj/csv → «inflyaciya s sezonnoj korrektirovkoj»."""
+    parts = [p for p in str(url).split("?")[0].split("/") if p]
+    skip = {"csv", "zip", "xlsx", "xls", "download", "file", "export", "ru", "en", "data", "api", "v1", "v2"}
+    for p in reversed(parts[2:]):
+        stem = p.rsplit(".", 1)[0] if "." in p else p
+        if stem.lower() not in skip and not stem.isdigit():
+            return stem.replace("-", " ").replace("_", " ")
+    return ""
 
 
 def find_link(html_text, base_url, pattern):

@@ -270,10 +270,15 @@ class Browser:
                         page.wait_for_load_state("load", timeout=30000)
                     except Exception:  # noqa: BLE001
                         pass
+                    ctype = (resp.headers.get("content-type") or "").lower()
+                    if "html" in ctype:
+                        # страница защиты: скрипт проверяет браузер и сам отдаёт файл — ждём скачивания
+                        end = time.time() + 25
+                        while "d" not in got and time.time() < end:
+                            page.wait_for_timeout(300)
                     if "d" in got:
                         from pathlib import Path
                         return Path(got["d"].path()).read_bytes(), url, ""
-                    ctype = (resp.headers.get("content-type") or "").lower()
                     body = resp.body()
                     if "html" in ctype and attempt == 0 and _block_category(resp.status, body[:30000].decode(
                             "utf-8", "ignore")):

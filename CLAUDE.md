@@ -293,6 +293,12 @@ legacy/            исходные навигаторы пользовател�
   не отключается), третьим шагом после certifi и хранилища Windows. `_forms.month_of` понимает «2024-W05».
   Образец формата — `samples/web/sberindex_izmenenie_trat.csv` (синтетический).
 
+- **0.8.2 — архивы**: `_files.detect_format` — «PK» без `[Content_Types].xml` = zip (раньше zip принимался за xlsx →
+  KeyError); `read_tables(fmt="zip")` — таблицы всех CSV/Excel/PDF внутри (`zip_members`, ≤ 1,5 ГБ), название —
+  имя файла («имя — лист» для Excel); `pick_file_table` по листу сравнивает и без цифр (имя файла в архиве с датой
+  выгрузки), один файл — берётся он. `name_from_url` — название по адресу (…/download/<набор>/csv). HTML вместо
+  файла → BOT → встроенный браузер; `browser.download` ждёт скачивания после страницы-проверки (до 25 с).
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

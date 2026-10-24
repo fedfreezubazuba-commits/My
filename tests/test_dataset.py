@@ -177,3 +177,107 @@ def test_real_sberindex_format():
     assert len(res.obs) == rows                                       # пустые значения — не точки ряда
     from hub.sources import _forms as Fm
     assert Fm.month_of("2024-W05") == dt.date(2024, 2, 4)
+
+
+def _zip(files) -> bytes:
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+ZIP_URL = "https://sberindex.ru/api/dataset/v1//download/inflyaciya-s-sezonnoj-korrektirovkoj/csv"
+
+
+def test_zip_archive_with_csv_becomes_dataset(monkeypatch):
+    """Ссылка отдаёт zip-архив с CSV (большие наборы СберИндекса): хаб распаковывает архив и читает файл внутри.
+    Раньше архив принимался за Excel: «There is no item named '[Content_Types].xml'»."""
+    csv_bytes = (SAMPLE.parent / "sberindex_izmenenie_trat.csv").read_bytes()
+    data = {"zip": _zip({"inflyaciya_2026-10-20.csv": csv_bytes, "__MACOSX/._x": b"", "readme.md": b"x"})}
+    assert F.detect_format(data["zip"], ZIP_URL) == "zip"
+    tables = F.read_tables(data["zip"], "zip")
+    assert [t.title for t in tables] == ["inflyaciya_2026-10-20.csv"]
+    monkeypatch.setattr(W, "http_get", lambda url, ctx=None, timeout=60: (200, "application/zip", data["zip"], url))
+    info = D.analyze(tables[0])
+    params = {"url": ZIP_URL, "table": {"sheet": tables[0].title}, **D.params_for(info)}
+    res = get("file_link").fetch(params, Context(now=NOW))
+    assert len(res.series) == 6 and res.raw_ext == "zip"
+    # в следующий раз файл в архиве назван по новой дате — тот же набор
+    data["zip"] = _zip({"inflyaciya_2026-10-27.csv": csv_bytes})
+    assert len(get("file_link").fetch(params, Context(now=NOW)).series) == 6
+    assert F.name_from_url(ZIP_URL) == "inflyaciya s sezonnoj korrektirovkoj"
+
+
+def test_zip_with_excel_inside_and_real_xlsx_not_zip():
+    import io
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.active.title = "Данные"
+    wb.active.append(["Дата", "Значение"])
+    wb.active.append(["2026-09-30", 1.5])
+    buf = io.BytesIO()
+    wb.save(buf)
+    xlsx = buf.getvalue()
+    assert F.detect_format(xlsx, "x.xlsx") == "xlsx"            # настоящий Excel по-прежнему Excel
+    tables = F.read_tables(_zip({"отчёт.xlsx": xlsx}), "zip")
+    assert tables[0].title == "отчёт.xlsx — Данные" and tables[0].rows[0][1] == "1.5"
+    with pytest.raises(Exception) as ei:
+        F.read_tables(_zip({"readme.txt.bak": b"x"}), "zip")
+    assert "нет файлов с таблицами" in str(ei.value)
+
+
+def test_html_instead_of_file_goes_to_browser(monkeypatch):
+    from hub.sources import file_link
+    page_html = "<!DOCTYPE html><html><script>/* проверка браузера */</script></html>".encode()
+    monkeypatch.setattr(W, "http_get", lambda url, ctx=None, timeout=60: (200, "text/html", page_html, url))
+
+    class Br:
+        def available(self):
+            return True
+
+        def download(self, url):
+            return _zip({"a.csv": b"date;value\n2026-09-30;1\n"}), url, "application/zip"
+    data, _f = file_link.download(ZIP_URL, Context(browser=Br()))
+    assert F.detect_format(data, ZIP_URL) == "zip"
+
+
+@pytest.mark.skipif(not __import__("os").environ.get("HUB_CHROMIUM"), reason="нужен Chromium (HUB_CHROMIUM)")
+def test_browser_download_after_challenge_page(tmp_path):
+    """Защита сайта сначала отдаёт страницу со скриптом (ставит куку и переходит дальше), потом — архив."""
+    pytest.importorskip("playwright")
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from hub.core.paths import Paths
+    from hub.sources.browser import Browser
+    archive = _zip({"a.csv": b"date;value\n2026-09-30;1\n"})
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if "pass=1" not in (self.headers.get("Cookie") or ""):
+                body = (b"<html><body><script>document.cookie='pass=1; path=/';"
+                        b"setTimeout(function(){location.reload()}, 300);</script></body></html>")
+                ctype, extra = "text/html", {}
+            else:
+                body, ctype = archive, "application/zip"
+                extra = {"Content-Disposition": 'attachment; filename="data.zip"'}
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            for k, v in extra.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        data, _u, _ct = Browser(Paths(tmp_path)).download(f"http://127.0.0.1:{srv.server_address[1]}/download/x/csv",
+                                                          headless=True)
+        assert data == archive
+    finally:
+        srv.shutdown()
