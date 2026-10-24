@@ -16,7 +16,7 @@ LINK = ("https://fred.stlouisfed.org/graph/fredgraph.csv?bgcolor=%23ebf3fb&chart
 def site(monkeypatch):
     calls = []
 
-    def fake_get(url, ctx=None, timeout=60):
+    def fake_get(url, ctx=None, timeout=60, headers=None):
         calls.append(url)
         if url == FR.csv_url("PFISHUSDM"):
             return 200, "text/csv", (SAMPLES / "fred_PFISHUSDM.csv").read_bytes(), url
@@ -29,6 +29,7 @@ def site(monkeypatch):
         return 404, "text/html", b"", url
     monkeypatch.setattr(W, "http_get", fake_get)
     monkeypatch.setattr(FR, "PAUSE_S", 0)
+    monkeypatch.setattr(FR, "_way", {})
     return calls
 
 
@@ -69,3 +70,56 @@ def test_meta_from_text_file():
            "Units:               U.S. Dollars per Metric Ton\nDate Range:          1990-01-01 to 2026-09-01\n")
     m = FR.parse_meta(txt, "PFISHUSDM")
     assert m["units"] == "U.S. Dollars per Metric Ton" and m["frequency"] == "Monthly"
+
+
+class FakeBrowser:
+    def __init__(self):
+        self.calls = []
+
+    def available(self):
+        return True
+
+    def download(self, url, headless=False, timeout_ms=0):
+        self.calls.append(url)
+        return (SAMPLES / "fred_PFISHUSDM.csv").read_bytes(), url, "text/csv"
+
+    def get_html(self, url, timeout_ms=0, offscreen=False):
+        self.calls.append(url)
+        return (SAMPLES / "fred_PFISHUSDM.html").read_text(encoding="utf-8"), url
+
+
+def test_hanging_requests_fall_back_and_way_is_remembered(monkeypatch, tmp_path):
+    """FRED «подвешивает» запросы программ: обычный запрос и «как браузер» — тайм-аут, а встроенный браузер
+    (как Chrome) получает файл. Способ запоминается — в следующий раз сразу браузер, без ожиданий."""
+    import requests
+    from hub.core.paths import Paths
+    tried = []
+
+    def hang(url, ctx=None, timeout=60, headers=None):
+        tried.append(headers)
+        raise requests.exceptions.ReadTimeout("read timed out")
+    monkeypatch.setattr(W, "http_get", hang)
+    monkeypatch.setattr(FR, "_way", {})
+    br = FakeBrowser()
+    ctx = Context(paths=Paths(tmp_path), browser=br)
+    res = get("fred").fetch({"ids": ["PFISHUSDM"]}, ctx)
+    assert len(res.obs) == 5 and len(tried) == 3 and br.calls == [FR.csv_url("PFISHUSDM")]
+    assert (tmp_path / "cache" / "fred_way.txt").read_text() == "browser"
+    assert FR.fetch_meta("PFISHUSDM", ctx)["units"] == "U.S. Dollars per Metric Ton"
+    monkeypatch.setattr(FR, "_way", {})                     # новый запуск программы: способ — из файла
+    tried.clear()
+    get("fred").fetch({"ids": ["PFISHUSDM"]}, ctx)
+    assert tried == []
+
+
+def test_nothing_answers_gives_clear_error(monkeypatch):
+    import requests
+
+    def hang(url, ctx=None, timeout=60, headers=None):
+        raise requests.exceptions.ConnectTimeout("connect timed out")
+    monkeypatch.setattr(W, "http_get", hang)
+    monkeypatch.setattr(FR, "_way", {})
+    from hub.core.errors import HubError
+    with pytest.raises(HubError, match="FRED не ответил") as e:
+        get("fred").fetch({"ids": ["PFISHUSDM"]}, Context())
+    assert "plain" in e.value.detail and "curl" in e.value.detail

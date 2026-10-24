@@ -319,6 +319,12 @@ legacy/            исходные навигаторы пользовател�
   Ссылка FRED во вкладках «Сайт»/«Файл» → `FindTab.open_fred`. Образцы `samples/web/fred_PFISHUSDM.*` —
   синтетические (fred.stlouisfed.org из облака недоступен).
 
+- **0.8.5 — FRED не отвечал**: у пользователя FRED не ответил (долгое ожидание → «нет интернета»), хотя Chrome сайт открывает: защита
+  FRED «подвешивает» запросы программ (по сообщениям — то с заголовком браузера, то без). `fred.get` перебирает
+  `WAYS`: plain (заголовки requests) → curl → browser_headers (тайм-аут `QUICK` (8, 20)) → встроенный браузер
+  (`download` для CSV, `get_html(offscreen)` для страницы); CSV принимается, только если похож на CSV; сработавший
+  способ — `cache/fred_way.txt` и первым в следующий раз; метаданные — тем же способом + браузер. Ошибка —
+  `HubError(NETWORK)` с `detail` по способам (вкладка показывает «Что пробовал хаб»). `_web.http_get(headers=…)`.
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

@@ -128,15 +128,103 @@ def parse_csv(text, sid) -> list[tuple[dt.date, float]]:
     return out
 
 
+# Как спрашивать FRED. Его защита иногда «подвешивает» запросы программ (ответа нет до тайм-аута), причём
+# по-разному: одним мешает заголовок «как браузер», другим — его отсутствие. Поэтому — по очереди, с коротким
+# ожиданием, последним — встроенный браузер (как Chrome). Сработавший способ запоминается (cache/fred_way.txt).
+WAYS = ["plain", "curl", "browser_headers", "browser"]
+HEADERS = {"plain": {}, "curl": {"User-Agent": "curl/8.9.1", "Accept": "*/*"}, "browser_headers": None}
+QUICK = (8, 20)                  # секунды: соединиться, ждать ответа
+_way = {}
+
+
+def _way_file(ctx):
+    paths = getattr(ctx, "paths", None)
+    return paths.cache / "fred_way.txt" if paths is not None else None
+
+
+def _order(ctx) -> list:
+    best = _way.get("ok")
+    f = _way_file(ctx)
+    if best is None and f is not None:
+        try:
+            best = f.read_text(encoding="utf-8").strip()
+        except OSError:
+            best = None
+    return ([best] if best in WAYS else []) + [w for w in WAYS if w != best]
+
+
+def _remember(ctx, way):
+    if _way.get("ok") == way:
+        return
+    _way["ok"] = way
+    f = _way_file(ctx)
+    if f is not None:
+        try:
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(way, encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _browser(ctx):
+    b = getattr(ctx, "browser", None)
+    try:
+        return b if b is not None and b.available() else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def looks_like_csv(text) -> bool:
+    return bool(re.match(r"^\W*(observation_date|date)\b", (text or "").lstrip()[:100], re.I))
+
+
+def get(url, ctx, page=False, ways=None):
+    """(status, текст) с FRED — первым способом, который дал ответ. page=True — страница (для браузера —
+    get_html), иначе файл (download). Нет ответа ни одним способом — HubError(NETWORK)."""
+    tried = []
+    for way in ways or _order(ctx):
+        try:
+            if way == "browser":
+                b = _browser(ctx)
+                if b is None:
+                    continue
+                if page:
+                    text, _final = b.get_html(url, timeout_ms=60000, offscreen=True)
+                    status = 200
+                else:
+                    data, _final, ct = b.download(url, headless=False, timeout_ms=60000)
+                    status, text = 200, W.decode(data, ct)
+            else:
+                status, ct, data, _final = W.http_get(url, ctx, timeout=QUICK, headers=HEADERS[way])
+                text = W.decode(data, ct)
+        except E.HubError as e:
+            tried.append(f"{way}: {e}")
+            continue
+        except Exception as e:  # noqa: BLE001 — тайм-аут, обрыв: пробуем следующий способ
+            tried.append(f"{way}: {type(e).__name__}: {e}"[:300])
+            continue
+        if status in (400, 404) or (status == 200 and not W.detect_block(status, text)
+                                    and (page or looks_like_csv(text))):
+            if status == 200:
+                _remember(ctx, way)
+            return status, text
+        tried.append(f"{way}: ответ {status}")
+    raise E.HubError(E.NETWORK, "FRED не ответил хабу (ни обычным запросом, ни через встроенный браузер). "
+                                "Если сайт открывается в Chrome — нажмите «Отправить Claude»",
+                     detail="\n".join(tried))
+
+
 def fetch_meta(sid, ctx) -> dict:
     """Метаданные ряда; сбой — пустой словарь (ряд грузится и без них)."""
+    first = _order(ctx)[0]                      # способ, которым уже получен CSV, и браузер — без долгого перебора
+    ways = [first] + (["browser"] if first != "browser" else [])
     for url in (page_url(sid), f"{BASE}/data/{sid}.txt"):
         try:
-            status, ct, data, _final = W.http_get(url, ctx, timeout=60)
-        except Exception:  # noqa: BLE001
+            status, text = get(url, ctx, page=True, ways=ways)
+        except E.HubError:
             continue
         if status == 200:
-            meta = parse_meta(W.decode(data, ct), sid)
+            meta = parse_meta(text, sid)
             if meta.get("units") or meta.get("frequency"):
                 return meta
     return {}
@@ -163,15 +251,9 @@ class Fred(Source):
         return 60 + 60 * len(params.get("ids") or [])
 
     def _csv(self, sid, ctx) -> str:
-        status, ct, data, _final = W.http_get(csv_url(sid), ctx, timeout=90)
-        text = W.decode(data, ct)
-        if status == 404 or status == 400:
+        status, text = get(csv_url(sid), ctx)
+        if status in (400, 404):
             raise E.StructureError(f"На FRED нет ряда с кодом {sid} — проверьте код на странице ряда")
-        cat = W.detect_block(status, text)
-        if cat:
-            raise E.HubError(cat, f"FRED не выдал данные по ряду {sid} (ответ {status})")
-        if status != 200:
-            raise E.HubError(E.NETWORK, f"FRED ответил ошибкой {status}")
         return text
 
     def fetch(self, params, ctx) -> FetchResult:

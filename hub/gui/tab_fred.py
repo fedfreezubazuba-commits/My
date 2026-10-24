@@ -52,7 +52,8 @@ class FredTab(ttk.Frame):
         self.add_btn.state(["disabled"])
 
         def work():
-            ctx = Context(paths=self.app.paths)
+            ctx = Context(paths=self.app.paths, browser=self.app.browser())
+            FR.get(FR.csv_url(ids[0]), ctx)       # сначала данные: так хаб узнаёт, как FRED сейчас отвечает
             metas = {sid: FR.fetch_meta(sid, ctx) for sid in ids}
             res = get("fred").fetch({"ids": ids, "meta": metas}, ctx)
             return metas, res
@@ -86,7 +87,9 @@ class FredTab(ttk.Frame):
 
     def _failed(self, exc):
         from ..core import errors as E
-        self.info.configure(text=f"Не получилось: {E.human_message(exc)}", style="red.TLabel")
+        detail = getattr(exc, "detail", "") or ""
+        self.info.configure(text=f"Не получилось: {E.human_message(exc)}" + (
+            f"\nЧто пробовал хаб: {detail[:600]}" if detail else ""), style="red.TLabel")
 
     def add(self):
         if not self.ids:

@@ -147,12 +147,14 @@ def aia_bundle(url, timeout=30):
     return path
 
 
-def http_get(url, ctx=None, timeout=60):
-    """(status, content_type, bytes, final_url) через requests."""
+def http_get(url, ctx=None, timeout=60, headers=None):
+    """(status, content_type, bytes, final_url) через requests. headers — свои заголовки вместо «как браузер»
+    ({} — заголовки самой requests)."""
     import requests
     s = requests.Session()
     s.headers.update({"User-Agent": UA, "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-                      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
+                      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+                     if headers is None else headers)
     try:
         r = s.get(url, timeout=timeout, allow_redirects=True)
     except requests.exceptions.SSLError as first:

@@ -727,11 +727,12 @@ def test_fred_link_in_site_tab_opens_fred_tab(app, monkeypatch):
     from hub.sources import _web as Wb, fred as FR
     page = (Path(__file__).parent.parent / "samples" / "web")
 
-    def fake_get(url, ctx=None, timeout=60):
+    def fake_get(url, ctx=None, timeout=60, headers=None):
         if url == FR.csv_url("PFISHUSDM"):
             return 200, "text/csv", (page / "fred_PFISHUSDM.csv").read_bytes(), url
         return 200, "text/html", (page / "fred_PFISHUSDM.html").read_bytes(), url
     monkeypatch.setattr(Wb, "http_get", fake_get)
+    monkeypatch.setattr(FR, "_way", {})
     app.find.site.url.set("https://fred.stlouisfed.org/graph/fredgraph.csv?id=PFISHUSDM&cosd=1992-01-01")
     app.find.site.analyze()
     tab = app.find.fred
