@@ -523,7 +523,7 @@ def test_jobs_sort_by_heading(app):
     from hub.gui import widgets as W
     tree = app.jobs.tree
     for i, (name, upd) in enumerate((("Бета", "05.10.2026 10:00"), ("альфа", "—"), ("Гамма", "21.09.2026 09:00"))):
-        tree.insert("", "end", iid=f"x{i}", values=(name, "", "", "", "", upd))
+        tree.insert("", "end", iid=f"x{i}", values=(name, "", "", "", "", "", upd))
     assert tree.heading("name", "command")      # заголовок кликабельный
     tree._sort.update(col="name", rev=False)
     W.resort(tree)
@@ -532,6 +532,8 @@ def test_jobs_sort_by_heading(app):
     W.resort(tree)
     assert [tree.set(i, "updated") for i in tree.get_children()] == ["05.10.2026 10:00", "21.09.2026 09:00", "—"]
     assert W.sort_key_fn(["10 рядов", "9 рядов"])("10 рядов") == 10
+    key = W.sort_key_fn(["+5 ч", "−2 дн", "+1 дн", "0"])                 # «Дельта»: часы и дни вместе
+    assert sorted(["+5 ч", "−2 дн", "+1 дн", "0"], key=key) == ["−2 дн", "0", "+5 ч", "+1 дн"]
     assert W.sort_key_fn(["2026-01", "2025-Q3"])("2026-01") == "2026-01"
 
 
@@ -814,3 +816,18 @@ def test_form_dialog_vary_values_from_page_list(app):
     e = FormDialog(app, p["url"], p["request"], None, job=app.cfg.job(job["id"]))
     pump(app, 0.2)
     assert field in e.choices and len(e.vary[field]["values"]) == 2
+
+
+def test_jobs_list_columns(app, fakes):
+    """«Мои показатели»: рядов, период, история, последнее, частота, следующее, модели (и через выборку)."""
+    job = app.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]},
+                          schedule="weekly:Mon,Tue,Wed,Thu,Fri@10:00")
+    r = app.runner()
+    r.run(force=True)
+    r.close()
+    app.cfg.add_model("Модель", "x.xlsx")
+    app.cfg.subscribe("Модель", job_id=job["id"])
+    app.jobs.refresh()
+    v = app.jobs.tree.set(job["id"])
+    assert v["count"] == "1" and v["period"] == "Месяц" and v["history"] == "2024–2025" and v["last"] == "2025-09"
+    assert v["freq"] == "День" and v["next"].isdigit() and v["models"] == "Модель"

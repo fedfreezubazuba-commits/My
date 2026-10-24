@@ -14,11 +14,20 @@ from . import widgets as W
 from .schedule_box import ScheduleBox
 from .tab_overview import review_quarantine, send_claude
 
-COLS = ("name", "source", "volume", "last_period", "last_value", "updated", "attempt", "status", "expected", "models")
-HEAD = ("Название", "Источник", "Объём", "Последний период", "Последнее значение", "Обновлено",
-        "Последняя попытка", "Статус", "Ожидаем новые", "Модели")
-WIDTH = {"name": 320, "source": 95, "volume": 170, "last_period": 75, "last_value": 105, "updated": 100,
-         "attempt": 100, "status": 160, "expected": 85, "models": 110}
+COLS = ("name", "source", "count", "period", "history", "last", "updated", "delta", "freq", "next", "models")
+HEAD = ("Название", "Источник", "Рядов", "Период", "История", "Последнее", "Обновлено", "Дельта", "Частота",
+        "Следующее", "Модели")
+WIDTH = {"name": 320, "source": 110, "count": 60, "period": 75, "history": 85, "last": 90, "updated": 95,
+         "delta": 65, "freq": 100, "next": 80, "models": 160}
+TIPS = {"count": "Сколько рядов в показателе", "period": "Периодичность данных",
+        "history": "Какие годы покрыты данными", "last": "Последний период в данных",
+        "updated": "Когда пришли новые данные",
+        "delta": "Насколько раньше (−) или позже (+) срока по графику пришли последние новые данные",
+        "freq": "Как часто хаб проверяет показатель по графику («авто» — по мере выхода данных)",
+        "next": "Через сколько дней следующая проверка (0 — сегодня)",
+        "models": "В какие модели уходят данные; «(часть)» — только часть рядов (выборка)"}
+HINT = ("Выделите показатель — здесь появится, что значит его статус и что делать. Цвет строки — статус. "
+        "Двойной щелчок — история показателя. Правая кнопка — все действия. Наведите на заголовок — что в столбце.")
 FILTERS = ["Все", "Требуют внимания", "На паузе", "Банк России", "ЕМИСС", "Сайты и файлы"]
 
 
@@ -82,6 +91,8 @@ class JobsTab(ttk.Frame):
         frame, self.tree = W.tree_with_scroll(self, COLS, HEAD, WIDTH, height=20, selectmode="extended")
         frame.pack(fill="both", expand=True)
         W.sortable(self.tree)
+        self.tree.bind("<Motion>", self._head_tip, add="+")
+        self._tip = None
         self.tree.bind("<Double-1>", lambda e: self.history())
         self.tree.bind("<Button-3>", self._context)
         self.ctx = tk.Menu(self, tearoff=False)
@@ -93,9 +104,7 @@ class JobsTab(ttk.Frame):
             self.ctx.add_command(label=label, command=cmd)
         self.info = ttk.Label(self, wraplength=1200, justify="left", padding=(2, 6, 2, 0))
         self.info.pack(fill="x")
-        self.hint = ttk.Label(self, style="Hint.TLabel",
-                              text="Выделите показатель — здесь появится, что значит его статус и что делать. "
-                                   "Двойной щелчок — история показателя. Правая кнопка — все действия.")
+        self.hint = ttk.Label(self, style="Hint.TLabel", text=HINT)
         self.hint.pack(anchor="w", pady=(2, 0))
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.explain(), add="+")
 
@@ -112,6 +121,22 @@ class JobsTab(ttk.Frame):
                                  f"{next_check_text(self.app, job, st)}".strip(),
                             foreground=ST.COLORS[ST.color(status)] if ST.color(status) != ST.GREEN else "")
 
+    def _head_tip(self, e):
+        """Подсказка к заголовку столбца (что значит «Дельта», «Частота»…) — в строке под списком."""
+        if self.tree.identify_region(e.x, e.y) != "heading":
+            if self._tip:
+                self._tip = None
+                self.hint.configure(text=HINT)
+            return
+        col = self.tree.identify_column(e.x)
+        try:
+            key = COLS[int(col.lstrip("#")) - 1]
+        except (ValueError, IndexError):
+            return
+        if key != self._tip:
+            self._tip = key
+            self.hint.configure(text=TIPS.get(key, HINT))
+
     def _context(self, e):
         iid = self.tree.identify_row(e.y)
         if iid:
@@ -125,7 +150,10 @@ class JobsTab(ttk.Frame):
         states = app.store.states()
         text = self.search.get().strip().lower()
         flt = self.flt.get()
-        models = app.cfg.models()
+        from ..core import joblist
+        import datetime as dt
+        now = dt.datetime.now()
+        links = joblist.model_links(app.cfg, app.store)
         for job in app.cfg.jobs():
             st = states.get(job["id"], {})
             status = ST.effective(job, st)
@@ -143,14 +171,18 @@ class JobsTab(ttk.Frame):
                 continue
             if flt == "Сайты и файлы" and job["source"] in ("cbr", "fedstat"):
                 continue
-            mods = ", ".join(m["name"] for m in models if m.get("active", True) and job["id"] in m["jobs"])
-            val = f"{fmt(st.get('last_value'))} {st.get('last_unit') or ''}".strip() if st.get("last_value") is not None else "—"
+            try:
+                snap = sources.get(job["source"]).snapshot
+            except KeyError:
+                snap = False
+            try:
+                r = joblist.row(app.store, job, st, now, snapshot=snap)
+            except Exception:  # noqa: BLE001 — строка списка не должна ломать окно
+                r = dict.fromkeys(("count", "period", "history", "last", "delta", "freq", "next"), "—")
             self.tree.insert("", "end", iid=job["id"], tags=(ST.color(status),), values=(
-                job["name"], src_title, volume(app.store, job["id"], st), st.get("last_label") or "—", val,
-                fmt_date(st.get("last_change") or st.get("last_success")), fmt_date(st.get("last_attempt")),
-                W.status_text(status), fmt_date((st.get("expected_next") or "")[:10])
-                if job["source"] in ("cbr", "fedstat") or job.get("release_dates") or st.get("release_next") else "",
-                mods))
+                job["name"], src_title, r["count"], r["period"], r["history"], r["last"],
+                fmt_date(st.get("last_change") or st.get("last_success")), r["delta"], r["freq"], r["next"],
+                links.get(job["id"], "")))
         W.resort(self.tree)
         for iid in sel:
             if self.tree.exists(iid):

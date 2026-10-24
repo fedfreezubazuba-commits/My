@@ -139,7 +139,7 @@ def fit_columns(tree, minimum=40):
 
 
 _DATE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2}))?")
-_NUM = re.compile(r"[-−]?\d[\d\s\u00a0]*(?:,\d+)?(?![\d.\-])")
+_NUM = re.compile(r"[-−+]?\d[\d\s\u00a0]*(?:,\d+)?(?![\d.\-])")
 EMPTY = ("", "—", "-")
 
 
@@ -153,9 +153,10 @@ def _as_num(s):
     if not m:
         return None
     try:
-        return float(re.sub(r"\s", "", m.group(0)).replace(",", ".").replace("−", "-"))
+        v = float(re.sub(r"\s", "", m.group(0)).replace(",", ".").replace("−", "-"))
     except ValueError:
         return None
+    return v / 24 if s[m.end():].strip().startswith("ч") else v      # «+5 ч» и «−2 дн» в одном столбце — в днях
 
 
 def sort_key_fn(values):
