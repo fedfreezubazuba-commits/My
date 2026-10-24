@@ -135,8 +135,12 @@ class FormDialog(tk.Toplevel):
             return
         n = len(F.chunks(self.period, y, dt.date.today(), self.by.get()))
         from ..core.overview import plural
+        days = self.app.cfg.full_reload_days(self.job)
+        fresh = ("последние дни (с последней загруженной даты минус неделю)" if self.period.get("kind") == "dates"
+                 else "последние месяцы")
+        full = f"всю историю — раз в {days} дн." if days else "всю историю заново не берёт (так задано в настройках)"
         self.count.configure(text=f"Первая загрузка — {n} {plural(n, 'запрос', 'запроса', 'запросов')} к сайту (с паузой {WF.PAUSE_S} с между ними). "
-                                  "Дальше хаб спрашивает только последние месяцы, а всю историю — раз в 30 дней.")
+                                  f"Дальше хаб спрашивает только {fresh}, а {full}.")
 
     def params(self):
         values = {n: var.get() for n, var in self.vars.items() if var.get() != self.base.get(n)}

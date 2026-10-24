@@ -331,3 +331,53 @@ def test_chart_json_becomes_table():
     t = F.tables_in(json.dumps({"series": [{"name": "NOK/kg", "data": [[ms + i * 7 * 86400000, 80 + i] for i in range(3)]}]}))
     chart = [x for x in t if x.title == "График"][0]
     assert chart.header == ["Дата", "NOK/kg"] and chart.rows[0][0].startswith("2024-01-07")
+
+
+def test_date_form_loads_up_to_today_then_only_fresh_days(workdir):
+    """Курсы ЦБ (форма «с … по …»): данные за каждый день — первая загрузка доходит до сегодняшнего дня (раньше
+    кончалась прошлым месяцем), следующая спрашивает только последнюю неделю и новые дни."""
+    import cbr_rates_site as RS
+    from hub.core.paths import Paths
+    from hub.runner import Runner
+    now = {"t": dt.datetime(2026, 10, 22, 12, 0)}
+    site = RS.make_site(now)
+    r = Runner(Paths(workdir), ctx_clients={"web_form": site}, now=now["t"])
+    try:
+        params = {"url": RS.URL, "request": RS.REQ, "from_year": 2025, "by": "year", "periodicity": "auto",
+                  "period": F.detect_period(F.fields(RS.REQ), now["t"].date())}
+        job = r.cfg.add_job("web_form", "Курс евро", params)
+        out = r.run(job_ids=[job["id"]]).outcomes[0]
+        assert out.status == "updated", out.message
+        assert [(c["UniDbQuery.From"], c["UniDbQuery.To"]) for c in site.calls] == [
+            ("01.01.2025", "31.12.2025"), ("01.01.2026", "22.10.2026")]
+        s = r.store.series_of_job(job["id"])[0]
+        assert s["periodicity"] == "day" and r.store.state(job["id"])["last_period"] == "2026-10-22"
+        now["t"] = r.now = dt.datetime(2026, 10, 26, 12, 0)
+        out = r.run(job_ids=[job["id"]]).outcomes[0]
+        assert [(c["UniDbQuery.From"], c["UniDbQuery.To"]) for c in site.calls] == [("15.10.2026", "26.10.2026")]
+        assert r.store.state(job["id"])["last_period"] == "2026-10-26"
+    finally:
+        r.close()
+
+
+def test_full_reload_days_from_settings_and_job(workdir):
+    """«Всю историю заново — раз в N дней»: из «Настроек» (по умолчанию 30), у показателя — своё; 0 — никогда."""
+    from hub.core.paths import Paths
+    from hub.runner import Runner
+    r = Runner(Paths(workdir), now=NOW)
+    try:
+        job = r.cfg.add_job("web_form", "Курс", {"request": {"method": "GET", "url": "http://x/"}})
+        ctx = Context(now=NOW)
+        assert r.job_context(job, ctx).full_reload                      # ни разу не грузили всё — полная
+        r.store.meta_set(f"full:{job['id']}", (dt.datetime.now() - dt.timedelta(days=10)).isoformat())
+        assert not r.job_context(job, ctx).full_reload                  # 10 дней < 30
+        s = r.cfg.settings()
+        s["full_reload_days"] = 7
+        r.cfg.save_settings(s)
+        assert r.job_context(job, ctx).full_reload                      # настройка: раз в 7 дней
+        job = r.cfg.update_job(job["id"], full_reload_days=0)
+        assert r.cfg.full_reload_days(job) == 0 and not r.job_context(job, ctx).full_reload
+        job = r.cfg.update_job(job["id"], full_reload_days=None)        # снова как в настройках
+        assert r.cfg.full_reload_days(job) == 7
+    finally:
+        r.close()

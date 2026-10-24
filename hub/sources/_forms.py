@@ -156,6 +156,8 @@ def chunks(period, from_year, today: dt.date, by="year", since: dt.date | None =
     since — дозагрузка: только части, которые заканчиваются не раньше этой даты."""
     if period and period.get("kind") == "year_months" and not period.get("start") and not period.get("end"):
         by = "year"                     # в запросе только год (вкладки лет) — по месяцам спрашивать нечего
+    if period and period.get("kind") == "dates":
+        return day_chunks(period, from_year, today, by, since)
     out = []
     for y in range(int(from_year), today.year + 1):
         last_m = 12 if y < today.year else today.month - 1     # текущий месяц ещё не закончился — данных нет
@@ -167,6 +169,20 @@ def chunks(period, from_year, today: dt.date, by="year", since: dt.date | None =
             if since and b < since:
                 continue
             out.append((period_values(period, a, b), a, b))
+    return out
+
+
+def day_chunks(period, from_year, today: dt.date, by="year", since: dt.date | None = None):
+    """Форма с датами «с … по …» (курсы валют, котировки): данные бывают за каждый день, поэтому — по сегодня
+    включительно (не только законченные месяцы); дозагрузка — с даты since, а не с начала месяца."""
+    start = max(since, dt.date(int(from_year), 1, 1)) if since else dt.date(int(from_year), 1, 1)
+    out = []
+    a = start
+    while a <= today:
+        b = dt.date(a.year, 12, 31) if by == "year" else P.month_end(a.year, a.month)
+        b = min(b, today)
+        out.append((period_values(period, a, b), a, b))
+        a = b + dt.timedelta(days=1)
     return out
 
 

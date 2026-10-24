@@ -326,6 +326,15 @@ legacy/            исходные навигаторы пользовател�
   способ — `cache/fred_way.txt` и первым в следующий раз; метаданные — тем же способом + браузер. Ошибка —
   `HubError(NETWORK)` с `detail` по способам (вкладка показывает «Что пробовал хаб»). `_web.http_get(headers=…)`.
 
+- **0.8.6 — формы с датами и «всю историю заново»**: курс ЦБ (cbr.ru/currency_base/dynamics, `UniDbQuery.From/To`)
+  кончался прошлым месяцем — `chunks` не спрашивал текущий месяц (правило для месячной статистики). Для
+  `period.kind == "dates"` — `_forms.day_chunks`: по сегодня включительно, дозагрузка с `last_period − DAYS_BACK` (7)
+  (`web_form.fetch`). Срок полной загрузки: `settings.full_reload_days` (30; 0 — никогда) и `job.full_reload_days`
+  (None — как в настройках) → `cfg.full_reload_days(job)` → `runner.job_context` (вместо `FULL_RELOAD_DAYS`).
+  `Source.incremental(params)` (fedstat, comtrade, web_form с периодом) — тогда строка `dialog_add.reload_row` в
+  «＋ В обновления» и ◷ JobWindow; поле в «Настройках». Тест-сайт — `tests/cbr_rates_site.py` («Единиц» — столбец
+  единиц, ряд «Курс», дневной). Сохранённая пользователем страница в пакет не попала — образец синтетический.
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

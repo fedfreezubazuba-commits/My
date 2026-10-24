@@ -372,6 +372,15 @@ class JobWindow(tk.Toplevel):
         ttk.Label(r, text="Отложить данные, если значение изменилось больше чем на, %:").pack(side="left")
         self.jump = tk.StringVar(value=str((job.get("checks") or {}).get("max_jump_pct") or ""))
         ttk.Entry(r, textvariable=self.jump, width=8).pack(side="left", padx=6)
+        self.reload = None
+        try:
+            from ..sources import get as get_source
+            incremental = get_source(job["source"]).incremental(job.get("params") or {})
+        except Exception:  # noqa: BLE001
+            incremental = False
+        if incremental:
+            from .dialog_add import reload_row
+            self.reload = reload_row(more.body, app, job.get("full_reload_days"))
         ttk.Button(left, text="Сохранить график", style="Accent.TButton", command=self.save).pack(anchor="w", pady=8)
 
         right = ttk.Frame(top)
@@ -447,8 +456,17 @@ class JobWindow(tk.Toplevel):
                 return
         else:
             checks.pop("max_jump_pct", None)
+        extra = {}
+        if self.reload is not None:
+            from .dialog_add import reload_value
+            try:
+                extra["full_reload_days"] = reload_value(self.reload)
+            except ValueError:
+                messagebox.showwarning("Вся история", "Число дней — целое число, например 30 (0 — никогда).",
+                                       parent=self)
+                return
         self.job = self.app.cfg.update_job(self.job["id"], name=self.name.get().strip() or self.job["name"],
-                                           schedule=schedule, release_dates=release, checks=checks)
+                                           schedule=schedule, release_dates=release, checks=checks, **extra)
         self.saved.configure(text="✔ Сохранено: " + S.human(schedule))
         self.app.refresh_all()
 

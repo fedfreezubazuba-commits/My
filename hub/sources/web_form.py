@@ -28,6 +28,7 @@ from ..core.config import slug
 from . import _forms as F
 from .base import FetchResult, Obs, SeriesInfo, Source
 
+DAYS_BACK = 7          # дозагрузка формы с датами: с последней загруженной даты минус неделя (поправки задним числом)
 PAUSE_S = 4            # пауза между запросами к сайту (сайты с формами обычно медленные и не любят спешки)
 TITLES = {"stats.customs.gov.cn": "Таможня Китая"}
 
@@ -67,6 +68,9 @@ class WebForm(Source):
     def open_url(self, params):
         return params.get("url") or params["request"].get("frame_url") or ""
 
+    def incremental(self, params):
+        return bool(params.get("period"))
+
     def timeout(self, params):
         n = len(requests_for(params, dt.date.today()))
         return min(60 + n * (90 + PAUSE_S), 4 * 3600)
@@ -78,7 +82,10 @@ class WebForm(Source):
             # дозагрузка: последний загруженный период и всё после него (сайт мог уточнить последние месяцы)
             lp = ctx.last_period
             last = lp if isinstance(lp, dt.date) else (P.label_end(lp) or today)
-            since = dt.date(last.year, max(1, last.month - 2), 1)
+            if (params.get("period") or {}).get("kind") == "dates":
+                since = last - dt.timedelta(days=DAYS_BACK)     # данные по дням: последняя неделя и всё новое
+            else:
+                since = dt.date(last.year, max(1, last.month - 2), 1)
         plan = requests_for(params, today, since)
         if not plan:                           # январь: прошлый год уже загружен, а новый месяц ещё не кончился
             return FetchResult(url=params.get("url") or "", unchanged=True, partial=True)
@@ -105,7 +112,10 @@ class WebForm(Source):
             if ctx is None or ctx.browser is None or not ctx.browser.available():
                 raise E.HubError(E.INTERNAL, "Для «Формы на сайте» нужен встроенный браузер — запустите «Установка.bat»")
             replay = ctx.browser.replay
-        self.say(ctx, f"Запросов к сайту: {len(plan)} (по одному на {'год' if params.get('by', 'year') == 'year' else 'месяц'})")
+        if since is not None:
+            self.say(ctx, f"Свежие данные: с {since:%d.%m.%Y}, запросов к сайту: {len(plan)}")
+        else:
+            self.say(ctx, f"Запросов к сайту: {len(plan)} (по одному на {'год' if params.get('by', 'year') == 'year' else 'месяц'})")
         answers = replay(params.get("url") or params["request"].get("frame_url") or params["request"]["url"],
                          [r for r, _a, _b in plan], pause_s=PAUSE_S,
                          progress=lambda i, msg=None: self.say(ctx, msg or f"Запрос {i} из {len(plan)}"),

@@ -263,11 +263,9 @@ class Runner:
         p.write_bytes(res.raw)
         return str(p)
 
-    FULL_RELOAD_DAYS = 30
-
     def job_context(self, job, ctx, progress=None):
         """Контекст одного показателя: последний загруженный период (для дозагрузки только свежих лет)
-        и нужна ли полная перезагрузка (раз в месяц — чтобы поймать пересмотры старых данных)."""
+        и нужна ли полная перезагрузка (раз в N дней — чтобы поймать пересмотры старых данных)."""
         jctx = copy.copy(ctx)
         state = self.store.state(job["id"])
         try:
@@ -275,9 +273,10 @@ class Runner:
         except ValueError:
             jctx.last_period = None
         last_full = self.store.meta_get(f"full:{job['id']}")
+        days = self.cfg.full_reload_days(job)      # из «Настроек» или свой у показателя; 0 — никогда
         try:
-            jctx.full_reload = not last_full or (dt.datetime.now() - dt.datetime.fromisoformat(last_full)).days \
-                >= self.FULL_RELOAD_DAYS
+            jctx.full_reload = not last_full or days > 0 and (
+                dt.datetime.now() - dt.datetime.fromisoformat(last_full)).days >= days
         except ValueError:
             jctx.full_reload = True
         jctx.progress = progress

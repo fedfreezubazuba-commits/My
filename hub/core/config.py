@@ -30,6 +30,7 @@ DEFAULT_SETTINGS = {
     "fail_threshold": 3,             # после стольких сбоев подряд — красный статус
     "job_timeout_sec": 600,
     "trash_days": 30,
+    "full_reload_days": 30,          # дозагружаемые показатели: всю историю заново — раз в столько дней (0 — никогда)
     "first_run_done": False,
 }
 
@@ -120,6 +121,20 @@ class Config:
         while jid in existing:
             jid, n = f"{base}-{n}", n + 1
         return jid
+
+    def full_reload_days(self, job) -> int:
+        """Раз в сколько дней загружать всю историю показателя заново: его собственное значение или из
+        «Настроек»; 0 — никогда (только первая загрузка и после «Изменить набор данных»)."""
+        own = (job or {}).get("full_reload_days")
+        if own is not None and str(own).strip() != "":
+            try:
+                return max(0, int(own))
+            except (TypeError, ValueError):
+                pass
+        try:
+            return max(0, int(self.settings().get("full_reload_days", 30)))
+        except (TypeError, ValueError):
+            return 30
 
     def add_job(self, source, name, params, schedule="auto", checks=None, tags=None, extra=None) -> dict:
         with _lock:

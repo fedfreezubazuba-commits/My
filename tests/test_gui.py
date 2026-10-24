@@ -744,3 +744,35 @@ def test_fred_link_in_site_tab_opens_fred_tab(app, monkeypatch):
     tab.add()
     assert opened[0][0] == "fred" and opened[0][1]["ids"] == ["PFISHUSDM"]
     assert opened[0][2] == "FRED: Global price of Fish meal (PFISHUSDM)"
+
+
+def test_full_reload_days_in_add_dialog_job_window_and_settings(app, monkeypatch):
+    """«Всю историю заново — раз в N дней»: в «＋ В обновления» и ◷ — только у показателей с дозагрузкой."""
+    from hub.gui.dialog_add import AddDialog
+    from hub.gui.tab_jobs import JobWindow
+    d = AddDialog(app, "cbr", {"category": 18, "indicators": [37], "m1": [2]}, "Ставки")
+    assert d.reload is None                                     # ЦБ всегда отдаёт всю историю
+    d.destroy()
+    params = {"url": "https://cbr.ru/currency_base/dynamics/", "request": {"method": "GET", "url": "https://cbr.ru/x"},
+              "period": {"kind": "dates", "start": "From", "end": "To", "fmt": "%d.%m.%Y"}, "from_year": 2020}
+    d = AddDialog(app, "web_form", params, "Курс евро")
+    d.reload.set("abc")
+    d.add()
+    assert not app.cfg.jobs()                                   # не число — предупреждение, ничего не добавлено
+    d.reload.set("0")
+    monkeypatch.setattr(app, "bg", lambda *a, **k: None)       # без пробной загрузки (сайта нет)
+    d.add()
+    job = app.cfg.jobs()[0]
+    assert job["full_reload_days"] == 0
+    w = JobWindow(app, job["id"])
+    pump(app, 0.2)
+    assert w.reload.get() == "0"
+    w.reload.set("")
+    w.save()
+    assert app.cfg.job(job["id"])["full_reload_days"] is None and app.cfg.full_reload_days(app.cfg.job(job["id"])) == 30
+    tab = app.settings
+    tab.refresh()
+    assert tab.vars["full_reload_days"].get() == "30"
+    tab.vars["full_reload_days"].set("14")
+    tab.save()
+    assert app.cfg.full_reload_days(app.cfg.job(job["id"])) == 14

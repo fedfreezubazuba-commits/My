@@ -275,6 +275,9 @@ class FedstatSource(Source):
     def open_url(self, params):
         return f"{BASE}/indicator/{params.get('id')}"
 
+    def incremental(self, params):
+        return True
+
     def timeout(self, params):
         return 3 * 3600          # большой показатель грузится частями по годам, с паузами
 

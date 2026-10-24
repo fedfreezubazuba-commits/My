@@ -74,6 +74,9 @@ class Comtrade(Source):
     def open_url(self, params):
         return "https://comtradeplus.un.org/TradeFlow"
 
+    def incremental(self, params):
+        return True
+
     def timeout(self, params):
         n = len(month_chunks(params.get("from_year") or dt.date.today().year, dt.date.today()))
         return min(120 + n * 60, 3600)

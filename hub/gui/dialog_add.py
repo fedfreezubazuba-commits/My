@@ -15,6 +15,32 @@ from ..core import errors as E
 from . import widgets as W
 from .schedule_box import ScheduleBox
 
+def reload_row(parent, app, value=None):
+    """Строка «Всю историю заново — раз в N дней» (для показателей с дозагрузкой). → StringVar."""
+    default = app.cfg.full_reload_days(None)
+    var = tk.StringVar(value="" if value is None else str(value))
+    r = ttk.Frame(parent)
+    r.pack(fill="x", pady=2)
+    ttk.Label(r, text="Всю историю заново — раз в, дней:").pack(side="left")
+    ttk.Entry(r, textvariable=var, width=6).pack(side="left", padx=6)
+    W.autowrap(ttk.Label(parent, style="Hint.TLabel", justify="left", text=(
+        "Обычно хаб берёт у источника только свежие данные, а раз в столько дней — всю историю заново (источник мог "
+        f"исправить старые значения). Пусто — как в «Настройках» (сейчас {default or 'никогда'}"
+        f"{' дн.' if default else ''}); 0 — никогда."))).pack(fill="x")
+    return var
+
+
+def reload_value(var):
+    """Значение из reload_row: None (как в настройках) или число дней ≥ 0; ValueError — не число."""
+    t = var.get().strip()
+    if not t:
+        return None
+    n = int(t)
+    if n < 0:
+        raise ValueError(t)
+    return n
+
+
 class AddDialog(tk.Toplevel):
     def __init__(self, app, source, params, name, note="", checks=None, schedule=None, on_added=None):
         super().__init__(app.root)
@@ -58,6 +84,7 @@ class AddDialog(tk.Toplevel):
         ttk.Label(r, text="Метки через запятую:").pack(side="left")
         self.tags = tk.StringVar()
         ttk.Entry(r, textvariable=self.tags, width=30).pack(side="left", padx=6)
+        self.reload = reload_row(more.body, app) if self.src.incremental(params) else None
         ttk.Label(more.body, text="Источник: " + self.src.describe(params), style="Hint.TLabel",
                   wraplength=560, justify="left").pack(anchor="w", pady=(6, 0))
 
@@ -95,8 +122,18 @@ class AddDialog(tk.Toplevel):
         else:
             checks.pop("max_jump_pct", None)
         tags = [t.strip() for t in self.tags.get().split(",") if t.strip()]
+        extra = {"release_dates": release} if release else {}
+        if self.reload is not None:
+            try:
+                days = reload_value(self.reload)
+            except ValueError:
+                messagebox.showwarning("Вся история", "Число дней — целое число, например 30 (0 — никогда).",
+                                       parent=self)
+                return
+            if days is not None:
+                extra["full_reload_days"] = days
         job = self.app.cfg.add_job(self.source, name, self.params, schedule=schedule, checks=checks, tags=tags,
-                                   extra={"release_dates": release} if release else None)
+                                   extra=extra or None)
         self.job = job
         self.add_btn.state(["disabled"])
         self.cancel_btn.state(["disabled"])

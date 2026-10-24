@@ -132,6 +132,10 @@ class Source:
     def open_url(self, params) -> str:
         return params.get("url") or ""
 
+    def incremental(self, params) -> bool:
+        """Умеет ли источник дозагрузку (только свежие периоды, а всю историю — раз в N дней)."""
+        return False
+
     def timeout(self, params) -> int:
         """Сколько секунд можно ждать загрузку (больше — для источников, которые грузят частями)."""
         return 0

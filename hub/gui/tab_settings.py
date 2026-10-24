@@ -82,6 +82,12 @@ class SettingsTab(ttk.Frame):
         row("Хранить сырые ответы, дней", ttk.Entry(g, textvariable=self.vars["keep_raw_days"], width=8),
             "Архив ответов сайтов — пригодится, если что-то сломается.")
 
+        self.vars["full_reload_days"] = tk.StringVar()
+        row("Всю историю заново — раз в, дней", ttk.Entry(g, textvariable=self.vars["full_reload_days"], width=8),
+            "Для показателей, которые хаб дозагружает (ЕМИСС, формы на сайтах, UN Comtrade): обычно берутся только "
+            "свежие данные, а раз в столько дней — вся история (источник мог исправить старые значения). 0 — никогда. "
+            "У отдельного показателя можно задать своё число: «Мои показатели» → ◷ → «Проверки новых данных».")
+
         bar = ttk.Frame(self)
         bar.pack(fill="x", pady=16)
         ttk.Button(bar, text="Сохранить настройки", style="Accent.TButton", command=self.save).pack(side="left")
@@ -104,6 +110,10 @@ class SettingsTab(ttk.Frame):
             s["keep_raw_days"] = int(s["keep_raw_days"])
         except (TypeError, ValueError):
             s["keep_raw_days"] = 90
+        try:
+            s["full_reload_days"] = max(0, int(s["full_reload_days"]))
+        except (TypeError, ValueError):
+            s["full_reload_days"] = 30
         self.app.cfg.save_settings(s)
         self.app.status.set("Настройки сохранены")
 
