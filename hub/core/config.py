@@ -327,5 +327,21 @@ class Config:
                 m["jobs"].remove(job_id)
                 self.save_models(models)
 
+    def toggle_critical(self, model_name, keys) -> bool:
+        """Отметить / снять «критичные данные» модели: keys — «job:<показатель>», «sel:<выборка>», «code:<ряд>».
+        Если все уже отмечены — снять, иначе отметить все. → True, если теперь отмечены."""
+        with _lock:
+            models = self.models()
+            m = next((x for x in models if x["name"] == model_name), None)
+            if m is None:
+                raise KeyError(model_name)
+            cur = list(m.get("critical") or [])
+            on = not all(k in cur for k in keys)
+            m["critical"] = ([*cur, *[k for k in keys if k not in cur]] if on else [k for k in cur if k not in keys])
+            if not m["critical"]:
+                m.pop("critical")
+            self.save_models(models)
+            return on
+
     def models_of_job(self, job_id) -> list[str]:
         return [m["name"] for m in self.models() if m.get("active", True) and job_id in m["jobs"]]

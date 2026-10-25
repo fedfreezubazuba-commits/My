@@ -69,6 +69,19 @@ def delta_text(td: dt.timedelta | None) -> str:
     return f"{sign}{round(sec / 86400)} дн"
 
 
+def lag_text(state, now: dt.datetime) -> str:
+    """«Задержка»: сколько дней от конца последнего периода в данных до сегодня («−» — период ещё не кончился,
+    например прогноз или данные за текущий месяц)."""
+    last = state.get("last_period")
+    if not last:
+        return "—"
+    try:
+        days = (now.date() - dt.date.fromisoformat(last[:10])).days
+    except ValueError:
+        return "—"
+    return f"{days} дн" if days >= 0 else f"−{-days} дн"
+
+
 def planned_moment(store, job, state, when: dt.datetime) -> dt.datetime | None:
     """Плановый срок, с которым сравнивать момент when (приход последних новых данных)."""
     try:
@@ -137,6 +150,6 @@ def row(store, job, state, now, snapshot=False) -> dict:
     last_change = S._dt(state.get("last_change"))
     planned = planned_moment(store, job, state, last_change) if last_change else None
     return {"count": str(len(series)) if series else "—", "period": period_word(pers),
-            "history": history_text(state), "last": state.get("last_label") or "—",
+            "history": history_text(state), "last": state.get("last_label") or "—", "lag": lag_text(state, now),
             "delta": delta_text(last_change - planned if planned else None),
             "freq": frequency_word(job, main), "next": next_days(job, state, now, snapshot, main)}

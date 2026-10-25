@@ -40,3 +40,10 @@ def test_model_links_full_and_partial(runner):
     runner.cfg.save_selection("М", {"job": fs["id"], "name": "РФ", "filters": {region: ["Российская Федерация"]},
                                     "from": "", "to": ""})
     assert JL.model_links(runner.cfg, runner.store) == {fs["id"]: "М (часть), Н"}
+
+
+def test_lag_text():
+    now = dt.datetime(2026, 10, 25, 12)
+    assert JL.lag_text({"last_period": "2026-09-30"}, now) == "25 дн"
+    assert JL.lag_text({"last_period": "2026-10-31"}, now) == "−6 дн"
+    assert JL.lag_text({}, now) == "—"

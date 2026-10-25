@@ -141,6 +141,27 @@ def model_plan(cfg, store, model):
     return store.sync_subscriptions(model["name"], wanted), windows
 
 
+def critical_codes(cfg, store, model) -> set | None:
+    """Ряды, отмеченные в модели как критичные (показатель целиком, выборка или отдельный ряд); None — ничего не
+    отмечено (тогда важны все данные модели)."""
+    keys = model.get("critical") or []
+    if not keys:
+        return None
+    jobs = {j["id"] for j in cfg.jobs()}
+    out = set()
+    for k in keys:
+        kind, _sep, ident = str(k).partition(":")
+        if kind == "job" and ident in jobs:
+            out.update(r["code"] for r in store.series_of_job(ident))
+        elif kind == "sel":
+            sel = next((x for x in model.get("selections") or [] if x.get("id") == ident), None)
+            if sel and sel.get("job") in jobs:
+                out.update(selection_codes(store, sel))
+        elif kind == "code":
+            out.add(ident)
+    return out - set(model.get("exclude") or [])
+
+
 def model_codes(cfg, store, model) -> list[str]:
     """Ряды подписки в постоянном порядке столбцов (новые — справа)."""
     return model_plan(cfg, store, model)[0]

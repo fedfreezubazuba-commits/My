@@ -14,13 +14,14 @@ from . import widgets as W
 from .schedule_box import ScheduleBox
 from .tab_overview import review_quarantine, send_claude
 
-COLS = ("name", "source", "count", "period", "history", "last", "updated", "delta", "freq", "next", "models")
-HEAD = ("Название", "Источник", "Рядов", "Период", "История", "Последнее", "Обновлено", "Дельта", "Частота",
+COLS = ("name", "source", "count", "period", "history", "last", "lag", "updated", "delta", "freq", "next", "models")
+HEAD = ("Название", "Источник", "Рядов", "Период", "История", "Последнее", "Задержка", "Обновлено", "Дельта", "Частота",
         "Следующее", "Модели")
-WIDTH = {"name": 320, "source": 110, "count": 60, "period": 75, "history": 85, "last": 90, "updated": 95,
+WIDTH = {"name": 320, "source": 110, "count": 60, "period": 75, "history": 85, "last": 90, "lag": 75, "updated": 95,
          "delta": 65, "freq": 100, "next": 80, "models": 160}
 TIPS = {"count": "Сколько рядов в показателе", "period": "Периодичность данных",
         "history": "Какие годы покрыты данными", "last": "Последний период в данных",
+        "lag": "Сколько дней прошло с конца последнего периода в данных («−» — период ещё не закончился)",
         "updated": "Когда пришли новые данные",
         "delta": "Насколько раньше (−) или позже (+) срока по графику пришли последние новые данные",
         "freq": "Как часто хаб проверяет показатель по графику («авто» — по мере выхода данных)",
@@ -178,9 +179,9 @@ class JobsTab(ttk.Frame):
             try:
                 r = joblist.row(app.store, job, st, now, snapshot=snap)
             except Exception:  # noqa: BLE001 — строка списка не должна ломать окно
-                r = dict.fromkeys(("count", "period", "history", "last", "delta", "freq", "next"), "—")
+                r = dict.fromkeys(("count", "period", "history", "last", "lag", "delta", "freq", "next"), "—")
             self.tree.insert("", "end", iid=job["id"], tags=(ST.color(status),), values=(
-                job["name"], src_title, r["count"], r["period"], r["history"], r["last"],
+                job["name"], src_title, r["count"], r["period"], r["history"], r["last"], r["lag"],
                 fmt_date(st.get("last_change") or st.get("last_success")), r["delta"], r["freq"], r["next"],
                 links.get(job["id"], "")))
         W.resort(self.tree)
@@ -404,6 +405,8 @@ class JobWindow(tk.Toplevel):
         ttk.Label(r, text="Отложить данные, если значение изменилось больше чем на, %:").pack(side="left")
         self.jump = tk.StringVar(value=str((job.get("checks") or {}).get("max_jump_pct") or ""))
         ttk.Entry(r, textvariable=self.jump, width=8).pack(side="left", padx=6)
+        from .dialog_add import future_row
+        self.future = future_row(more.body, (job.get("checks") or {}).get("future_ok"))
         self.reload = None
         try:
             from ..sources import get as get_source
@@ -488,6 +491,10 @@ class JobWindow(tk.Toplevel):
                 return
         else:
             checks.pop("max_jump_pct", None)
+        if self.future.get():
+            checks["future_ok"] = True
+        else:
+            checks.pop("future_ok", None)
         extra = {}
         if self.reload is not None:
             from .dialog_add import reload_value

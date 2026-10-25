@@ -47,7 +47,7 @@ def run_checks(job, result, store, codes, today=None) -> list[str]:
         problems.append(f"Значение не число: {len(bad)} шт.")
 
     limit = today + dt.timedelta(days=int(checks.get("future_days", 1)))
-    future = [o for o in values if o.period_end > limit]
+    future = [] if checks.get("future_ok") else [o for o in values if o.period_end > limit]
     if future:
         o = max(future, key=lambda x: x.period_end)
         problems.append(f"Дата из будущего: {o.period_end:%d.%m.%Y}")
@@ -115,7 +115,9 @@ KINDS = [
     ("Исчезли ряды", "В ответе источника не оказалось части рядов, которые раньше были.", "missing_series", False),
     ("Резко уменьшилось", "Источник прислал гораздо меньше данных, чем обычно.", "min_rows_ratio", 0),
     ("Значение не число", "Часть значений не похожа на числа.", None, None),
-    ("Дата из будущего", "У части значений дата в будущем.", None, None),
+    ("Дата из будущего", "У части значений дата в будущем: так бывает у прогнозов и у данных за текущий месяц, "
+                         "которые выходят до его конца (дата — конец месяца). Если это так — примите: хаб запомнит, "
+                         "что показатель содержит прогнозные данные, и больше не будет спрашивать.", "future_ok", True),
 ]
 
 

@@ -23,6 +23,8 @@ class ModelsTab(ttk.Frame):
         for i, (icon, tip, cmd) in enumerate((
                 ("✎", "Изменить выборку — выделите строку выборки внизу", self.edit_selection),
                 ("⊖", "Убрать из модели выделенные ряды или выборку", self.remove_series),
+                ("★", "Критичные данные — отметить (или снять) выделенные выборки и ряды: «Модели с новыми данными» "
+                      "на «Обзоре» и уведомления — только когда обновились они", self.toggle_critical),
                 ("ƒx", "Формула — готовые формулы Excel для выделенного ряда", self.formula),
                 ("▦", "Открыть в Excel — выделенные ряды отдельным файлом для просмотра", self.open_excel),
                 ("↗", "Открыть модель в Excel", lambda: self.open_model()),
@@ -30,7 +32,7 @@ class ModelsTab(ttk.Frame):
                 ("☰", "Вид таблицы «Хаб» — строками (плоская) или столбцами", self.choose_layout),
                 ("⚡", "Проверить связь с Excel (если модель не подключается)", self.diagnose),
                 ("⏏", "Отключить модель — хаб перестанет обновлять для неё данные", self.disconnect))):
-            bar.add(W.icon_button(bar, icon, tip, cmd), gap_before=16 if i in (2, 4, 7) else 0)
+            bar.add(W.icon_button(bar, icon, tip, cmd), gap_before=16 if i in (3, 5, 8) else 0)
         pw = ttk.PanedWindow(self, orient="vertical")
         pw.pack(fill="both", expand=True, pady=8)
         top, self.tree = W.tree_with_scroll(pw, ("name", "path", "n", "built", "news"),
@@ -65,7 +67,8 @@ class ModelsTab(ttk.Frame):
                 continue
             st = self.app.store.model_state(m["name"])
             n = len(self.app.store.subscribed(m["name"]))
-            note = f"есть новые данные по {news[m['name']]} рядам — откройте модель" if m["name"] in news else ""
+            note = (f"есть новые данные по {news[m['name']]} {'критичным ' if m.get('critical') else ''}рядам — "
+                    "откройте модель") if m["name"] in news else ""
             if st.get("last_error"):
                 note = "файл с данными занят — запись повторится"
             self.tree.insert("", "end", iid=m["name"], values=(m["name"], m.get("path", ""), n,
@@ -98,6 +101,7 @@ class ModelsTab(ttk.Frame):
         order = {c: i for i, c in enumerate(packet.model_codes(cfg, store, m), 3)}   # столбцы A, B — Дата, Период
         jobs = {j["id"]: j for j in cfg.jobs()}
         excl = set(m.get("exclude", []))
+        crit = set(m.get("critical") or [])
         groups = []
         for sel in m.get("selections", []):
             codes = packet.selection_codes(store, sel) if sel.get("job") in jobs else []
@@ -116,7 +120,9 @@ class ModelsTab(ttk.Frame):
             giid = f"g{gi}"
             self.groups[giid] = key
             self.group_codes[giid] = codes
-            tree.insert("", "end", iid=giid, text=f"{title}  ({len(codes)} рядов)", open=len(codes) <= 30)
+            gkey = f"{key[0]}:{key[1]}" if key[0] != "codes" else None
+            star = "★ " if gkey in crit else ""
+            tree.insert("", "end", iid=giid, text=f"{star}{title}  ({len(codes)} рядов)", open=len(codes) <= 30)
             shown = codes[:self.SHOW_ROWS]
             rows = {c: store.series(c) for c in shown}
             fields = {c: packet.series_fields(r) for c, r in rows.items() if r}
@@ -129,13 +135,14 @@ class ModelsTab(ttk.Frame):
                 last = store.last_values(c, 1)
                 iid = f"{giid}|{c}"
                 self.code_of[iid] = c
-                tree.insert(giid, "end", iid=iid, text=label, values=(
+                tree.insert(giid, "end", iid=iid, text=("★ " if f"code:{c}" in crit else "") + label, values=(
                     order.get(c, ""), c, last[0]["period_label"] if last else "—",
                     fmt(last[0]["value"]) if last else "—"))
             if len(codes) > len(shown):
                 tree.insert(giid, "end", iid=f"{giid}|more", text=f"…и ещё {len(codes) - len(shown)} рядов "
                             "(показаны первые)", values=("", "", "", ""))
-        self.caption.configure(text=f"Что получает модель «{m['name']}» — рядов: {len(order)}")
+        self.caption.configure(text=f"Что получает модель «{m['name']}» — рядов: {len(order)}" + (
+            "  (★ — критичные данные: о новых данных модели хаб сообщает, только когда обновились они)" if crit else ""))
 
     SHOW_ROWS = 500          # в списке группы — не больше стольких рядов (иначе окно долго строится)
 
@@ -254,6 +261,29 @@ class ModelsTab(ttk.Frame):
             SelectionDialog(self.app, m["name"], selection=sel, on_done=self._rebuild)
         else:
             SelectionDialog(self.app, m["name"], job_id=key[1], on_done=self._rebuild)
+
+    def toggle_critical(self):
+        """★ — отметить выделенные выборки / показатели / ряды как критичные (или снять отметку)."""
+        m = self.current()
+        if not m:
+            return
+        keys = []
+        for iid in self.series.selection():
+            if iid in self.groups:
+                kind, ident = self.groups[iid]
+                if kind == "codes":
+                    keys += [f"code:{c}" for c in self.group_codes.get(iid, [])]
+                else:
+                    keys.append(f"{kind}:{ident}")
+            elif iid in self.code_of:
+                keys.append(f"code:{self.code_of[iid]}")
+        if not keys:
+            messagebox.showinfo("Критичные данные", "Выделите в нижнем списке выборку, показатель или ряды, которые "
+                                "важны для модели.", parent=self)
+            return
+        on = self.app.cfg.toggle_critical(m["name"], list(dict.fromkeys(keys)))
+        self.app.status.set("Отмечено как критичное" if on else "Отметка «критичное» снята")
+        self.app.refresh_all()
 
     def remove_series(self):
         m = self.current()

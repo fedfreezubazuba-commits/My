@@ -135,7 +135,9 @@ def disconnect(cfg, name):
 
 
 def models_with_new_data(cfg, store) -> list[tuple[str, int]]:
-    """Модели, в чьих посылках есть данные новее последнего сохранения модели."""
+    """Модели, в чьих посылках есть данные новее последнего сохранения модели. Если в модели отмечены
+    критичные данные — считаются только они (остальные новые данные не повод открывать модель)."""
+    from . import packet
     out = []
     for m in cfg.models():
         if not m.get("active", True):
@@ -150,6 +152,9 @@ def models_with_new_data(cfg, store) -> list[tuple[str, int]]:
             saved = ""
         if changed > saved:
             codes = store.subscribed(m["name"])
+            crit = packet.critical_codes(cfg, store, m)
+            if crit is not None:
+                codes = [c for c in codes if c in crit]
             n = len(store.changed_since(codes, saved)) if saved else len(codes)
             if n:
                 out.append((m["name"], n))

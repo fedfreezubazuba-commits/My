@@ -523,7 +523,7 @@ def test_jobs_sort_by_heading(app):
     from hub.gui import widgets as W
     tree = app.jobs.tree
     for i, (name, upd) in enumerate((("Бета", "05.10.2026 10:00"), ("альфа", "—"), ("Гамма", "21.09.2026 09:00"))):
-        tree.insert("", "end", iid=f"x{i}", values=(name, "", "", "", "", "", upd))
+        tree.insert("", "end", iid=f"x{i}", values=(name, "", "", "", "", "", "", upd))
     assert tree.heading("name", "command")      # заголовок кликабельный
     tree._sort.update(col="name", rev=False)
     W.resort(tree)
@@ -831,3 +831,60 @@ def test_jobs_list_columns(app, fakes):
     v = app.jobs.tree.set(job["id"])
     assert v["count"] == "1" and v["period"] == "Месяц" and v["history"] == "2024–2025" and v["last"] == "2025-09"
     assert v["freq"] == "День" and v["next"].isdigit() and v["models"] == "Модель"
+
+
+def test_future_dates_accepted_once_then_loaded_quietly(app, fakes):
+    """Дата из будущего (прогноз): первый раз — отложено; «Принять» ставит «Содержит прогнозные данные», и
+    следующие даты в будущем грузятся без вопросов."""
+    from hub.gui.tab_overview import review_quarantine
+    job = app.cfg.add_job("cbr", "Прогноз", {"category": 18, "indicators": [37], "m1": [2]})
+    import datetime as dt
+    r = app.runner()
+    r.now = dt.datetime(2025, 9, 15, 12, 0)                     # «сегодня» — до последних дат образца
+    r.run(force=True)
+    fakes["cbr"].add_month(37, 2, "2025-11-01", 19.5)            # октябрь 2025 — пока в будущем
+    r.run(force=True)
+    assert app.store.state(job["id"])["status"] == "quarantine"
+    review_quarantine(app, app.store.pending_quarantine(job["id"])[0]["id"], app.cfg.job(job["id"]))
+    pump(app, 0.3)
+    w = next(x for x in app.root.winfo_children() if isinstance(x, tk.Toplevel) and "Отложенные" in x.title())
+
+    def walk(x):
+        yield x
+        for c in x.winfo_children():
+            yield from walk(c)
+    assert not any(c.winfo_class() == "TCheckbutton" for c in walk(w))      # галочка ставится сама
+    next(c for c in walk(w) if c.winfo_class() == "TButton" and "Принять" in str(c.cget("text"))).invoke()
+    assert pump(app, 10, until=lambda: any("данные приняты" in str(a) for _f, a in app.shown))
+    assert app.cfg.job(job["id"])["checks"].get("future_ok") is True
+    fakes["cbr"].add_month(37, 2, "2025-12-01", 19.7)
+    rep = r.run(force=True)
+    r.close()
+    assert rep.outcomes[0].status == "updated"
+
+
+def test_critical_data_in_model(app, fakes):
+    """★ в «Моделях»: о новых данных модели хаб сообщает, только когда обновились критичные ряды."""
+    from hub.excel import models as M
+    a = app.cfg.add_job("cbr", "Ставки", {"category": 18, "indicators": [37], "m1": [2]})
+    b = app.cfg.add_job("cbr", "Масса", {"category": 5, "indicators": [7]})
+    app.cfg.add_model("Модель", str(app.paths.root / "нет_такой.xlsx"))
+    app.cfg.subscribe("Модель", job_id=a["id"])
+    app.cfg.subscribe("Модель", job_id=b["id"])
+    r = app.runner()
+    r.run(force=True)
+    assert dict(M.models_with_new_data(app.cfg, app.store)).get("Модель") == 2
+    app.models.refresh()
+    tab = app.models
+    tab.tree.selection_set("Модель")
+    tab.show_series()
+    g = next(i for i, k in tab.groups.items() if k == ("job", b["id"]))
+    tab.series.selection_set(g)
+    tab.toggle_critical()
+    assert app.cfg.model("Модель")["critical"] == [f"job:{b['id']}"]
+    assert dict(M.models_with_new_data(app.cfg, app.store)).get("Модель") == 1     # только критичный ряд
+    assert tab.series.item(next(i for i, k in tab.groups.items() if k == ("job", b["id"])), "text").startswith("★")
+    tab.series.selection_set(next(i for i, k in tab.groups.items() if k == ("job", b["id"])))
+    tab.toggle_critical()                                       # снять отметку
+    assert "critical" not in app.cfg.model("Модель")
+    r.close()

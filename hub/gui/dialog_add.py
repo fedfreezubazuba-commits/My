@@ -15,6 +15,17 @@ from ..core import errors as E
 from . import widgets as W
 from .schedule_box import ScheduleBox
 
+def future_row(parent, value=False):
+    """Галочка «Содержит прогнозные данные» (даты в будущем — без предупреждений). → BooleanVar."""
+    var = tk.BooleanVar(value=bool(value))
+    ttk.Checkbutton(parent, variable=var, text="Содержит прогнозные данные").pack(anchor="w", pady=(4, 0))
+    W.autowrap(ttk.Label(parent, style="Hint.TLabel", justify="left", text=(
+        "Даты в будущем (прогнозы, данные за текущий месяц, которые выходят до его конца) загружаются без "
+        "предупреждений. Хаб ставит эту галочку сам, если вы приняли такие данные в окне «Отложенные данные»."))
+        ).pack(fill="x")
+    return var
+
+
 def reload_row(parent, app, value=None):
     """Строка «Всю историю заново — раз в N дней» (для показателей с дозагрузкой). → StringVar."""
     default = app.cfg.full_reload_days(None)
@@ -84,6 +95,7 @@ class AddDialog(tk.Toplevel):
         ttk.Label(r, text="Метки через запятую:").pack(side="left")
         self.tags = tk.StringVar()
         ttk.Entry(r, textvariable=self.tags, width=30).pack(side="left", padx=6)
+        self.future = future_row(more.body, checks.get("future_ok"))
         self.reload = reload_row(more.body, app) if self.src.incremental(params) else None
         ttk.Label(more.body, text="Источник: " + self.src.describe(params), style="Hint.TLabel",
                   wraplength=560, justify="left").pack(anchor="w", pady=(6, 0))
@@ -121,6 +133,8 @@ class AddDialog(tk.Toplevel):
                 return
         else:
             checks.pop("max_jump_pct", None)
+        if self.future.get():
+            checks["future_ok"] = True
         tags = [t.strip() for t in self.tags.get().split(",") if t.strip()]
         extra = {"release_dates": release} if release else {}
         if self.reload is not None:

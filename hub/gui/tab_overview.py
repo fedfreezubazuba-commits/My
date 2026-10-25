@@ -108,7 +108,9 @@ class OverviewTab(ttk.Frame):
         for name, n in mods:
             row = ttk.Frame(inner)
             row.pack(fill="x", pady=2)
-            ttk.Label(row, text=f"Откройте модель «{name}» — там новые данные по {n} {'ряду' if n == 1 else 'рядам'}.").pack(side="left")
+            crit = "критичному " if n == 1 else "критичным "
+            crit = crit if (cfg.model(name) or {}).get("critical") else ""
+            ttk.Label(row, text=f"Откройте модель «{name}» — там новые данные по {n} {crit}{'ряду' if n == 1 else 'рядам'}.").pack(side="left")
             ttk.Button(row, text="Открыть модель", command=lambda nm=name: self.app.models.open_model(nm)).pack(side="left", padx=8)
 
     def recreate_task(self):
@@ -343,7 +345,7 @@ def review_quarantine(app, qid, job):
     seen = set()
     for r in reasons:
         _t, key, off = CH.explain(r)
-        if key and key not in seen:
+        if key and key not in seen and key != "future_ok":
             seen.add(key)
             offs.append((key, off, r.split(" у ")[0].split(":")[0]))
     off_vars = []
@@ -410,6 +412,8 @@ def review_quarantine(app, qid, job):
         for v, key, off in off_vars:
             if v.get():
                 checks = CH.switch_off(checks, key, off)
+        if accept and any(r.startswith("Дата из будущего") for r in reasons):
+            checks["future_ok"] = True       # подтвердил, что даты в будущем — это нормально: больше не спрашивать
 
         def work():
             from ..core.store import Store
