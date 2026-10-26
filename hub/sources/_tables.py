@@ -29,6 +29,8 @@ PCT_RE = re.compile(r"%")
 
 def _is_date(s):
     """Ячейка — дата или время. «12.63» и «14.61» — числа (доходность), а не «день.месяц»."""
+    if P.parse_decade(s):
+        return True                    # «II.10.2026» — декада
     if not DATE_RE.match(s or ""):
         return False
     m = SHORT_DATE_RE.fullmatch(s)

@@ -475,3 +475,32 @@ def test_vary_field_values_for_all_dates(workdir, monkeypatch):
         assert first.startswith("2026-01")                                  # у новой валюты — вся история
     finally:
         r.close()
+
+
+def test_decades_and_table_interpretation():
+    """Декады ЦБ («II.10.2026» → 20.10.2026), периодичность «декадная»; поправки «Как понимать таблицу»:
+    роль столбца, своё название ряда и единицы (ключ ряда — по заголовку, код не меняется), формат дат."""
+    import pathlib
+    from hub.core import periods as P
+    from hub.sources._dataset import guess_periodicity
+    assert P.parse_decade("II.10.2026") == dt.date(2026, 10, 20) and P.parse_decade("III.02.2024") == dt.date(2024, 2, 29)
+    assert P.parse_decade("IV.10.2026") is None and F.month_of("I.10.2026") == dt.date(2026, 10, 10)
+    assert P.end_of_period(P.DECADE, dt.date(2026, 10, 15)) == dt.date(2026, 10, 20)
+    assert guess_periodicity([dt.date(2026, 9, 30), dt.date(2026, 10, 10), dt.date(2026, 10, 20)]) == P.DECADE
+    assert F.date_of("10/31/2026", "mdy") == dt.date(2026, 10, 31) and F.date_of("III кв. 2026", "quarter") == dt.date(2026, 9, 30)
+    assert F.date_of("10.2026", "month") == dt.date(2026, 10, 31) and F.date_of("2025", "year") == dt.date(2025, 12, 31)
+    text = (pathlib.Path(__file__).parent.parent / "samples" / "web" / "cbr_avgprocstav.html").read_text("utf-8")
+    params = {"url": "https://cbr.ru/statistics/avgprocstav/", "period": None, "periodicity": "auto",
+              "request": {"method": "GET", "url": "https://cbr.ru/statistics/avgprocstav/?x=1"}}
+    ctx = Context(now=NOW, clients={"web_form_capture": lambda a, b: text})
+    res = get("web_form").fetch(params, ctx)
+    s = res.series[0]
+    assert (s.name, s.unit, s.periodicity) == ("Ставка, %", "%", "decade")
+    assert max(o.period_end for o in res.obs) == dt.date(2026, 10, 20) and len(res.obs) == 8
+    over = {"names": {"Ставка, %": "Макс. ставка по вкладам"}, "units": {"Ставка, %": "% годовых"}}
+    res2 = get("web_form").fetch(dict(params, layout=over), ctx)
+    assert res2.series[0].key == s.key and res2.series[0].name == "Макс. ставка по вкладам"
+    assert res2.series[0].unit == "% годовых"
+    # «Декада» — не дата, а подпись: тогда рядов-дат нет, хаб берёт снимок на сегодня с подписью
+    res3 = get("web_form").fetch(dict(params, layout={"columns": {"Декада": "label"}}), ctx)
+    assert len(res3.series) == 8 and res3.series[0].name.startswith("II.10.2026")

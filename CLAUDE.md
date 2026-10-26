@@ -368,6 +368,16 @@ legacy/            исходные навигаторы пользовател�
   применяется; галочка `dialog_add.future_row` в «＋ В обновления» и ◷; при «Принять» в окне карантина с причиной
   «Дата из будущего» ставится сама (отдельной галочки «не откладывать» для неё в окне нет).
 
+- **0.9.1 — декады и «Как понимать таблицу»**: cbr.ru/statistics/avgprocstav («II.10.2026 | 13,0550») грузился как
+  ряд «Декада» со значениями 10,2026 (столбец дат не узнан, `parse_number` взял «10.2026»). `periods.DECADE`
+  (конец декады — 10-е/20-е/конец месяца; label — ISO-дата; `parse_decade`, `parse_date` тоже), `month_of`,
+  `_tables._is_date`, `guess_periodicity` (шаг 7–12 дн и даты 10/20/конец месяца). `params.layout` = поправки
+  пользователя: `columns {заголовок: date|value|label|unit|skip}`, `names`, `units`, `date_format`
+  (`_forms.DATE_FORMATS`, `date_of`); `_forms.layout(table, override)`; `web_form._rows` — ключ ряда по заголовку
+  (переименование код не меняет), имя/единицы из поправок; без подписей код `<префикс>_<название>`. Окно
+  `gui/dialog_columns.py` (роль, название, единицы, формат дат, периодичность, предпросмотр через `WebForm._rows`),
+  кнопка в `FormDialog`; у добавленного показателя таблица — `last_answer_table` (последний файл raw).
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

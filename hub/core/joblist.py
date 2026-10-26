@@ -14,7 +14,7 @@ import datetime as dt
 from . import periods as P
 from . import schedule as S
 
-PER_WORD = {P.DAY: "День", P.WEEK: "Неделя", P.MONTH: "Месяц", P.QUARTER: "Квартал", P.YEAR: "Год"}
+PER_WORD = {P.DAY: "День", P.WEEK: "Неделя", P.DECADE: "Декада", P.MONTH: "Месяц", P.QUARTER: "Квартал", P.YEAR: "Год"}
 
 
 def period_word(periodicities) -> str:

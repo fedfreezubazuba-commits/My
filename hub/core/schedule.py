@@ -47,9 +47,9 @@ DEFAULT_LAG = {
     ("fedstat", P.HALF): 90, ("fedstat", P.YEAR): 150,
     ("comtrade", P.MONTH): 75, ("web_form", P.MONTH): 20,
 }
-GENERIC_LAG = {P.DAY: 1, P.WEEK: 4, P.MONTH: 30, P.QUARTER: 60, P.HALF: 90, P.YEAR: 120}
+GENERIC_LAG = {P.DAY: 1, P.WEEK: 4, P.DECADE: 5, P.MONTH: 30, P.QUARTER: 60, P.HALF: 90, P.YEAR: 120}
 # как часто проверять до ожидаемой даты
-RARE_DAYS = {P.DAY: 1, P.WEEK: 2, P.MONTH: 7, P.QUARTER: 14, P.HALF: 14, P.YEAR: 30}
+RARE_DAYS = {P.DAY: 1, P.WEEK: 2, P.DECADE: 3, P.MONTH: 7, P.QUARTER: 14, P.HALF: 14, P.YEAR: 30}
 
 CHOICES = [  # готовые варианты (в окнах есть и свой выбор дней и времени)
     ("auto", "Автоматически (по мере выхода данных)"),

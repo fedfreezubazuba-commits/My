@@ -196,7 +196,10 @@ class WebForm(Source):
         key_prefix = "".join(f"{f}={v}|" for f, v, _t in own)
         var_dims = [(labels_of.get(f, "Вариант"), t) for f, _v, t in var]
         var_name = " | ".join(t for _f, _v, t in var)
-        lay = F.layout(table)
+        over = params.get("layout") or {}
+        fmt = over.get("date_format") or "auto"
+        names, units = over.get("names") or {}, over.get("units") or {}
+        lay = F.layout(table, over)
         head = lay["head"]
         if not lay["values"]:
             raise E.StructureError("В таблице ответа не найден столбец с числами")
@@ -205,12 +208,12 @@ class WebForm(Source):
         if per == "auto":
             if lay["date"] is not None:            # по датам в ответе: недели, месяцы… (история цен — часто недели)
                 from ._dataset import guess_periodicity
-                per = guess_periodicity([d for d in (F.month_of(r[lay["date"]]) for r in lay["rows"]) if d])
+                per = guess_periodicity([d for d in (F.date_of(r[lay["date"]], fmt) for r in lay["rows"]) if d])
             else:
                 per = P.YEAR if a and b and (a.month, b.month) == (1, 12) else P.MONTH if a else P.DAY
         for r in lay["rows"]:
             if lay["date"] is not None:
-                end = F.month_of(r[lay["date"]])
+                end = F.date_of(r[lay["date"]], fmt)
                 src = r[lay["date"]]
             elif b is not None:
                 end, src = b, f"{a:%Y-%m}–{b:%Y-%m}"
@@ -226,16 +229,18 @@ class WebForm(Source):
                 v = P.parse_number(r[j]) if r[j] else None
                 if v is None:
                     continue
-                key = f"{key_prefix}{label}|{head[j]}"
+                key = f"{key_prefix}{label}|{head[j]}"        # ключ — по заголовку столбца: переименование ряда код не меняет
                 if key not in seen:
-                    name = f"{label} | {head[j]}" if labels else head[j]
-                    code = (f"{prefix}_{slug(var_name, 14)}_{slug(head[j], 10)}" if own and not labels
-                            else f"{prefix}_{slug(label, 18)}_{slug(head[j], 10)}")
+                    shown = names.get(head[j]) or head[j]
+                    name = f"{label} | {shown}" if labels else shown
+                    code = (f"{prefix}_{slug(var_name, 14)}_{slug(shown, 10)}" if own and not labels
+                            else f"{prefix}_{slug(label, 18)}_{slug(shown, 10)}" if labels
+                            else f"{prefix}_{slug(shown, 24)}")
                     seen[key] = SeriesInfo(
                         key=key, name=((f"{var_name} | " if var_name else "") + name)[:200],
-                        unit=F.unit_for(head[j], row_unit),
+                        unit=units.get(head[j]) or F.unit_for(head[j], row_unit),
                         periodicity=per, code=code.upper()[:40],
-                        url=params.get("url") or "", dims=var_dims + labels + [("Показатель", head[j])],
+                        url=params.get("url") or "", dims=var_dims + labels + [("Показатель", shown)],
                         date_rule="месяц из ответа сайта → конец месяца" if lay["date"] is not None
                         else "период запроса → конец периода")
                     res.series.append(seen[key])

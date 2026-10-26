@@ -888,3 +888,45 @@ def test_critical_data_in_model(app, fakes):
     tab.toggle_critical()                                       # снять отметку
     assert "critical" not in app.cfg.model("Модель")
     r.close()
+
+
+def test_columns_dialog_fixes_interpretation(app):
+    """«Как понимать таблицу»: ряд можно назвать по-своему; для уже добавленного показателя окно строится по
+    последнему ответу сайта, сохранение — «Изменить набор данных» (вся история заново)."""
+    import pathlib
+    from hub.gui.dialog_add import AddDialog
+    from hub.gui.dialog_columns import ColumnsDialog
+    from hub.gui.dialog_form import FormDialog
+    from hub.sources import _forms as F
+    text = (pathlib.Path(__file__).parent.parent / "samples" / "web" / "cbr_avgprocstav.html").read_text("utf-8")
+    cand = {"method": "GET", "url": "https://cbr.ru/statistics/avgprocstav/?UniDbQuery.Posted=True",
+            "body": "", "content_type": "", "headers": {}, "resource_type": "document", "text": text}
+    _c, table = F.best_candidate([cand])
+    d = FormDialog(app, "https://cbr.ru/statistics/avgprocstav/", cand, table)
+    pump(app, 0.3)
+    assert "декадная" in d.summary.cget("text") and "Ставка, %" in d.summary.cget("text")
+    d.open_columns()
+    pump(app, 0.3)
+    c = [w for w in d.winfo_children() if isinstance(w, ColumnsDialog)][0]
+    assert "20.10.2026" in str(c.tree.item(c.tree.get_children()[0], "values"))
+    c.vars["Ставка, %"][1].set("Макс. ставка по вкладам")
+    pump(app, 0.2)
+    assert "Макс. ставка по вкладам" in str(c.tree.item(c.tree.get_children()[0], "values"))
+    c.done()
+    assert "Макс. ставка по вкладам" in d.summary.cget("text")
+    opened = []
+    orig = AddDialog.__init__
+    AddDialog.__init__ = lambda self, app_, src, params, name, **kw: opened.append((src, params, name))
+    try:
+        d.next()
+    finally:
+        AddDialog.__init__ = orig
+    p = opened[0][1]
+    assert p["layout"] == {"names": {"Ставка, %": "Макс. ставка по вкладам"}} and "Макс. ставка" in opened[0][2]
+    job = app.cfg.add_job("web_form", "Ставки", p)
+    raw = app.paths.raw / job["id"]
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "2026-10-26_120000.html").write_text("<!-- GET x -->\n" + text, encoding="utf-8")
+    e = FormDialog(app, p["url"], p["request"], None, job=app.cfg.job(job["id"]))
+    pump(app, 0.3)
+    assert e.table is not None and "Макс. ставка по вкладам" in e.summary.cget("text")

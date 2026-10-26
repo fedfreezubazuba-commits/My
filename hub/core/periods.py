@@ -11,9 +11,10 @@ import datetime as dt
 import re
 
 DAY, WEEK, MONTH, QUARTER, HALF, YEAR = "day", "week", "month", "quarter", "halfyear", "year"
-PERIODICITY_RU = {DAY: "дневная", WEEK: "недельная", MONTH: "месячная", QUARTER: "квартальная",
+DECADE = "decade"        # декада: 1–10, 11–20, 21–конец месяца; дата — 10-е, 20-е или последний день месяца
+PERIODICITY_RU = {DAY: "дневная", WEEK: "недельная", DECADE: "декадная", MONTH: "месячная", QUARTER: "квартальная",
                   HALF: "полугодовая", YEAR: "годовая", "snapshot": "снимки"}
-ORDER = [DAY, WEEK, MONTH, QUARTER, HALF, YEAR]
+ORDER = [DAY, WEEK, DECADE, MONTH, QUARTER, HALF, YEAR]
 
 MONTHS_RU = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август",
              "сентябрь", "октябрь", "ноябрь", "декабрь"]
@@ -122,7 +123,28 @@ def end_of_period(periodicity, d: dt.date) -> dt.date:
         return dt.date(d.year, 12, 31)
     if periodicity == WEEK:
         return d + dt.timedelta(days=6 - d.weekday())
+    if periodicity == DECADE:
+        return d.replace(day=10) if d.day <= 10 else d.replace(day=20) if d.day <= 20 else month_end(d.year, d.month)
     return d
+
+
+def decade_end(year, month, n) -> dt.date:
+    """Конец n-й декады месяца (1 → 10-е, 2 → 20-е, 3 → последний день)."""
+    return dt.date(year, month, 10) if n == 1 else dt.date(year, month, 20) if n == 2 else month_end(year, month)
+
+
+DECADE_RE = re.compile(r"^\s*(III|II|I|[123])\s*(?:дек\.?|декада)?\s*[./\- ]\s*(\d{1,2})\s*[./\- ]\s*(\d{4})\s*$", re.I)
+
+
+def parse_decade(text) -> dt.date | None:
+    """«II.10.2026», «I.10.2026», «III.09.2026» (номер декады римской цифрой) → конец декады."""
+    m = DECADE_RE.match(str(text or ""))
+    if not m or not re.fullmatch(r"I{1,3}", m.group(1), re.I):
+        return None
+    month, year = int(m.group(2)), int(m.group(3))
+    if not 1 <= month <= 12:
+        return None
+    return decade_end(year, month, len(m.group(1)))
 
 
 def next_period_end(periodicity, d: dt.date) -> dt.date:
@@ -136,7 +158,7 @@ def next_period_end(periodicity, d: dt.date) -> dt.date:
 
 
 def typical_days(periodicity) -> int:
-    return {DAY: 1, WEEK: 7, MONTH: 30, QUARTER: 91, HALF: 182, YEAR: 365}.get(periodicity, 1)
+    return {DAY: 1, WEEK: 7, DECADE: 10, MONTH: 30, QUARTER: 91, HALF: 182, YEAR: 365}.get(periodicity, 1)
 
 
 def parse_date(text) -> dt.date | None:
@@ -147,6 +169,9 @@ def parse_date(text) -> dt.date | None:
         return text.date()
     if isinstance(text, dt.date):
         return text
+    dec = parse_decade(text)
+    if dec:
+        return dec
     s = str(text).strip().lower()
     m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)
     if m:

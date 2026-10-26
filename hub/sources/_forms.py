@@ -515,6 +515,9 @@ def best_candidate(cands):
 def month_of(text) -> dt.date | None:
     """Дата строки: «2024-01», «2024/01», «202401», «2024年1月», «Jan 2024», «31.01.2024»."""
     s = str(text or "").strip()
+    dec = P.parse_decade(s)                                            # «II.10.2026» — вторая декада октября
+    if dec:
+        return dec
     m = re.fullmatch(r"(\d{4})-?W(\d{1,2})(?:-?\d)?", s, re.I)        # ISO-неделя «2024-W05» → её воскресенье
     if m and 1 <= int(m.group(2)) <= 53:
         try:
@@ -531,8 +534,79 @@ def month_of(text) -> dt.date | None:
     return d
 
 
-def layout(table) -> dict:
-    """Какие столбцы — дата, подписи, единицы, числа (без столбцов с кодами и номерами строк)."""
+# как понимать даты в таблице (окно «Как понимать таблицу»)
+DATE_FORMATS = [("auto", "как поймёт хаб"), ("decade", "декада: I.10.2026 → 10-е, II → 20-е, III → конец месяца"),
+                ("dmy", "день.месяц.год: 31.10.2026"), ("mdy", "месяц/день/год (США): 10/31/2026"),
+                ("month", "месяц: 2026-10, 10.2026, окт 2026"), ("quarter", "квартал: 2026 Q3, III кв. 2026"),
+                ("year", "год: 2026")]
+ROLES = [("date", "Дата"), ("value", "Число — ряд"), ("label", "Подпись (разрез)"), ("unit", "Единицы"),
+         ("skip", "Не брать")]
+ROMAN_Q = {"I": 1, "II": 2, "III": 3, "IV": 4}
+
+
+def date_of(text, fmt="auto") -> dt.date | None:
+    """Дата строки по выбранному формату; auto — как month_of (хаб угадывает сам)."""
+    s = str(text or "").strip()
+    if not s:
+        return None
+    if fmt in (None, "", "auto"):
+        return month_of(s)
+    if fmt == "decade":
+        return P.parse_decade(s)
+    if fmt in ("dmy", "mdy"):
+        m = re.search(r"(\d{1,2})[./\-](\d{1,2})[./\-](\d{4}|\d{2})", s)
+        if not m:
+            return P.parse_date(s) if fmt == "dmy" else None
+        a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        y = y + 2000 if y < 100 else y
+        d, mo = (a, b) if fmt == "dmy" else (b, a)
+        try:
+            return dt.date(y, mo, d)
+        except ValueError:
+            return None
+    if fmt == "month":
+        m = re.fullmatch(r"(\d{1,2})\s*[./\-]\s*(\d{4})", s)
+        if m and 1 <= int(m.group(1)) <= 12:
+            return P.month_end(int(m.group(2)), int(m.group(1)))
+        d = month_of(s)
+        return P.month_end(d.year, d.month) if d else None
+    if fmt == "quarter":
+        m = re.search(r"(\d{4})\D{0,3}(?:Q|кв\.?|квартал)?\s*([1-4])\b", s, re.I) or \
+            re.search(r"\b([1-4])\s*(?:Q|кв\.?|квартал)\D{0,3}(\d{4})", s, re.I)
+        if m:
+            a, b = m.group(1), m.group(2)
+            y, q = (int(a), int(b)) if len(a) == 4 else (int(b), int(a))
+            return P.quarter_end(y, q)
+        m = re.search(r"\b(IV|III|II|I)\s*(?:кв\.?|квартал|Q)\D{0,3}(\d{4})", s, re.I)
+        return P.quarter_end(int(m.group(2)), ROMAN_Q[m.group(1).upper()]) if m else None
+    if fmt == "year":
+        m = re.search(r"\b(1[89]\d\d|20\d\d|21\d\d)\b", s)
+        return dt.date(int(m.group(1)), 12, 31) if m else None
+    return month_of(s)
+
+
+def layout(table, override=None) -> dict:
+    """Какие столбцы — дата, подписи, единицы, числа (без столбцов с кодами и номерами строк).
+    override — поправки пользователя (окно «Как понимать таблицу»): {"columns": {заголовок: роль},
+    "date_format": …, "names": {заголовок: название ряда}, "units": {заголовок: единицы}}."""
+    lay = _auto_layout(table, (override or {}).get("date_format") or "auto")
+    roles = (override or {}).get("columns") or {}
+    if not roles:
+        return lay
+    head = lay["head"]
+    role = {}
+    for j in range(len(head)):
+        role[j] = ("date" if j == lay["date"] else "unit" if j == lay["unit"] else "value" if j in lay["values"]
+                   else "label" if j in lay["labels"] else "skip")
+        if head[j] in roles:
+            role[j] = roles[head[j]]
+    dates = [j for j in role if role[j] == "date"]
+    units = [j for j in role if role[j] == "unit"]
+    return {**lay, "date": dates[0] if dates else None, "unit": units[0] if units else None,
+            "values": [j for j in role if role[j] == "value"], "labels": [j for j in role if role[j] == "label"]}
+
+
+def _auto_layout(table, fmt="auto") -> dict:
     rows, width = T._align(table.rows, table.kind)
     head = list(table.header or []) + [""] * width
     head = [h or f"Столбец {j + 1}" for j, h in enumerate(head[:width])]
@@ -540,7 +614,7 @@ def layout(table) -> dict:
     date_col = None
     for j in range(width):
         col = [r[j] for r in rows if r[j]]
-        if col and not CODE_HEAD.search(head[j]) and sum(1 for c in col if month_of(c)) >= 0.6 * len(col):
+        if col and not CODE_HEAD.search(head[j]) and sum(1 for c in col if date_of(c, fmt)) >= 0.6 * len(col):
             date_col = j
             break
     unit_col = next((j for j in range(width) if UNIT_HEAD.search(head[j]) and j != date_col), None)

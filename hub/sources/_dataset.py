@@ -54,6 +54,8 @@ def guess_periodicity(dates) -> str:
     if len(ds) < 2:
         return P.MONTH
     gap = statistics.median((b - a).days for a, b in zip(ds, ds[1:]))
+    if 7 <= gap <= 12 and all(d.day in (10, 20) or d == P.month_end(d.year, d.month) for d in ds):
+        return P.DECADE                    # 10-е, 20-е и последние дни месяцев — декады
     for limit, per in ((2, P.DAY), (9, P.WEEK), (40, P.MONTH), (100, P.QUARTER), (200, P.HALF)):
         if gap <= limit:
             return per

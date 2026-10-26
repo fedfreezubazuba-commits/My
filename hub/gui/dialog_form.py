@@ -18,13 +18,36 @@ FIELD_HINTS = {
 }
 
 
-def job_name(url, table) -> str:
-    lay = F.layout(table)
+def job_name(url, table, over=None) -> str:
+    lay = F.layout(table, over)
     first = lay["rows"][0] if lay["rows"] else []
     words = [first[j] for j in lay["labels"] if j < len(first) and first[j]
              and not F.CODE_HEAD.search(lay["head"][j]) and not first[j].isdigit()]
+    if not words:                       # подписей нет — по названиям рядов («Ставка по депозитам»)
+        names = (over or {}).get("names") or {}
+        words = [names.get(lay["head"][j]) for j in lay["values"] if names.get(lay["head"][j])]
     host = urlparse(url).netloc
     return f"{WF.TITLES.get(host, host)}: {', '.join(words[:3]) or table.title or 'данные формы'}"[:150]
+
+
+def last_answer_table(app, job):
+    """Таблица из последнего сохранённого ответа сайта (папка raw) — чтобы и у добавленного показателя можно
+    было поправить, как понимать таблицу. None — ответа нет."""
+    folder = app.paths.raw / job["id"]
+    try:
+        files = sorted(folder.glob("*.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for f in files[:3]:
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        first = text.split("\n\n<!-- ", 1)[0]          # ответы на разные запросы склеены — берём первый
+        t = F.result_table(first, (job.get("params") or {}).get("table"))
+        if t is not None:
+            return t
+    return None
 
 
 class VaryDialog(tk.Toplevel):
@@ -129,7 +152,11 @@ class FormDialog(tk.Toplevel):
         self.base = {n: v for _w, n, v in F.fields(self.cand)}
         self.period = (job or {}).get("params", {}).get("period") or F.detect_period(self.flds)
         roles = F.roles(self.flds, self.period)
-        lay = F.layout(table) if table is not None else None
+        self.over = jp0.get("layout")                    # поправки «Как понимать таблицу»
+        self.periodicity = jp0.get("periodicity") or "auto"
+        if table is None and job:
+            table = self.table = last_answer_table(app, job)     # для уже добавленного — по последнему ответу сайта
+        lay = F.layout(table, self.over) if table is not None else None
 
         bar = ttk.Frame(self, padding=(14, 0, 14, 14))
         bar.pack(side="bottom", fill="x")           # кнопки внизу видны при любой высоте окна
@@ -141,17 +168,20 @@ class FormDialog(tk.Toplevel):
             "сам; остальные поля — как вы выбрали в форме (их можно поменять здесь)."))).pack(fill="x")
 
         if lay is not None:
-            ttk.Label(body, text="Ответ сайта (первые строки)", style="Title.TLabel").pack(anchor="w", pady=(10, 2))
+            ttk.Label(body, text="Ответ сайта (первые строки)" if not job else "Последний ответ сайта (первые строки)",
+                      style="Title.TLabel").pack(anchor="w", pady=(10, 2))
             head = lay["head"]
             cols = [f"c{j}" for j in range(len(head))]
             f, tree = W.tree_with_scroll(body, cols, head, {c: 110 for c in cols}, height=6)
             f.pack(fill="x")
             for r in lay["rows"][:8]:
                 tree.insert("", "end", values=r)
-            what = ", ".join(head[j] for j in lay["values"]) or "—"
-            when = (f"месяц — столбец «{head[lay['date']]}»" if lay["date"] is not None
-                    else "в ответе нет столбца с датой — хаб будет спрашивать каждый месяц отдельно")
-            ttk.Label(body, style="Hint.TLabel", text=f"Ряды: {what}. Дата: {when}.").pack(anchor="w")
+            srow = ttk.Frame(body)
+            srow.pack(fill="x", pady=(2, 0))
+            ttk.Button(srow, text="Как понимать таблицу…", command=self.open_columns).pack(side="right", padx=(8, 0))
+            self.summary = W.autowrap(ttk.Label(srow, style="Hint.TLabel", justify="left"))
+            self.summary.pack(side="left", fill="x", expand=True)
+            self._show_summary()
 
         ttk.Label(body, text="Поля запроса", style="Title.TLabel").pack(anchor="w", pady=(10, 2))
         ttk.Label(body, style="Hint.TLabel", text="«☰ Несколько…» — загружать сразу несколько значений поля "
@@ -216,6 +246,20 @@ class FormDialog(tk.Toplevel):
         ttk.Button(bar, text="Отмена", command=self.destroy).pack(side="right", padx=8)
         W.center(self, app.root)
 
+    def open_columns(self):
+        from .dialog_columns import ColumnsDialog
+        ColumnsDialog(self, self.table, self.over, self.periodicity, self._columns_done)
+
+    def _columns_done(self, over, periodicity):
+        self.over, self.periodicity = over, periodicity
+        self._show_summary()
+
+    def _show_summary(self):
+        from .dialog_columns import summary
+        if getattr(self, "summary", None) is not None and self.table is not None:
+            text = summary(self.table, self.over, self.periodicity)
+            self.summary.configure(text=text + ("  (с вашими поправками)" if self.over else ""))
+
     def open_vary(self, name):
         VaryDialog(self, name, self.vars[name].get(), self.choices.get(name), self.vary.get(name), self._vary_done)
 
@@ -264,11 +308,11 @@ class FormDialog(tk.Toplevel):
     def params(self):
         values = {n: var.get() for n, var in self.vars.items() if var.get() != self.base.get(n)}
         vary = [self.vary[n] for _w, n, _v in self.flds if n in self.vary]
-        more = {"vary": vary, "vary_choices": self.choices}
+        more = {"vary": vary, "vary_choices": self.choices, "layout": self.over, "periodicity": self.periodicity}
         if self.job:
             return {**self.job["params"], "from_year": self._year(), "by": self.by.get(), "values": values, **more}
         return {"url": self.start_url, "request": self.cand, "period": self.period, "from_year": self._year(),
-                "by": self.by.get(), "values": values, "periodicity": "auto",
+                "by": self.by.get(), "values": values,
                 "table": {"title": self.table.title, "index": self.table.index},
                 "code_prefix": WF.prefix_for(self.cand["url"]), "fetch_mode": "browser", **more}
 
@@ -290,7 +334,7 @@ class FormDialog(tk.Toplevel):
             messagebox.showwarning("Год", "Укажите год числом, например 2020.", parent=self)
             return
         params = self.params()
-        name = job_name(self.cand["url"], self.table)
+        name = job_name(self.cand["url"], self.table, self.over)
         if params["vary"]:
             titles = [t for v in params["vary"] for _x, t in v["values"]]
             name = f"{name.split(':')[0]}: {', '.join(titles[:4])}{'…' if len(titles) > 4 else ''}"[:150]
