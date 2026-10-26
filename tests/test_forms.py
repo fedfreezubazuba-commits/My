@@ -504,3 +504,17 @@ def test_decades_and_table_interpretation():
     # «Декада» — не дата, а подпись: тогда рядов-дат нет, хаб берёт снимок на сегодня с подписью
     res3 = get("web_form").fetch(dict(params, layout={"columns": {"Декада": "label"}}), ctx)
     assert len(res3.series) == 8 and res3.series[0].name.startswith("II.10.2026")
+
+
+def test_sample_text_takes_latest_period_without_browser():
+    import cbr_rates_site as RS
+    req = dict(RS.REQ, resource_type="document")
+    params = {"url": RS.URL, "request": req, "from_year": 2020, "by": "year",
+              "period": F.detect_period(F.fields(req), NOW.date())}
+    got = []
+
+    def http(url, ctx=None, timeout=60, headers=None):
+        got.append(url)
+        return 200, "text/html", RS.page(url, NOW.date()).encode(), url
+    text = get("web_form").sample_text(params, Context(now=NOW, clients={"web_form_http": http}))
+    assert len(got) == 1 and "UniDbQuery.From=01.01.2026" in got[0] and F.result_table(text) is not None

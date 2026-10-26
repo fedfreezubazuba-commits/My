@@ -930,3 +930,27 @@ def test_columns_dialog_fixes_interpretation(app):
     e = FormDialog(app, p["url"], p["request"], None, job=app.cfg.job(job["id"]))
     pump(app, 0.3)
     assert e.table is not None and "Макс. ставка по вкладам" in e.summary.cget("text")
+
+
+def test_columns_dialog_for_job_without_saved_answer(app, monkeypatch):
+    """У добавленного показателя нет сохранённого ответа (или он обрезан) — «Как понимать таблицу…» всё равно есть:
+    хаб спрашивает у сайта один свежий ответ и открывает окно."""
+    import pathlib
+    from hub.gui.dialog_columns import ColumnsDialog
+    from hub.gui.dialog_form import FormDialog
+    from hub.sources import web_form as WFm
+    text = (pathlib.Path(__file__).parent.parent / "samples" / "web" / "cbr_avgprocstav.html").read_text("utf-8")
+    req = {"method": "GET", "url": "https://cbr.ru/statistics/avgprocstav/?UniDbQuery.From=01.12.2024&UniDbQuery.To=02.10.2026",
+           "body": "", "content_type": "", "headers": {}, "resource_type": "document"}
+    from hub.sources import _forms as F
+    params = {"url": "https://cbr.ru/statistics/avgprocstav/", "request": req, "from_year": 2024, "by": "year",
+              "period": F.detect_period(F.fields(req)), "periodicity": "auto", "table": {"title": "", "index": 0}}
+    job = app.cfg.add_job("web_form", "Ставки", params)
+    asked = []
+    monkeypatch.setattr(WFm.WebForm, "sample_text", lambda self, p, ctx: asked.append(p) or text)
+    e = FormDialog(app, params["url"], req, None, job=app.cfg.job(job["id"]))
+    pump(app, 0.3)
+    assert e.table is None and "свежий ответ" in e.summary.cget("text")
+    e.open_columns()
+    assert pump(app, 10, until=lambda: any(isinstance(w, ColumnsDialog) for w in e.winfo_children()))
+    assert asked and "декадная" in e.summary.cget("text")

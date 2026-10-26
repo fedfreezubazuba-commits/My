@@ -138,6 +138,19 @@ class WebForm(Source):
                          interactive=bool(getattr(ctx, "interactive", False)))
         return self._result(params, plan, answers, since)
 
+    def sample_text(self, params, ctx):
+        """Один свежий ответ сайта (последний период) — для окна «Как понимать таблицу» у добавленного показателя."""
+        plan = requests_for(params, (ctx.now if ctx else dt.datetime.now()).date())[-1:]
+        if not plan:
+            raise E.StructureError("Не из чего собрать запрос к сайту")
+        texts = self._plain(params, plan, ctx)
+        if texts is None:
+            if ctx is None or ctx.browser is None or not ctx.browser.available():
+                raise E.HubError(E.INTERNAL, "Для «Формы на сайте» нужен встроенный браузер — запустите «Установка.bat»")
+            texts = ctx.browser.replay(params.get("url") or params["request"].get("frame_url") or params["request"]["url"],
+                                       [plan[0][0]], pause_s=0, interactive=bool(getattr(ctx, "interactive", False)))
+        return texts[0]
+
     def _plain(self, params, plan, ctx):
         """Запрос — сама страница сайта (GET, «document»: форма отправляется обычной ссылкой, как курсы на cbr.ru)
         — сначала обычными запросами, без браузера: быстрее и без окон. Первый ответ без таблицы, защита или
@@ -170,7 +183,9 @@ class WebForm(Source):
         raw = []
         base = base_values(params)
         for (req, a, b, var), text in zip(plan, answers):
-            raw.append(f"<!-- {req['method']} {req['url']} {req.get('body') or ''} -->\n{text[:200000]}")
+            # первый ответ — целиком (до 3 МБ): по нему потом строится окно «Как понимать таблицу»
+            cut = 3_000_000 if not raw else 200_000
+            raw.append(f"<!-- {req['method']} {req['url']} {req.get('body') or ''} -->\n{text[:cut]}")
             table = F.result_table(text, params.get("table"))
             what = " (" + ", ".join(t for _f, _v, t in var) + ")" if var else ""
             if table is None:

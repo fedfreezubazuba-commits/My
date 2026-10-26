@@ -44,9 +44,10 @@ def last_answer_table(app, job):
         except OSError:
             continue
         first = text.split("\n\n<!-- ", 1)[0]          # ответы на разные запросы склеены — берём первый
-        t = F.result_table(first, (job.get("params") or {}).get("table"))
-        if t is not None:
-            return t
+        for part in (first, text):
+            t = F.result_table(part, (job.get("params") or {}).get("table"))
+            if t is not None:
+                return t
     return None
 
 
@@ -176,6 +177,10 @@ class FormDialog(tk.Toplevel):
             f.pack(fill="x")
             for r in lay["rows"][:8]:
                 tree.insert("", "end", values=r)
+
+
+        self.summary = None
+        if lay is not None or job:
             srow = ttk.Frame(body)
             srow.pack(fill="x", pady=(2, 0))
             ttk.Button(srow, text="Как понимать таблицу…", command=self.open_columns).pack(side="right", padx=(8, 0))
@@ -248,7 +253,30 @@ class FormDialog(tk.Toplevel):
 
     def open_columns(self):
         from .dialog_columns import ColumnsDialog
-        ColumnsDialog(self, self.table, self.over, self.periodicity, self._columns_done)
+        if self.table is not None:
+            ColumnsDialog(self, self.table, self.over, self.periodicity, self._columns_done)
+            return
+        # сохранённого ответа нет — спросить у сайта один свежий ответ (последний период)
+        from ..sources import Context, get
+        params = self.params()
+
+        def work():
+            ctx = Context(paths=self.app.paths, browser=self.app.browser())
+            ctx.interactive = True
+            return F.result_table(get("web_form").sample_text(params, ctx), params.get("table"))
+
+        def done(table):
+            if not self.winfo_exists():
+                return
+            if table is None:
+                self.summary.configure(text="Сайт ответил, но таблицы с числами в ответе не нашлось.", style="red.TLabel")
+                return
+            self.table = table
+            self._show_summary()
+            ColumnsDialog(self, self.table, self.over, self.periodicity, self._columns_done)
+        self.summary.configure(text="Спрашиваю у сайта свежий ответ…", style="Hint.TLabel")
+        self.app.bg(work, done, "Запрос к сайту…", error=lambda e: self.summary.configure(
+            text="Не получилось получить ответ сайта: " + str(e), style="red.TLabel"))
 
     def _columns_done(self, over, periodicity):
         self.over, self.periodicity = over, periodicity
@@ -256,9 +284,14 @@ class FormDialog(tk.Toplevel):
 
     def _show_summary(self):
         from .dialog_columns import summary
-        if getattr(self, "summary", None) is not None and self.table is not None:
-            text = summary(self.table, self.over, self.periodicity)
-            self.summary.configure(text=text + ("  (с вашими поправками)" if self.over else ""))
+        if getattr(self, "summary", None) is None:
+            return
+        if self.table is None:
+            self.summary.configure(text="Сохранённого ответа сайта нет — «Как понимать таблицу…» сначала спросит у "
+                                        "сайта свежий ответ.", style="Hint.TLabel")
+            return
+        text = summary(self.table, self.over, self.periodicity)
+        self.summary.configure(text=text + ("  (с вашими поправками)" if self.over else ""), style="Hint.TLabel")
 
     def open_vary(self, name):
         VaryDialog(self, name, self.vars[name].get(), self.choices.get(name), self.vary.get(name), self._vary_done)
