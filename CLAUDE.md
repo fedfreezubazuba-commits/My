@@ -383,6 +383,12 @@ legacy/            исходные навигаторы пользовател�
   ответ в raw — целиком (до 3 МБ); кнопка в ✎ есть всегда; нет сохранённой таблицы — `WebForm.sample_text` (один
   свежий ответ за последний период: `_plain`, иначе `replay`) в фоне, затем окно.
 
+- **0.9.3 — «Не брать» удаляет ряды**: раньше ряды столбцов, отмеченных «Не брать» после загрузки, оставались в базе
+  (retired, со старыми значениями) и шли в модели. `FormDialog.dropped_series` — ряды показателя, у которых последняя
+  часть ключа (заголовок столбца) есть в таблице, но больше не число по новым поправкам; при «Сохранить» —
+  `askyesnocancel` (с моделями из `impact.affected_models`): «Да» → `store.delete_series` (series, observations,
+  subscriptions) + `cfg.forget_codes` (series/exclude/critical моделей); «Нет» — оставить; «Отмена» — не сохранять.
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

@@ -355,12 +355,42 @@ class FormDialog(tk.Toplevel):
             messagebox.showwarning("Год", "Укажите год числом, например 2020.", parent=self)
             return
         from ..core import impact
+        dropped = self.dropped_series()
+        if dropped:
+            names = ", ".join(f"«{r['name'] or r['code']}»" for r in dropped[:5]) + ("…" if len(dropped) > 5 else "")
+            mods = impact.affected_models(self.app.cfg, self.app.store, [r["code"] for r in dropped])
+            where = ("\n\nОни пропадут и из моделей: " + ", ".join(f"«{m}» ({n})" for m, n in mods) + ".") if mods else ""
+            ans = messagebox.askyesnocancel(
+                "Не брать — удалить из хаба", f"Столбцы, которые вы отметили «Не брать» или сделали подписью, уже "
+                f"загружены в хаб как ряды ({len(dropped)}): {names}.{where}\n\nУдалить эти ряды вместе с данными? "
+                "«Нет» — оставить старые значения, но больше не загружать.", parent=self)
+            if ans is None:
+                return
+            if ans:
+                codes = [r["code"] for r in dropped]
+                self.app.store.delete_series(codes)
+                self.app.cfg.forget_codes(codes)
         self.app.cfg.update_job(self.job["id"], params=self.params())
         impact.mark_edited(self.app.store, self.job["id"], dt.datetime.now().isoformat(timespec="seconds"))
         self.destroy()
         self.app.refresh_all()
         if messagebox.askyesno("Изменить набор данных", "Сохранено. Загрузить данные сейчас?", parent=self.app.root):
             self.app.update_jobs([self.job["id"]])
+
+    def dropped_series(self):
+        """Ряды показателя из столбцов, которые по новым поправкам больше не числа (отмечены «Не брать»,
+        стали подписью или датой). Ключ ряда кончается заголовком столбца. Без таблицы — ничего."""
+        if self.table is None or not self.job:
+            return []
+        lay = F.layout(self.table, self.over)
+        keep = {lay["head"][j] for j in lay["values"]}
+        known = set(lay["head"])
+        out = []
+        for r in self.app.store.series_of_job(self.job["id"]):
+            col = (r["ident"] or "").rsplit("|", 1)[-1]
+            if col in known and col not in keep:
+                out.append(r)
+        return out
 
     def next(self):
         if self.period and self._year() is None:

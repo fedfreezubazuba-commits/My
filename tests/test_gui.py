@@ -954,3 +954,43 @@ def test_columns_dialog_for_job_without_saved_answer(app, monkeypatch):
     e.open_columns()
     assert pump(app, 10, until=lambda: any(isinstance(w, ColumnsDialog) for w in e.winfo_children()))
     assert asked and "декадная" in e.summary.cget("text")
+
+
+def test_skipped_columns_are_deleted_from_hub(app, monkeypatch):
+    """«Не брать» у столбца, который уже загружен: при «Сохранить» хаб предлагает удалить эти ряды совсем —
+    вместе со значениями и из моделей, чтобы они нигде не остались."""
+    from tkinter import messagebox
+    from hub.gui.dialog_form import FormDialog
+    from hub.sources import _forms as F
+    page = ("<table><tr><th>Дата</th><th>Цена</th><th>Объём</th></tr>" +
+            "".join(f"<tr><td>{d:02d}.10.2026</td><td>{100 + d}</td><td>{d * 10}</td></tr>" for d in range(1, 9)) +
+            "</table>")
+    req = {"method": "GET", "url": "https://example.com/data?From=01.10.2026&To=08.10.2026", "body": "",
+           "content_type": "", "headers": {}, "resource_type": "document"}
+    params = {"url": "https://example.com/data", "request": req, "from_year": 2026, "by": "year",
+              "period": F.detect_period(F.fields(req)), "periodicity": "auto", "table": {"title": "", "index": 0}}
+    job = app.cfg.add_job("web_form", "Цены", params)
+    r = app.runner()
+    r.clients["web_form_http"] = lambda url, ctx=None, timeout=60, headers=None: (200, "text/html", page.encode(), url)
+    from hub.sources import web_form as WFm
+    monkeypatch.setattr(WFm, "HTTP_PAUSE_S", 0)
+    assert r.run(job_ids=[job["id"]]).outcomes[0].status == "updated"
+    r.close()
+    codes = {s["name"]: s["code"] for s in app.store.series_of_job(job["id"])}
+    assert set(codes) == {"Цена", "Объём"}
+    app.cfg.add_model("М", "x.xlsx")
+    app.cfg.subscribe("М", code=codes["Объём"])
+    raw = app.paths.raw / job["id"]
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "1.html").write_text("<!-- GET x -->\n" + page, encoding="utf-8")
+    e = FormDialog(app, params["url"], req, None, job=app.cfg.job(job["id"]))
+    pump(app, 0.3)
+    e._columns_done({"columns": {"Объём": "skip"}}, "auto")
+    asked = []
+    monkeypatch.setattr(messagebox, "askyesnocancel", lambda *a, **k: asked.append(a) or True)
+    monkeypatch.setattr(app, "update_jobs", lambda ids: None)
+    e.save()
+    assert asked and "Объём" in asked[0][1]
+    assert [s["name"] for s in app.store.series_of_job(job["id"])] == ["Цена"]
+    assert not app.store.q("SELECT 1 FROM observations WHERE code=?", (codes["Объём"],))
+    assert codes["Объём"] not in (app.cfg.model("М").get("series") or [])

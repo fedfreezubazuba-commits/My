@@ -327,6 +327,21 @@ class Config:
                 m["jobs"].remove(job_id)
                 self.save_models(models)
 
+    def forget_codes(self, codes):
+        """Ряды удалены из хаба — убрать их из моделей (отдельные ряды, «не отдавать», критичные)."""
+        drop = set(codes)
+        with _lock:
+            models = self.models()
+            for m in models:
+                for key in ("series", "exclude"):
+                    if m.get(key):
+                        m[key] = [c for c in m[key] if c not in drop]
+                if m.get("critical"):
+                    m["critical"] = [k for k in m["critical"] if not (str(k).startswith("code:") and k[5:] in drop)]
+                    if not m["critical"]:
+                        m.pop("critical")
+            self.save_models(models)
+
     def toggle_critical(self, model_name, keys) -> bool:
         """Отметить / снять «критичные данные» модели: keys — «job:<показатель>», «sel:<выборка>», «code:<ряд>».
         Если все уже отмечены — снять, иначе отметить все. → True, если теперь отмечены."""

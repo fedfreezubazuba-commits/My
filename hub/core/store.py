@@ -255,6 +255,21 @@ class Store:
         n_new = r["n_new"] or 0
         return n_new, (r["n"] or 0) - n_new
 
+    def delete_series(self, codes) -> int:
+        """Удалить ряды из хаба совсем: сам ряд, все его значения и место в подписках моделей (столбцы,
+        которые пользователь отметил «Не брать»). → сколько рядов удалено."""
+        codes = list(codes)
+        if not codes:
+            return 0
+        with self.tx() as c:
+            for i in range(0, len(codes), 500):
+                part = codes[i:i + 500]
+                marks = ",".join("?" * len(part))
+                c.execute(f"DELETE FROM observations WHERE code IN ({marks})", part)
+                c.execute(f"DELETE FROM subscriptions WHERE code IN ({marks})", part)
+                c.execute(f"DELETE FROM series WHERE code IN ({marks})", part)
+        return len(codes)
+
     def retire(self, codes) -> int:
         """Эти ряды больше не ждём (их сняли в наборе данных или источник перестал их давать)."""
         with self.tx() as c:
