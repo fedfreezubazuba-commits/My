@@ -144,6 +144,44 @@ CHECK_MARKERS = ("滑块", "滑动验证", "向右滑动", "拖动滑块", "请�
 GENERIC_MARKERS = ("captcha",)
 SMALL_PAGE = 40000
 
+# запись пути к файлу: щелчок по ссылке → текст ссылки и «плашки» вокруг (как в sources/_path.links)
+PATH_CLICK_JS = r"""
+document.addEventListener('click', (e) => {
+  const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+  if (!a || !window.__hubClick) return;
+  const clean = (t) => (t || '').replace(/\s+/g, ' ').trim();
+  const textOf = (el) => {           // текст с пробелами между частями — как в sources/_path._text_of
+    const parts = [], w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    while (w.nextNode()) { const t = w.currentNode.nodeValue; if (t && t.trim()) parts.push(t); }
+    return clean(parts.join(' '));
+  };
+  const text = textOf(a) || clean(a.getAttribute('title') || a.getAttribute('aria-label'));
+  let near = text, node = a;
+  for (let i = 0; i < 6; i++) {
+    node = node.parentElement;
+    if (!node) break;
+    const t = textOf(node);
+    if (t.length > 600) break;
+    if (t.length > text.length + 15) { near = t; if (t.length > 60) break; }
+  }
+  try { window.__hubClick({href: a.href, text: text, near: near, page: location.href,
+                           html: document.documentElement.outerHTML}); } catch (err) {}
+}, true);
+"""
+
+PATH_BANNER_JS = r"""
+(() => {
+  if (document.getElementById('__hub_banner')) return;
+  const b = document.createElement('div');
+  b.id = '__hub_banner';
+  b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1565c0;color:#fff;' +
+                    'font:15px Segoe UI,Arial;padding:8px 14px;text-align:center;pointer-events:none';
+  b.textContent = 'Хаб данных записывает путь: щёлкайте по ссылкам, как обычно, до нужного файла. Когда файл ' +
+                  'начнёт скачиваться, окно закроется само (или закройте его, когда открыли файл).';
+  document.documentElement.appendChild(b);
+})();
+"""
+
 CHECK_BANNER_JS = r"""
 (() => {
   if (document.getElementById('__hub_banner')) return;
@@ -397,6 +435,60 @@ class Browser:
                 except Exception:  # noqa: BLE001
                     pass
         return [{k: v for k, v in c.items() if k != "resp"} for c in cands if c.get("text")]
+
+    def record_path(self, url, timeout_s=1800, headless=False, on_page=None):
+        """Окно, в котором пользователь идёт по ссылкам до нужного файла. Хаб записывает щелчки по ссылкам
+        (адрес, текст ссылки, текст «плашки» вокруг, страница) и скачивание. Возвращается, когда началось
+        скачивание или окно закрыли: {"clicks": [...], "download": адрес файла или None}."""
+        clicks, state = [], {"download": None}
+
+        def on_click(source, info):
+            try:
+                clicks.append({"href": info.get("href") or "", "text": info.get("text") or "",
+                               "near": info.get("near") or "", "page": info.get("page") or "",
+                               "html": (info.get("html") or "")[:3_000_000]})
+            except Exception:  # noqa: BLE001
+                pass
+
+        def on_download(dl):
+            state["download"] = dl.url
+
+        def watch(pg):
+            pg.on("download", on_download)
+
+        with _lock, self._sync() as p:
+            ctx = self._launch(p, headless=headless)
+            try:
+                ctx.expose_binding("__hubClick", on_click)
+                ctx.add_init_script(PATH_CLICK_JS)
+                ctx.on("page", watch)
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                watch(page)
+                if not headless:
+                    _show_window(page)
+                page.goto(url, wait_until="domcontentloaded", timeout=90000)
+                if on_page:
+                    on_page(page)              # для тестов: щелчки программно
+                    end = time.time() + 5
+                    while state["download"] is None and time.time() < end:
+                        page.wait_for_timeout(200)
+                else:
+                    end = time.time() + timeout_s
+                    while time.time() < end and state["download"] is None and \
+                            any(not pg.is_closed() for pg in ctx.pages):
+                        for pg in ctx.pages:
+                            try:
+                                pg.evaluate(PATH_BANNER_JS)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        time.sleep(0.4)
+                    time.sleep(0.5)
+            finally:
+                try:
+                    ctx.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        return {"clicks": clicks, "download": state["download"]}
 
     def replay(self, start_url, requests, pause_s=4, progress=None, headless=False, timeout_ms=120000,
                interactive=False, human=None, human_wait_s=600):

@@ -27,15 +27,18 @@ class FileSheets(Source):
 
     def describe(self, params):
         names = ", ".join(f"«{s['name']}»" for s in params.get("sheets") or [])
-        where = params.get("page_url") or params.get("url") or ""
+        where = (params.get("path") or {}).get("start") or params.get("page_url") or params.get("url") or ""
         mode = "копить обновления" if params.get("mode") == "append" else "заменять"
         return f"Листы {names} из файла {where} ({mode})"
 
     def open_url(self, params):
-        return params.get("page_url") or params.get("url") or ""
+        return (params.get("path") or {}).get("start") or params.get("page_url") or params.get("url") or ""
 
     def fetch(self, params, ctx) -> FetchResult:
-        if params.get("page_url"):
+        if params.get("path"):                  # путь к файлу: шаги по ссылкам от стартовой страницы
+            from . import _path
+            url = _path.follow(params["path"], ctx)
+        elif params.get("page_url"):
             text, _via, final = W.fetch_page(W.clean_url(params["page_url"]), ctx, params.get("fetch_mode", "auto"))
             url = F.find_link(text, final, params["link_pattern"])
         else:

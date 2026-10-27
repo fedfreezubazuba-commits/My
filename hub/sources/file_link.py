@@ -77,15 +77,20 @@ class FileLink(Source):
     title = "Файл по ссылке"
 
     def describe(self, params):
+        if params.get("path"):
+            return f"Файл по пути от страницы {params['path'].get('start')} ({len(params['path'].get('steps') or [])} шаг.)"
         if params.get("page_url"):
             return f"Свежий файл со страницы {params['page_url']} (ссылка по шаблону «{params.get('link_pattern')}»)"
         return f"Файл {params.get('url')}"
 
     def open_url(self, params):
-        return params.get("page_url") or params.get("url") or ""
+        return (params.get("path") or {}).get("start") or params.get("page_url") or params.get("url") or ""
 
     def fetch(self, params, ctx) -> FetchResult:
-        if params.get("page_url"):
+        if params.get("path"):                  # путь к файлу: шаги по ссылкам от стартовой страницы (свежая новость)
+            from . import _path
+            url = _path.follow(params["path"], ctx)
+        elif params.get("page_url"):
             page = W.clean_url(params["page_url"])
             text, _via, final = W.fetch_page(page, ctx, params.get("fetch_mode", "auto"))
             url = F.find_link(text, final, params["link_pattern"])

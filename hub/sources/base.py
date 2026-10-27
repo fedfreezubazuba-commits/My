@@ -123,7 +123,7 @@ class Source:
 
     def host(self, params) -> str:
         """Хост для очереди запросов: к одному хосту — строго последовательно."""
-        url = params.get("url") or ""
+        url = params.get("url") or params.get("page_url") or (params.get("path") or {}).get("start") or ""
         return urlparse(url).netloc or self.kind
 
     def default_checks(self, params) -> dict:

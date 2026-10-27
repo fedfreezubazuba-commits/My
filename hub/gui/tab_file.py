@@ -47,6 +47,12 @@ class FileTab(ttk.Frame):
         ttk.Label(r3, text="слова в ссылке:").pack(side="left")
         self.pattern = tk.StringVar()
         ttk.Entry(r3, textvariable=self.pattern, width=20).pack(side="left", padx=6)
+        r4 = ttk.Frame(self)
+        r4.pack(fill="x", pady=(6, 0))
+        ttk.Label(r4, text="Файл лежит в свежей новости или за несколькими ссылками:").pack(side="left")
+        W2.icon_button(r4, "✍", "Откроется окно браузера: пройдите по ссылкам до файла и скачайте его. Хаб запишет "
+                                "щелчки и покажет шаги — их можно поправить", self.record_path,
+                       text="Записать путь к файлу…").pack(side="left", padx=6)
         self.info = ttk.Label(self, style="Muted.TLabel", text="Поддерживаются Excel (xlsx, xls), CSV, PDF с таблицами и архивы zip с такими файлами.")
         self.info.pack(anchor="w", pady=6)
         pw = ttk.PanedWindow(self, orient="horizontal")
@@ -76,6 +82,55 @@ class FileTab(ttk.Frame):
         self.sheets_btn.pack(side="right", padx=8)
         self.sheets_btn.state(["disabled"])
         self.data = None
+        self.file_url = ""          # адрес файла, найденный по шагам пути
+
+    def record_path(self):
+        """✍ Записать путь: окно браузера → щелчки → шаги (окно «Путь к файлу»)."""
+        start = W.clean_url(self.page_url.get() or self.url.get())
+        if not start:
+            from tkinter import simpledialog
+            start = W.clean_url(simpledialog.askstring(
+                "Путь к файлу", "Адрес страницы, с которой начинать (например, список отчётов):", parent=self) or "")
+        if not start:
+            return
+        browser = self.app.browser()
+        if browser is None or not browser.available():
+            messagebox.showwarning("Путь к файлу", "Для записи нужен встроенный браузер — запустите «Установка.bat».",
+                                   parent=self)
+            return
+        messagebox.showinfo("Путь к файлу", "Сейчас откроется окно браузера. Пройдите по ссылкам до нужного файла и "
+                            "скачайте его, как обычно. Как только начнётся скачивание, окно закроется само, и хаб "
+                            "покажет записанные шаги.", parent=self)
+
+        def done(got):
+            from ..sources import _path as PT
+            from .dialog_path import PathDialog
+            clicks = got["clicks"]
+            if got["download"] and clicks and clicks[-1]["href"] != got["download"] and \
+                    not PT.looks_like_file(clicks[-1]["href"]):
+                clicks.append({"href": got["download"], "text": "", "near": "", "page": clicks[-1]["href"]})
+            if not clicks:
+                messagebox.showinfo("Путь к файлу", "Хаб не увидел ни одного щелчка по ссылке. Попробуйте ещё раз.",
+                                    parent=self)
+                return
+            PathDialog(self.app, start, PT.guess_steps(clicks), clicks, on_done=self._path_loaded)
+        self.app.bg(lambda: browser.record_path(start), done, "Записываю путь к файлу (окно браузера)…",
+                    error=lambda e: messagebox.showerror("Путь к файлу", human_message(e), parent=self))
+
+    def _path_loaded(self, path, data, url):
+        fmt = F.detect_format(data, url)
+        try:
+            tables = F.read_tables(data, fmt)
+        except Exception as e:  # noqa: BLE001
+            tables = []
+            if fmt not in ("xlsx", "xls", "csv"):
+                messagebox.showerror("Файл", human_message(e), parent=self)
+                return
+        self.file_url = url
+        self.url.set(url)
+        self._show(("path", path), data, tables, fmt=fmt)
+        self.info.configure(text=f"Файл найден по шагам ({len(path['steps'])}): {url}. Найдено таблиц: "
+                                 f"{len(tables)}.", style="Muted.TLabel")
 
     def load_url(self):
         url = W.clean_url(self.url.get())
@@ -113,7 +168,7 @@ class FileTab(ttk.Frame):
         self.source = source
         self.tables = tables
         self.data, self.fmt = data, fmt or F.detect_format(data, source[1])
-        ok = source[0] == "url" and self.fmt in ("xlsx", "xls", "csv")
+        ok = source[0] in ("url", "path") and self.fmt in ("xlsx", "xls", "csv")
         self.sheets_btn.state(["!disabled"] if ok else ["disabled"])
         self.list.delete(*self.list.get_children())
         for i, t in enumerate(tables):
@@ -151,12 +206,14 @@ class FileTab(ttk.Frame):
 
     def to_sheets(self):
         """▤ «Листы в модель» — без разбора в базу, листы как есть."""
-        if not self.data or not self.source or self.source[0] != "url":
+        if not self.data or not self.source or self.source[0] not in ("url", "path"):
             messagebox.showinfo("Листы в модель", "Сначала откройте файл по ссылке (Excel или CSV).", parent=self)
             return
         from .dialog_sheets import SheetsDialog
         where = self.source[1]
-        if self.page_url.get().strip() and self.pattern.get().strip():
+        if self.source[0] == "path":
+            src, where = {"path": self.source[1]}, self.file_url or self.source[1]["start"]
+        elif self.page_url.get().strip() and self.pattern.get().strip():
             src = {"page_url": W.clean_url(self.page_url.get()), "link_pattern": self.pattern.get().strip()}
         else:
             src = {"url": where}
@@ -187,11 +244,16 @@ class FileTab(ttk.Frame):
 
     def _add(self, t, params):
         kind, where = self.source
-        if kind == "url":
+        if kind == "path":
+            params["path"] = where
+            where = self.file_url or where["start"]
+            kind = "url"
+        elif kind == "url":
             if self.page_url.get().strip() and self.pattern.get().strip():
                 params.update(page_url=W.clean_url(self.page_url.get()), link_pattern=self.pattern.get().strip())
             else:
                 params["url"] = where
+        if kind == "url":
             title = t.title
             if params.get("mode") == "dataset" or title == "CSV" or getattr(t, "archive", False):
                 title = F.name_from_url(where) or title       # у CSV нет листов — название по адресу

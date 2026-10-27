@@ -35,9 +35,12 @@ def clean_url(url: str) -> str:
 
 
 def site_name(url: str) -> str:
-    """online.metro-cc.ru → metro; www.metaltorg.ru → metaltorg; fearnpulse.com → fearnpulse."""
+    """online.metro-cc.ru → metro; www.metaltorg.ru → metaltorg; fearnpulse.com → fearnpulse;
+    minfin.gov.ru → minfin (gov/com/org/… перед доменом страны — не имя сайта)."""
     host = urlparse(url).netloc.lower().split(":")[0]
     parts = [p for p in host.split(".") if p not in ("www", "online", "m", "shop")]
+    if len(parts) >= 3 and parts[-2] in ("gov", "com", "org", "co", "net", "ac", "edu", "gob", "go"):
+        parts = parts[:-1]
     name = parts[-2] if len(parts) >= 2 else (parts[0] if parts else "web")
     return re.sub(r"[^a-z0-9]+", "", name.split("-")[0]) or "web"
 

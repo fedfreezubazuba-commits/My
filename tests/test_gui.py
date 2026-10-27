@@ -1031,3 +1031,72 @@ def test_sheets_dialog_and_give_to_model(app, monkeypatch):
     app.models.tree.selection_set("М")
     app.models.show_series()
     assert any(k == ("sheets", job["id"]) for k in app.models.groups.values())
+
+
+def test_path_dialog_check_and_file_tab(app, monkeypatch):
+    """«Путь к файлу»: шаги из записанных щелчков → «Проверить путь» (ход по шагам) → файл во вкладке «Файл» →
+    «▤ Листы в модель…» хранит путь, а не адрес файла; ✎ у показателя открывает те же шаги."""
+    import minfin_site as MS
+    from hub.gui.dialog_add import AddDialog
+    from hub.gui.dialog_path import PathDialog
+    from hub.sources import _path as PT
+    from hub.sources import _web as WEB
+    base = "https://minfin.gov.ru"
+    site = MS.Site()
+
+    def fake_get(url, ctx=None, timeout=60, headers=None):
+        path = url.replace(base, "")
+        if path.startswith("/common/upload/library/"):
+            return 200, "application/vnd.ms-excel", MS.xlsx(path.rsplit("/", 1)[-1]), url
+        if path.startswith("/ru/statistics/fedbud"):
+            return 200, "text/html; charset=utf-8", MS.list_page(site.releases).encode(), url
+        key = path.split("id_4=")[-1]
+        return 200, "text/html; charset=utf-8", MS.doc_page(key[0], key[1:]).encode(), url
+    monkeypatch.setattr(WEB, "http_get", fake_get)
+    monkeypatch.setattr(app, "bg", lambda work, done=None, msg="", error=None: done(work()) if done else work())
+    html = MS.list_page(site.releases)
+    icon = [x for x in PT.links(html, base + "/ru/statistics/fedbud/") if x["href"].endswith("m2026-10-09.xlsx")][0]
+    clicks = [{**icon, "html": html, "page": base + "/ru/statistics/fedbud/"}]
+    tab = app.find.file
+    d = PathDialog(app, base + "/ru/statistics/fedbud/", PT.guess_steps(clicks), clicks, on_done=tab._path_loaded)
+    pump(app, 0.2)
+    assert d.rows[0][1]["near"].get() == "краткая ежемесячная информация исполнении"
+    d.check()
+    out = d.out.get("1.0", "end")
+    assert "подходящих ссылок: 1" in out and "m2026-10-09.xlsx" in out
+    d.rows[0][1]["near"].set("нет таких слов")
+    d.check()
+    assert "Не получилось" in d.out.get("1.0", "end")
+    d.rows[0][1]["near"].set("ежемесячная")
+    d.finish()
+    pump(app, 0.2)
+    assert tab.source[0] == "path" and tab.file_url.endswith("m2026-10-09.xlsx") and tab.tables
+    opened = []
+    orig = AddDialog.__init__
+    AddDialog.__init__ = lambda self, app_, src, params, name, **kw: opened.append((src, params, name))
+    try:
+        tab.to_sheets()
+        sd = [w for w in app.root.winfo_children() if w.__class__.__name__ == "SheetsDialog"][-1]
+        sd.next()
+        tab.list.selection_set("0")
+        tab.add()
+    finally:
+        AddDialog.__init__ = orig
+    (src1, p1, _n1), (src2, p2, name2) = opened
+    assert src1 == "file_sheets" and p1["path"]["steps"][0]["near"] == "ежемесячная" and "url" not in p1
+    assert src2 == "file_link" and p2["path"]["start"].endswith("/fedbud/") and "url" not in p2
+    assert name2.startswith("Minfin")
+    job = app.cfg.add_job("file_link", name2, p2)
+    app.jobs.refresh()
+    monkeypatch.setattr(app.jobs, "selected", lambda: job["id"])
+    app.jobs.change_data()
+    e = [w for w in app.root.winfo_children() if isinstance(w, PathDialog)][-1]
+    e.rows[0][1]["words"].set("документ")
+    e.rows[0][1]["href"].set("")
+    e._add_row({"words": "скачать"}, None)
+    from tkinter import messagebox
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: False)
+    e.save()
+    steps = app.cfg.job(job["id"])["params"]["path"]["steps"]
+    assert [s["words"] for s in steps] == ["документ", "скачать"]
+    assert PT.follow(app.cfg.job(job["id"])["params"]["path"]).endswith("m2026-10-09.xlsx")

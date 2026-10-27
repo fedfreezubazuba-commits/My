@@ -302,6 +302,10 @@ class JobsTab(ttk.Frame):
             p = job["params"]
             FormDialog(self.app, p.get("url"), p["request"], None, job=job)
             return
+        if (job.get("params") or {}).get("path"):       # файл по пути: поправить шаги
+            from .dialog_path import PathDialog
+            PathDialog(self.app, job=job)
+            return
         if job["source"] not in ("fedstat", "cbr"):
             messagebox.showinfo("Изменить набор данных", "Для сайтов и файлов набор данных задаётся при добавлении. "
                                 "Чтобы поменять его, добавьте показатель заново («Найти данные → Сайт» или «Файл»), "

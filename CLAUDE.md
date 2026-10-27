@@ -408,6 +408,17 @@ legacy/            исходные навигаторы пользовател�
   `sheets.example_formula`), `dialog_add.give_sheets` (подписка + «Подключить модель»), группа «Листы файла» в
   «Моделях». Образец — настоящий `samples/web/cbr_bop_est_6.xlsx` (файл ЦБ от пользователя).
 
+- **0.9.5 — путь к файлу** (Минфин: список новостей → свежая карточка → файл): `params.path = {start, steps}` у
+  `file_link` и `file_sheets` (`_path.follow` перед скачиванием). Шаг: `words` (в тексте ссылки), `near` (в тексте
+  «плашки» — ближайший предок ≤ `MAX_CONTEXT`), `href` (кусок адреса), `pick` first|newest (дата в плашке)|last; на
+  последнем шаге без `href` ссылки на файлы (`looks_like_file`) важнее страниц. Текст элементов — с пробелами между
+  узлами (`_text_of`; в JS — TreeWalker). `browser.record_path` — окно, щелчки по ссылкам (`PATH_CLICK_JS`,
+  `expose_binding("__hubClick")`, с HTML страницы) до скачивания; `guess_steps`: теги «#…» и даты не берутся, слова
+  плашки — сначала отличающие от других ссылок той же страницы (`_common_words`), до 4; у значка без текста —
+  `href` = расширение файла. Окно `gui/dialog_path.PathDialog` (шаги, «Проверить путь» с ходом по шагам, скачать →
+  `FileTab._path_loaded`, источник `("path", path)`); ✎ у показателя с path — тот же диалог. `site_name`:
+  minfin.gov.ru → minfin (раньше «gov»). Тест-сайт — `tests/minfin_site.py` (живой сайт из облака недоступен).
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.
