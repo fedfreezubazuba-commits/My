@@ -419,6 +419,10 @@ legacy/            исходные навигаторы пользовател�
   `FileTab._path_loaded`, источник `("path", path)`); ✎ у показателя с path — тот же диалог. `site_name`:
   minfin.gov.ru → minfin (раньше «gov»). Тест-сайт — `tests/minfin_site.py` (живой сайт из облака недоступен).
 
+- **0.9.6**: «Данные для модели» (`dialog_select.SelectionDialog`) показывает и показатели `file_sheets` («листы файла: N»,
+  без рядов): выбирать нечего, «Добавить в модель» → `give_sheets` (раньше их можно было отдать в модель только кнопкой
+  после первой загрузки — если модели ещё не было, получался тупик).
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

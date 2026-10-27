@@ -139,8 +139,15 @@ class SelectionDialog(tk.Toplevel):
         self.jobs_lb.delete(0, "end")
         self.job_ids = []
         for j in self.app.cfg.jobs():
+            if q and q not in j["name"].lower():
+                continue
+            if j.get("source") == "file_sheets":          # листы файла: рядов нет, в модель идут листы как есть
+                k = len((j.get("params") or {}).get("sheets") or [])
+                self.job_ids.append(j["id"])
+                self.jobs_lb.insert("end", f"{j['name']}  (листы файла: {k})")
+                continue
             n = len(self.store.series_of_job(j["id"]))
-            if not n or q and q not in j["name"].lower():
+            if not n:
                 continue
             self.job_ids.append(j["id"])
             self.jobs_lb.insert("end", f"{j['name']}  ({n} рядов)")
@@ -158,7 +165,12 @@ class SelectionDialog(tk.Toplevel):
         self.rows = [(r, packet.series_fields(r)) for r in self.store.series_of_job(job_id)]
         for tab in self.nb.tabs():
             self.nb.forget(tab)
+        for w in self.nb.winfo_children():
+            w.destroy()
         self.fields.clear()
+        if self.sheets_job():
+            self._show_sheets()
+            return
         names = []                  # поля всех рядов: у части рядов поля может не быть
         for _r, f in self.rows:
             names += [k for k in f if k not in names]
@@ -184,6 +196,30 @@ class SelectionDialog(tk.Toplevel):
             ttk.Label(self.nb, text="В показателе один ряд — выбирать нечего, задайте период.").pack()
         self.after(50, self.recount)
 
+    def sheets_job(self):
+        return bool(self.job) and self.job.get("source") == "file_sheets"
+
+    def _show_sheets(self):
+        """Показатель «листы файла»: выбирать нечего — модель получает листы целиком."""
+        specs = (self.job.get("params") or {}).get("sheets") or []
+        have = self.job["id"] in ((self.app.cfg.model(self.model_name) or {}).get("sheets") or [])
+        self.const.configure(text=(
+            "Листы файла переносятся в модель как есть — выбирать значения и период не нужно. После «Добавить в "
+            "модель» хаб предложит сразу добавить листы в книгу (модель должна быть закрыта в Excel)."))
+        names = []
+        for sp in specs:
+            names.append(f"«{sp['name']}»")
+            if sp.get("cells"):
+                names.append(f"«{sp['name']} (ячейки)»")
+        ttk.Label(self.nb, padding=12, justify="left", text="Листы в модели: " + ", ".join(names)).pack(anchor="w")
+        self.preview.delete(*self.preview.get_children())
+        for sp in specs:
+            self.preview.insert("", "end", values=(f"{sp['name']} ← лист файла «{sp.get('title', '')}»", ""))
+        self.count.configure(text="Модель уже получает эти листы." if have else f"Листов: {len(specs)}",
+                             foreground="")
+        if not self.name_touched:
+            self.name.set(self.job["name"])
+
     # --- подсчёт ---------------------------------------------------------------
     def filters(self):
         """Только поля, где отмечено не всё: новые значения остальных полей придут сами."""
@@ -203,7 +239,7 @@ class SelectionDialog(tk.Toplevel):
         for k, (chosen, all_ids, tab, title) in self.fields.items():
             if str(tab) in self.nb.tabs():
                 self.nb.tab(tab, text=f"{title[:26]} ({len(chosen)}/{len(all_ids)})")
-        if not self.job:
+        if not self.job or self.sheets_job():
             return
         flt = self.filters()
         hit = [r for r, f in self.rows if packet.matches(f, flt)]
@@ -243,6 +279,12 @@ class SelectionDialog(tk.Toplevel):
     def save(self):
         if not self.job:
             messagebox.showinfo("Показатель", "Выберите показатель слева.", parent=self)
+            return
+        if self.sheets_job():
+            from .dialog_add import give_sheets
+            job_id = self.job["id"]
+            self.close()
+            give_sheets(self.app, self.model_name, job_id)
             return
         try:
             a, b = parse_bound(self.d_from.get()), parse_bound(self.d_to.get(), end=True)

@@ -1025,8 +1025,18 @@ def test_sheets_dialog_and_give_to_model(app, monkeypatch):
     connected = []
     monkeypatch.setattr(app.models, "_run_connect", lambda n, p: connected.append(n))
     monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
-    give_sheets(app, "М", job["id"])
+    # модель заведена после показателя: «Модели» → «Добавить данные» видит и показатель «листы файла»
+    from hub.gui.dialog_select import SelectionDialog
+    sd = SelectionDialog(app, "М")
+    assert job["id"] in sd.job_ids
+    sd.jobs_lb.selection_set(sd.job_ids.index(job["id"]))
+    sd.pick_job()
+    pump(app, 0.3)
+    assert "ПБ_оценка (ячейки)" in str([w.cget("text") for w in sd.nb.winfo_children()])
+    sd.save()
     assert app.cfg.model("М")["sheets"] == [job["id"]] and connected == ["М"]
+    give_sheets(app, "М", job["id"])
+    assert app.cfg.model("М")["sheets"] == [job["id"]] and connected == ["М", "М"]
     app.models.refresh()
     app.models.tree.selection_set("М")
     app.models.show_series()
