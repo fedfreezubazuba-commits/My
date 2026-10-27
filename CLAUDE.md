@@ -35,6 +35,7 @@ hub/
     notify.py      уведомления Windows (PowerShell), на Linux — только журнал
     claude_pack.py «Отправить Claude» (с вычисткой секретов)
     impact.py      ✎ «Изменить набор данных»: какие ряды перестанут приходить и какие модели их получают
+    sheets.py      «Листы файла в модель»: листы как есть, ячейки для формул (путь строки, заголовок столбца), «Листы/»
     hostblock.py   пауза по сайту при 403/429/капче: 1→3→12→24 ч (meta host_block:<host>), баннер на «Обзоре»
     crash.py       ошибка запуска окна (pythonw без консоли) → «Ошибка запуска.txt» в папке программы,
                    Блокнот + окно-сообщение; ошибки в обработчиках окна — report_callback_exception
@@ -52,6 +53,7 @@ hub/
                    (_forms.py — поля периода, размер страницы, ответ HTML/JSON → таблица → ряды)
     comtrade.py    ООН UN Comtrade, открытый доступ без ключа (public preview, ≤ 500 строк), по году за запрос
     file_link.py   xlsx/xls/csv/pdf по ссылке или «свежий файл со страницы по шаблону ссылки»
+    file_sheets.py листы файла в модель как есть (без базы): replace / append, см. core/sheets.py
     folder_inbox.py файлы из Входящие/<папка>/ → объединение с историей → обработано/
     _web.py        загрузка (requests → встроенный браузер), очистка utm, защита/вход, JSON-LD, NUXT, дата отчёта
     _dataset.py    «набор данных» в длинном виде (дата + разрезы + числа, как ответ API) с отбором значений
@@ -388,6 +390,23 @@ legacy/            исходные навигаторы пользовател�
   часть ключа (заголовок столбца) есть в таблице, но больше не число по новым поправкам; при «Сохранить» —
   `askyesnocancel` (с моделями из `impact.affected_models`): «Да» → `store.delete_series` (series, observations,
   subscriptions) + `cfg.forget_codes` (series/exclude/critical моделей); «Нет» — оставить; «Отмена» — не сохранять.
+
+- **0.9.4 — листы файла в модель** (без базы): источник `file_sheets` (params: url | page_url+link_pattern, `mode`
+  replace|append, `sheets [{title, index, count, name, cells}]`), `core/sheets.py`: `read_sheets` (xlsx с объединениями
+  и отступами, xls, csv), `match_sheet` (имя → имя без цифр/дат → номер → единственный), `cells` (числа листа →
+  строка/подпись/путь по отступам (без отступов — «(2)» у повторов)/столбец/заголовок по этажам шапки и объединениям;
+  строки из одной надписи — к «Таблица»; строки годов — шапка), `file_date`, `save` → «Листы/<job>/<имя>.csv» и
+  «— ячейки.csv», state.json с хэшем (тот же контент — `None`, статус unchanged). Runner `_apply_sheets` (вместо
+  проверок/наблюдений; runs.details.sheets, new_periods = строки, meta `sheets_changed:<job>`). Модель:
+  `model.sheets = [job]` (`cfg.subscribe_sheets`), `packet.copy_sheets` → «<модель> — лист <имя>[ — ячейки].csv»
+  (до загрузки — пустая таблица), `sheet_updates` → строки «Хаб_Обновления», `models_with_new_data` — по
+  `sheets_changed` (критичные — ключ `sheets:<job>`). Power Query: `Хаб_Лист.m` (числа — только строки из цифр,
+  `Обновлено`/`Файл от` — дата), `Хаб_Ячейки.m`; `mcode.sheet_queries` (запросы `Хаб_Лист_<имя>`/`Хаб_Ячейки_<имя>`,
+  латиница `Hub_Sheet_/Hub_Cells_`, таблицы `Лист_`/`Ячейки_`, листы «<имя>», «<имя> (ячейки)»);
+  `com_connect._load_sheets` (чужой лист с тем же именем → «<имя> (хаб)»), `connect_model(sheets=…)`,
+  инструкция вручную. GUI: «▤ Листы в модель…» во вкладке «Файл» (`gui/dialog_sheets.py`, пример формулы
+  `sheets.example_formula`), `dialog_add.give_sheets` (подписка + «Подключить модель»), группа «Листы файла» в
+  «Моделях». Образец — настоящий `samples/web/cbr_bop_est_6.xlsx` (файл ЦБ от пользователя).
 
 ## Категории ошибок
 

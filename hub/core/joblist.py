@@ -139,11 +139,18 @@ def model_links(cfg, store) -> dict:
             got = codes & plan
             if got:
                 out.setdefault(job_id, []).append(m["name"] + ("" if got == codes else " (часть)"))
+        for job_id in m.get("sheets") or []:          # листы файлов
+            out.setdefault(job_id, []).append(m["name"])
     return {k: ", ".join(v) for k, v in out.items()}
 
 
 def row(store, job, state, now, snapshot=False) -> dict:
     """Значения столбцов (кроме названия, источника и моделей)."""
+    if job.get("source") == "file_sheets":            # листы файла: рядов нет — число листов
+        n = len((job.get("params") or {}).get("sheets") or [])
+        return {"count": f"{n} лист.", "period": "Листы", "history": history_text(state),
+                "last": state.get("last_label") or "—", "lag": lag_text(state, now), "delta": "—",
+                "freq": frequency_word(job, None), "next": next_days(job, state, now, True, None)}
     series = [s for s in store.series_of_job(job["id"]) if not s["retired"]]
     pers = [s["periodicity"] for s in series]
     main = max(set(p for p in pers if p in P.ORDER), key=pers.count, default=None)

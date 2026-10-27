@@ -70,6 +70,12 @@ class FileTab(ttk.Frame):
                      state="readonly").pack(side="left")
         self.add_btn = ttk.Button(bar, text="＋ В обновления", style="Add.TButton", command=self.add, state="disabled")
         self.add_btn.pack(side="right")
+        self.sheets_btn = W2.icon_button(bar, "▤", "Перенести листы файла в модель как есть — на постоянные имена листов; "
+                                                  "хаб обновляет их, когда файл меняется", self.to_sheets,
+                                         text="Листы в модель…")
+        self.sheets_btn.pack(side="right", padx=8)
+        self.sheets_btn.state(["disabled"])
+        self.data = None
 
     def load_url(self):
         url = W.clean_url(self.url.get())
@@ -87,7 +93,7 @@ class FileTab(ttk.Frame):
         def work():
             data, final = download(url, ctx)
             return data, F.read_tables(data, F.detect_format(data, url))
-        self.app.bg(work, lambda r: self._show(("url", url), *r), "Скачиваю файл…",
+        self.app.bg(work, lambda r: self._show(("url", url), *r, fmt=F.detect_format(r[0], url)), "Скачиваю файл…",
                     error=lambda e: self.info.configure(text="Не получилось: " + human_message(e), style="red.TLabel"))
 
     def load_inbox(self):
@@ -103,9 +109,12 @@ class FileTab(ttk.Frame):
             return
         self._show(("inbox", path), data, tables)
 
-    def _show(self, source, data, tables):
+    def _show(self, source, data, tables, fmt=None):
         self.source = source
         self.tables = tables
+        self.data, self.fmt = data, fmt or F.detect_format(data, source[1])
+        ok = source[0] == "url" and self.fmt in ("xlsx", "xls", "csv")
+        self.sheets_btn.state(["!disabled"] if ok else ["disabled"])
         self.list.delete(*self.list.get_children())
         for i, t in enumerate(tables):
             self.list.insert("", "end", iid=str(i), values=(t.title, len(t.rows)))
@@ -139,6 +148,22 @@ class FileTab(ttk.Frame):
             return
         has_dates = any(p["date"] >= 0.6 for p in T.column_profile(t.rows))
         self.mode.set("history" if has_dates else "snapshot")
+
+    def to_sheets(self):
+        """▤ «Листы в модель» — без разбора в базу, листы как есть."""
+        if not self.data or not self.source or self.source[0] != "url":
+            messagebox.showinfo("Листы в модель", "Сначала откройте файл по ссылке (Excel или CSV).", parent=self)
+            return
+        from .dialog_sheets import SheetsDialog
+        where = self.source[1]
+        if self.page_url.get().strip() and self.pattern.get().strip():
+            src = {"page_url": W.clean_url(self.page_url.get()), "link_pattern": self.pattern.get().strip()}
+        else:
+            src = {"url": where}
+        try:
+            SheetsDialog(self.app, src, self.data, self.fmt, W.site_name(where))
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Листы в модель", human_message(e), parent=self)
 
     def add(self):
         sel = self.list.selection()

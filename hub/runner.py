@@ -154,10 +154,11 @@ class JobOutcome:
         self.run_id = None
         self.raw_path = None
         self.blocked = None         # (сайт, пауза до) — сайт не пускает хаб
+        self.sheets = []            # листы файла, обновлённые для моделей (file_sheets)
 
     @property
     def changed(self):
-        return bool(self.new_periods or self.revisions)
+        return bool(self.new_periods or self.revisions or self.sheets)
 
 
 def blocking(exc) -> bool:
@@ -359,6 +360,8 @@ class Runner:
             return out
 
         res = payload
+        if getattr(res, "sheets", None) is not None:     # листы файла в модель — без разбора в базу
+            return self._apply_sheets(job, res, run_id, now, out, state)
         out.warnings = list(res.warnings)
         HB.clear(self.store, sources.get(job["source"]).host(job.get("params") or {}))   # сайт снова пускает
         if res.next_release or res.release_note:     # срок следующего обновления, который сообщил источник
@@ -447,6 +450,47 @@ class Runner:
                                        "problems": problems, "warnings": out.warnings})
         self.log.info("Показатель %s: %s (новых периодов %d, пересмотров %d)", job["id"], out.status,
                       len(out.new_periods), len(out.revisions))
+        return out
+
+    def _apply_sheets(self, job, res, run_id, now, out, state):
+        """Листы файла: записать в «Листы/», если содержимое изменилось; история — в runs (для «Хаб_Обновления»)."""
+        from .core import sheets as SH
+        HB.clear(self.store, sources.get(job["source"]).host(job.get("params") or {}))
+        fetched_at = now.isoformat(timespec="seconds")
+        out.raw_path = self._save_raw(job, res)
+        try:
+            summary = SH.save(self.paths, job, res.sheets, fetched_at)
+        except E.FileBusy as exc:            # файл листа открыт (например, в Excel) — повтор позже
+            out.status, out.category, out.message = "retry", E.FILE_BUSY, E.human_message(exc)
+            self.store.finish_run(run_id, status=out.status, category=out.category, message=out.message)
+            self.store.set_state(job["id"], status=out.status, category=out.category, message=out.message,
+                                 last_attempt=fetched_at, fail_count=(state.get("fail_count") or 0) + 1)
+            return out
+        if summary is None:
+            out.status, out.message = "unchanged", "Файл не изменился"
+            self.store.finish_run(run_id, status=out.status, category=E.NO_NEW_DATA, message=out.message,
+                                  raw_path=out.raw_path)
+            self.store.set_state(job["id"], status=out.status, category=None, message=out.message,
+                                 last_attempt=fetched_at, last_success=fetched_at, fail_count=0)
+            return out
+        out.sheets = summary
+        out.status = "updated"
+        added = (job.get("params") or {}).get("mode") == "append"
+        parts = [f"«{x['name']}» — {x['rows']} строк" + (f", файл от {x['file_date'][8:10]}.{x['file_date'][5:7]}."
+                                                          f"{x['file_date'][:4]}" if x["file_date"] else "")
+                 for x in summary]
+        out.message = out.summary = ("Добавлено обновление листов: " if added else "Обновлены листы: ") + "; ".join(parts)
+        fdate = max((x["file_date"] for x in summary if x["file_date"]), default="") or fetched_at[:10]
+        self.store.meta_set(f"sheets_changed:{job['id']}", fetched_at)
+        self.store.finish_run(run_id, status=out.status, message=out.message, n_series=len(summary),
+                              new_periods=sum(x["rows"] for x in summary),       # для «Новые данные» на «Обзоре»
+                              raw_path=out.raw_path, details={"sheets": summary})
+        self.store.set_state(job["id"], status=out.status, category=None, message=out.message, fail_count=0,
+                             last_attempt=fetched_at, last_success=fetched_at, last_change=fetched_at,
+                             n_series=len(summary), n_rows=sum(x["rows"] for x in summary),
+                             first_period=state.get("first_period") or fdate, last_period=fdate,
+                             last_label=f"файл от {fdate[8:10]}.{fdate[5:7]}.{fdate[:4]}", warnings=None)
+        self.log.info("Показатель %s: листы обновлены (%s)", job["id"], ", ".join(x["name"] for x in summary))
         return out
 
     # --- проход --------------------------------------------------------------

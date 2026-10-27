@@ -82,14 +82,14 @@ def _excel(log):
     return xl
 
 
-def _add_queries(wb, packet_path, log, ascii_names=False, layout="long"):
-    """Добавить (или обновить) три запроса хаба. Запросы другого набора имён удаляются."""
-    other = set(mcode.query_names(not ascii_names).values()) - set(mcode.query_names(ascii_names).values())
+def _add_queries(wb, packet_path, log, ascii_names=False, layout="long", sheets=()):
+    """Добавить (или обновить) запросы хаба (и листов файлов модели). Запросы другого набора имён удаляются."""
+    other = set(mcode.query_names(not ascii_names, sheets).values()) - set(mcode.query_names(ascii_names, sheets).values())
     for q in list(wb.Queries):
         if q.Name in other:
             log(f"Удаляю запрос {q.Name} (другой набор имён)")
             q.Delete()
-    for name, code in mcode.queries(packet_path, ascii_names, layout):
+    for name, code in mcode.queries(packet_path, ascii_names, layout, sheets):
         existing = None
         for q in wb.Queries:
             if q.Name == name:
@@ -289,7 +289,7 @@ def _try_ways(ws, query_name, cell, log, ways):
     return None, None, errors
 
 
-def _load_tables(wb, ws, packet_path, log, prefer=None, layout="long"):
+def _load_tables(wb, ws, packet_path, log, prefer=None, layout="long", sheets=()):
     """Вывести запросы Хаб и Хаб_Ряды таблицами на лист. Перебирает окружения и способы;
     возвращает {'visible', 'ascii', 'way'} того, что сработало (чтобы в следующий раз начать с него)."""
     hub_lo = _existing_table(ws, "Хаб")
@@ -316,7 +316,7 @@ def _load_tables(wb, ws, packet_path, log, prefer=None, layout="long"):
         for visible, ascii_names in variants:
             log(f"Пробую: {variant_title(visible, ascii_names)}")
             _set_visible(wb, visible, log)
-            _add_queries(wb, packet_path, log, ascii_names, layout)
+            _add_queries(wb, packet_path, log, ascii_names, layout, sheets)
             names = mcode.query_names(ascii_names)
             lo, way, errors = _try_ways(ws, names["Хаб"], "A1", log, ways)
             all_errors += errors
@@ -336,7 +336,7 @@ def _load_tables(wb, ws, packet_path, log, prefer=None, layout="long"):
     finally:
         _set_visible(wb, False, log)
     # ничего не сработало: оставляем запросы с русскими именами — по ним написана инструкция
-    _add_queries(wb, packet_path, log, False, layout)
+    _add_queries(wb, packet_path, log, False, layout, sheets)
     raise StepError("создать таблицу Хаб", "; ".join(all_errors[-5:]))
 
 
@@ -358,12 +358,59 @@ def _step(name, fn, *args, log):
         raise StepError(name, e)
 
 
-def _fill(wb, packet_path, log, prefer=None, layout="long"):
-    _step("Добавляю запросы Power Query", _add_queries, wb, packet_path, log, False, layout, log=log)
+def _fill(wb, packet_path, log, prefer=None, layout="long", sheets=()):
+    _step("Добавляю запросы Power Query", _add_queries, wb, packet_path, log, False, layout, sheets, log=log)
     ws = _step("Готовлю лист «Хаб»", _sheet, wb, log, log=log)
-    way = _load_tables(wb, ws, packet_path, log, prefer, layout)
+    way = _load_tables(wb, ws, packet_path, log, prefer, layout, sheets)
     _load_updates(wb, log, way)
+    if sheets:
+        _load_sheets(wb, log, way, sheets)
     return ws, way
+
+
+def _load_sheets(wb, log, way, sheets) -> list[str]:
+    """Листы файлов («Листы файла в модель»): на каждый — лист книги с постоянным именем и таблицей запроса.
+    Лист пользователя с тем же именем не трогаем — тогда лист «<имя> (хаб)». Сбой одного листа не мешает
+    остальным и подключению. → имена листов, которые не удалось вывести."""
+    failed = []
+    names = {q["ru"]: q for q in mcode.sheet_queries(sheets, bool((way or {}).get("ascii")))}
+    ways = [t for t, _ in TABLE_WAYS]
+    if (way or {}).get("way") in ways:
+        ways.remove(way["way"])
+        ways.insert(0, way["way"])
+    for q in names.values():
+        try:
+            ws = next((w for w in wb.Worksheets if w.Name == q["sheet"]), None)
+            if ws is not None and _existing_table(ws, q["table"]) is not None:
+                log(f"Таблица {q['table']} на листе «{q['sheet']}» уже есть — обновляю")
+                _existing_table(ws, q["table"]).QueryTable.Refresh(False)
+                continue
+            if ws is not None:
+                title = (q["sheet"][:25] + " (хаб)")[:31]
+                log(f"Лист «{q['sheet']}» уже есть и он не хаба — вывожу на «{title}»")
+                ws = next((w for w in wb.Worksheets if w.Name == title), None)
+                if ws is not None and _existing_table(ws, q["table"]) is not None:
+                    _existing_table(ws, q["table"]).QueryTable.Refresh(False)
+                    continue
+                q = dict(q, sheet=title)
+            if ws is None:
+                log(f"Создаю лист «{q['sheet']}» в конце книги")
+                ws = wb.Worksheets.Add(After=wb.Worksheets(wb.Worksheets.Count))
+                ws.Name = q["sheet"]
+            _set_visible(wb, bool((way or {}).get("visible")), log)
+            try:
+                lo, _w, errors = _try_ways(ws, q["query"], "A1", log, ways)
+            finally:
+                _set_visible(wb, False, log)
+            if lo is None:
+                log(f"Лист «{q['sheet']}» не выведен: " + "; ".join(errors[-3:]))
+                failed.append(q["sheet"])
+                continue
+            _finish_table(lo, q["query"], q["table"], log)
+        except Exception as e:  # noqa: BLE001
+            log(f"Лист «{q['sheet']}» не создан: {e!r}")
+            failed.append(q["sheet"])
+    return failed
 
 
 def _load_updates(wb, log, way):
@@ -400,7 +447,7 @@ def _load_updates(wb, log, way):
         return False
 
 
-def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None, layout="long") -> dict:
+def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None, layout="long", sheets=()) -> dict:
     """Подключить модель. Возвращает {'backup', 'steps', 'partial', 'way'}.
 
     partial=True — запросы добавлены и модель сохранена, но таблицы на лист загрузить не удалось:
@@ -427,7 +474,7 @@ def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None, 
     try:
         wb = _step(f"Открываю модель {model_path.name}", lambda: xl.Workbooks.Open(str(model_path), 0, False), log=say)
         try:
-            _ws, way = _fill(wb, packet_path, say, prefer, layout)
+            _ws, way = _fill(wb, packet_path, say, prefer, layout, sheets)
         except StepError as e:
             if not e.step.startswith(("создать таблицу", "обновить таблицу")):
                 raise
@@ -549,7 +596,7 @@ def diagnose(packet_path, log=print) -> list[str]:
     return out
 
 
-def make_connection_file(target: Path, packet_path, log=print, layout="long") -> Path:
+def make_connection_file(target: Path, packet_path, log=print, layout="long", sheets=()) -> Path:
     """Запасной путь: отдельная книга «<модель> — подключение.xlsx» с листом «Хаб» и запросами."""
     target = Path(target)
     xl = _excel(log)
@@ -557,13 +604,14 @@ def make_connection_file(target: Path, packet_path, log=print, layout="long") ->
     try:
         wb = xl.Workbooks.Add()
         try:
-            _fill(wb, packet_path, log, None, layout)
+            _fill(wb, packet_path, log, None, layout, sheets)
         except StepError as e:
             if not e.step.startswith(("создать таблицу", "обновить таблицу")):
                 raise
             log(f"Таблицы не загрузились ({e.detail}); файл-подключение будет только с запросами")
+        keep = {SHEET, UPDATES_SHEET} | {q["sheet"] for q in mcode.sheet_queries(sheets)}
         for ws in list(wb.Worksheets):
-            if ws.Name not in (SHEET, UPDATES_SHEET) and wb.Worksheets.Count > 1:
+            if ws.Name not in keep and wb.Worksheets.Count > 1:
                 ws.Delete()
         if target.exists():
             target.unlink()

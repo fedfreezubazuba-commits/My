@@ -18,6 +18,7 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import json
 import os
 import re
 import tempfile
@@ -36,7 +37,7 @@ SERIES_COLS = ["Код", "Название", "Единицы", "Периодич
 N_CUTS = 4
 SOURCE_TITLES = {"cbr": "Банк России", "fedstat": "ЕМИСС", "web_value": "Сайт (значение)",
                  "web_table": "Сайт (таблица)", "file_link": "Файл по ссылке", "folder_inbox": "Папка «Входящие»",
-                 "web_form": "Форма на сайте", "comtrade": "ООН (UN Comtrade)",
+                 "web_form": "Форма на сайте", "comtrade": "ООН (UN Comtrade)", "file_sheets": "Листы файла",
                  "fred": "FRED (ФРС Сент-Луиса)"}
 
 
@@ -261,7 +262,52 @@ def updates_path(packet: Path) -> Path:
     return packet.with_name(packet.stem + " — обновления.csv")
 
 
-def updates_table(store, codes) -> bytes:
+def sheet_model_path(packet: Path, name, cells=False) -> Path:
+    """Лист файла для модели — рядом с посылкой (так же вычисляет M-шаблон): «<модель> — лист <имя>.csv»."""
+    return packet.with_name(f"{packet.stem} — лист {name}{' — ячейки' if cells else ''}.csv")
+
+
+def copy_sheets(cfg, paths, model, packet: Path) -> bool:
+    """Листы файлов, которые получает модель, — из «Листы/» рядом с посылкой. Ещё не загружен — пустая таблица
+    с заголовками (иначе запрос Power Query в модели упадёт). → True, если что-то переписано."""
+    from ..core import sheets as SH
+    changed = False
+    for sh in SH.model_sheets(cfg, model):
+        head = SH.SHEET_COLS_APPEND + ["A"] if sh["mode"] == "append" else ["Строка", "A"]
+        pairs = [(SH.sheet_csv(paths, sh["job"], sh["name"]), sheet_model_path(packet, sh["name"]), head)]
+        if sh["cells"]:
+            pairs.append((SH.cells_csv(paths, sh["job"], sh["name"]), sheet_model_path(packet, sh["name"], True),
+                          SH.CELL_COLS))
+        for src, dst, cols in pairs:
+            data = src.read_bytes() if src.exists() else ("\ufeff" + ";".join(cols) + "\r\n").encode("utf-8")
+            changed = write_if_changed(dst, data) or changed
+    return changed
+
+
+def sheet_updates(cfg, store, model) -> list[list]:
+    """Строки «Хаб_Обновления» для листов файлов модели: когда лист заменён или дописано обновление."""
+    rows = []
+    for job_id in model.get("sheets") or []:
+        job = cfg.job(job_id)
+        if not job:
+            continue
+        for r in store.runs(job_id, limit=500):
+            if r["status"] != "updated" or not r["details"]:
+                continue
+            try:
+                details = json.loads(r["details"])
+            except ValueError:
+                continue
+            when = (r["finished"] or r["started"] or "").replace("T", " ")[:19]
+            for x in details.get("sheets") or []:
+                what = "добавлено обновление листа" if x.get("mode") == "append" else "лист заменён"
+                fd = x.get("file_date") or ""
+                rows.append([when, when[:10], what, str(x.get("rows") or 0), "0", fd, fd, "",
+                             f"лист «{x.get('name')}»", job["name"], "", SOURCE_TITLES.get("file_sheets", "")])
+    return rows
+
+
+def updates_table(store, codes, extra=None) -> bytes:
     """Когда какие ряды модели обновлялись: строка на «загрузка × ряд» — сколько новых значений, сколько
     изменённых (источник уточнил прошлые периоды), за какие периоды. Свежие сверху.
     Удобно сравнивать с датой последнего пересчёта модели: всё, что «Обновлено» позже, — новое."""
@@ -297,6 +343,8 @@ def updates_table(store, codes) -> bytes:
         out.append([when, when[:10], what, str(new), str(changed), r["a"], r["b"], r["code"], s["name"] or "",
                     head, P.PERIODICITY_RU.get(s["periodicity"], s["periodicity"] or ""),
                     SOURCE_TITLES.get(s["source"], s["source"] or "")])
+    if extra:
+        out = sorted(out + list(extra), key=lambda x: x[0], reverse=True)[:MAX_UPDATE_ROWS]
     return _csv(out, UPDATES_COLS)
 
 
@@ -335,7 +383,9 @@ def rebuild(cfg, store, paths, models=None, log=None) -> dict:
             changed = write_if_changed(path, packet)
             changed_s = write_if_changed(series_path(path), series)
             changed_t = write_if_changed(table_path(path), table)
-            changed_u = write_if_changed(updates_path(path), updates_table(store, codes))
+            changed_u = write_if_changed(updates_path(path), updates_table(store, codes,
+                                                                          sheet_updates(cfg, store, m)))
+            changed_l = copy_sheets(cfg, paths, m, path)
         except FileBusy as e:
             out[m["name"]] = f"busy: {e}"
             store.set_model_state(m["name"], last_error=str(e))
@@ -345,14 +395,14 @@ def rebuild(cfg, store, paths, models=None, log=None) -> dict:
         now = dt.datetime.now().isoformat(timespec="seconds")
         kw = {"last_build": now, "last_error": None,
               "packet_hash": hashlib.sha1(packet).hexdigest()}
-        if changed:
+        if changed or changed_l:
             kw["packet_changed_at"] = now
         n_rows = table.count(b"\n") - 1
         if n_rows > EXCEL_ROWS and layout(cfg, m) == "long":
             kw["last_error"] = (f"В модели «{m['name']}» {n_rows:,} строк — больше, чем вмещает лист Excel. "
                                 "Сузьте выборку (меньше рядов или период короче).").replace(",", " ")
         store.set_model_state(m["name"], **kw)
-        out[m["name"]] = "changed" if (changed or changed_s or changed_t or changed_u) else "same"
+        out[m["name"]] = "changed" if (changed or changed_s or changed_t or changed_u or changed_l) else "same"
     return out
 
 

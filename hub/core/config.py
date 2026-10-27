@@ -213,6 +213,7 @@ class Config:
             m.setdefault("series", [])
             m.setdefault("exclude", [])
             m.setdefault("selections", [])
+            m.setdefault("sheets", [])          # показатели «листы файла в модель»
             m.setdefault("active", True)
         return models
 
@@ -325,6 +326,27 @@ class Config:
             m = next((x for x in models if x["name"] == model_name), None)
             if m and job_id in m["jobs"]:
                 m["jobs"].remove(job_id)
+                self.save_models(models)
+
+    def subscribe_sheets(self, model_name, job_id) -> bool:
+        """Отдавать модели листы файла показателя (file_sheets). → True, если добавлено."""
+        with _lock:
+            models = self.models()
+            m = next((x for x in models if x["name"] == model_name), None)
+            if m is None:
+                raise KeyError(model_name)
+            if job_id in m["sheets"]:
+                return False
+            m["sheets"].append(job_id)
+            self.save_models(models)
+            return True
+
+    def unsubscribe_sheets(self, model_name, job_id):
+        with _lock:
+            models = self.models()
+            m = next((x for x in models if x["name"] == model_name), None)
+            if m and job_id in m["sheets"]:
+                m["sheets"].remove(job_id)
                 self.save_models(models)
 
     def forget_codes(self, codes):

@@ -113,6 +113,9 @@ class ModelsTab(ttk.Frame):
                 groups.append((("job", job_id), f"Весь показатель: {jobs[job_id]['name']}{note}", codes))
         if m.get("series"):
             groups.append((("codes", None), "Отдельные ряды", list(m["series"])))
+        for job_id in m.get("sheets") or []:
+            if job_id in jobs:
+                groups.append((("sheets", job_id), f"Листы файла: {jobs[job_id]['name']}", []))
         self.group_codes = {}
         for gi, (key, title, codes) in enumerate(groups):
             if key[0] != "codes":
@@ -122,6 +125,18 @@ class ModelsTab(ttk.Frame):
             self.group_codes[giid] = codes
             gkey = f"{key[0]}:{key[1]}" if key[0] != "codes" else None
             star = "★ " if gkey in crit else ""
+            if key[0] == "sheets":
+                from ..core import sheets as SH
+                job = jobs[key[1]]
+                st = store.state(key[1])
+                specs = SH.specs(job)
+                tree.insert("", "end", iid=giid, text=f"{star}{title}  ({len(specs)} лист.)", open=True)
+                for sp in specs:
+                    extra = " и «(ячейки)»" if sp.get("cells", True) else ""
+                    tree.insert(giid, "end", iid=f"{giid}|sheet|{sp['name']}", text=f"лист «{sp['name']}»{extra}",
+                                values=("", "лист в модели", st.get("last_label") or "ещё не загружен",
+                                        fmt_date(st.get("last_change"))))
+                continue
             tree.insert("", "end", iid=giid, text=f"{star}{title}  ({len(codes)} рядов)", open=len(codes) <= 30)
             shown = codes[:self.SHOW_ROWS]
             rows = {c: store.series(c) for c in shown}
@@ -304,6 +319,8 @@ class ModelsTab(ttk.Frame):
                 kind, ident = self.groups[iid]
                 if kind == "sel":
                     self.app.cfg.remove_selection(m["name"], ident)
+                elif kind == "sheets":
+                    self.app.cfg.unsubscribe_sheets(m["name"], ident)
                 elif kind == "job":
                     self.app.cfg.unsubscribe_job(m["name"], ident)
                 else:

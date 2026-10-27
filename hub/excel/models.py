@@ -14,8 +14,15 @@ from ..core.errors import FileBusy, HubError, human_message
 from . import formulas, mcode, packet
 
 
-def manual_instructions(model_name, packet_path, layout="long") -> str:
-    q = dict(mcode.queries(packet_path, layout=layout))
+def manual_instructions(model_name, packet_path, layout="long", sheets=()) -> str:
+    q = dict(mcode.queries(packet_path, layout=layout, sheets=sheets))
+    sheet_part = ""
+    for sq in mcode.sheet_queries(sheets):
+        sheet_part += (f"\n--- {sq['query']} (лист «{sq['sheet']}», таблица {sq['table']}) "
+                       f"{'-' * 10}\n{q[sq['query']]}\n")
+    if sheet_part:
+        sheet_part = ("\nЛисты из файлов: для каждого запроса ниже — пустой запрос с этим именем, «Закрыть и загрузить в…» "
+                      "→ Таблица → На новый лист; лист назовите, как указано в скобках, таблицу — тоже.\n" + sheet_part)
     return f"""Как подключить модель «{model_name}» к Хабу вручную
 =====================================================
 
@@ -54,7 +61,7 @@ def manual_instructions(model_name, packet_path, layout="long") -> str:
 
 --- Хаб_Обновления ----------------------------------------------
 {q["Хаб_Обновления"]}
-"""
+{sheet_part}"""
 
 
 def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dict:
@@ -67,6 +74,8 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
         cfg.update_model(name, path=str(model_path), active=True)
     model = cfg.model(name)
     lay = packet.layout(cfg, model)
+    from ..core import sheets as SH
+    sheets = SH.model_sheets(cfg, model)          # листы файлов, которые получает модель
     packet.rebuild(cfg, store, paths, models=[model], log=None)
     ppath = packet.packet_path(paths, name)
     result = {"ok": False, "method": None, "files": [], "packet": str(ppath),
@@ -78,7 +87,8 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
     if use_com:
         try:
             prefer = cfg.settings().get("excel_way") or None
-            r = com_connect().connect_model(model_path, ppath, paths.model_backups, log=log, prefer=prefer, layout=lay)
+            r = com_connect().connect_model(model_path, ppath, paths.model_backups, log=log, prefer=prefer, layout=lay,
+                                            sheets=sheets)
             if r.get("way"):
                 cfg.update_settings(excel_way=r["way"])     # в следующий раз начнём с того, что сработало
             if r.get("partial"):
@@ -86,9 +96,11 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
                               message=f"Модель «{name}» почти подключена: запросы Хаб и Хаб_Ряды добавлены, но Excel "
                                       f"не дал хабу самому вывести их на лист. {load_hint}")
             else:
+                extra = ("; листы из файлов: " + ", ".join(f"«{q['sheet']}»" for q in mcode.sheet_queries(sheets))
+                         if sheets else "")
                 result.update(ok=True, method="com", backup=r["backup"],
                               message=f"Модель «{name}» подключена: добавлены лист «Хаб» с таблицами Хаб и Хаб_Ряды и лист "
-                                      "«Хаб_Обновления» — когда какие ряды обновлялись. "
+                                      f"«Хаб_Обновления» — когда какие ряды обновлялись{extra}. "
                                       f"Резервная копия: {r['backup']}")
             cfg.update_model(name, connected_method=result["method"], connected=dt.date.today().isoformat(),
                              layout=lay)
@@ -100,7 +112,7 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
             log(f"Подключение через Excel не удалось: {e!r}\n{getattr(e, 'detail', '')}")
         try:
             target = paths.packets / f"{packet.safe_name(name)} — подключение.xlsx"
-            com_connect().make_connection_file(target, ppath, log=log, layout=lay)
+            com_connect().make_connection_file(target, ppath, log=log, layout=lay, sheets=sheets)
             result["files"].append(str(target))
             result.update(ok=True, method="file",
                           message=(f"Не удалось изменить модель автоматически ({errors[-1]}). Модель не изменена. "
@@ -111,7 +123,7 @@ def connect(cfg, store, paths, name, model_path, log=print, use_com=True) -> dic
             errors.append(human_message(e))
             log(f"Файл-подключение не создан: {e!r}\n{getattr(e, 'detail', '')}")
     instr = paths.packets / f"{packet.safe_name(name)} — как подключить вручную.txt"
-    instr.write_text(manual_instructions(name, ppath, lay), encoding="utf-8-sig")
+    instr.write_text(manual_instructions(name, ppath, lay, sheets), encoding="utf-8-sig")
     result["files"].append(str(instr))
     if not result["ok"]:
         reason = errors[0] if errors else "это не Windows"
@@ -156,6 +168,14 @@ def models_with_new_data(cfg, store) -> list[tuple[str, int]]:
             if crit is not None:
                 codes = [c for c in codes if c in crit]
             n = len(store.changed_since(codes, saved)) if saved else len(codes)
+            crit_keys = m.get("critical") or []
+            for job_id in m.get("sheets") or []:           # листы файлов: изменились после сохранения модели
+                if crit_keys and f"sheets:{job_id}" not in crit_keys:
+                    continue
+                at = store.meta_get(f"sheets_changed:{job_id}") or ""
+                job = cfg.job(job_id)
+                if job and at and (not saved or at > saved):
+                    n += len((job.get("params") or {}).get("sheets") or [])
             if n:
                 out.append((m["name"], n))
     return out

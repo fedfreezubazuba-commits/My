@@ -52,6 +52,20 @@ def reload_value(var):
     return n
 
 
+def give_sheets(app, model, job_id, parent=None):
+    """Листы файла — в модель: подписать модель и предложить сразу добавить листы в книгу (через Excel, модель
+    должна быть закрыта). Без этого шага файлы готовы, но листов в модели ещё нет."""
+    added = app.cfg.subscribe_sheets(model, job_id)
+    app.models._rebuild()
+    m = app.cfg.model(model) or {}
+    if messagebox.askyesno("Листы в модель", ("Модель получает эти листы. " if added else "Модель уже получает эти "
+                           "листы. ") + "Добавить листы в книгу модели сейчас? Модель должна быть закрыта в Excel — "
+                           "хаб сделает резервную копию и добавит листы (остальное в модели не меняется).",
+                           parent=parent or app.root):
+        if m.get("path"):
+            app.models._run_connect(model, m["path"])
+
+
 class AddDialog(tk.Toplevel):
     def __init__(self, app, source, params, name, note="", checks=None, schedule=None, on_added=None):
         super().__init__(app.root)
@@ -169,8 +183,9 @@ class AddDialog(tk.Toplevel):
             self.loaded = True
             text = "✔ Получено: " + (o.summary or o.message)
             if any(m.get("active", True) for m in self.app.cfg.models()):
-                text += ("\n\nЧтобы данные шли в модель, нажмите «Отдать в модель …» и отметьте, что именно нужно "
-                         "(товар, регион, период…). Показатель целиком в модель не уходит.")
+                text += ("\n\nЧтобы листы появились в модели, нажмите «Отдать в модель …»." if self.source == "file_sheets"
+                         else "\n\nЧтобы данные шли в модель, нажмите «Отдать в модель …» и отметьте, что именно "
+                              "нужно (товар, регион, период…). Показатель целиком в модель не уходит.")
             self.result.configure(text=text, style="green.TLabel")
         elif o:
             what = E.CATEGORIES.get(o.category or E.INTERNAL, E.CATEGORIES[E.INTERNAL])[1]
@@ -179,6 +194,9 @@ class AddDialog(tk.Toplevel):
         self._finish()
 
     def _select_for(self, model):
+        if self.source == "file_sheets":
+            give_sheets(self.app, model, self.job["id"], parent=self)
+            return
         from .dialog_select import SelectionDialog
         SelectionDialog(self.app, model, job_id=self.job["id"], on_done=self.app.models._rebuild)
 

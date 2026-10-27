@@ -258,6 +258,15 @@ class JobsTab(ttk.Frame):
         jid = self.selected()
         if not jid:
             return
+        job = self.app.cfg.job(jid)
+        if job and job.get("source") == "file_sheets":           # листы файла — папка с ними
+            from ..core import sheets as SH
+            folder = SH.folder(self.app.paths, jid)
+            if not folder.exists():
+                messagebox.showinfo("Нет данных", "Листы ещё не загружались — нажмите «Обновить сейчас».", parent=self)
+                return
+            exports.open_file(folder)
+            return
         if not self.app.store.series_of_job(jid):
             messagebox.showinfo("Нет данных", "Данные ещё не загружались — нажмите «Обновить сейчас».", parent=self)
             return

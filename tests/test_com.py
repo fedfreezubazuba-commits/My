@@ -256,3 +256,22 @@ def test_explicit_args_way_is_tried_first(fake_excel, tmp_path):
     r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=steps.append)
     assert not r["partial"] and r["way"]["way"] == "ListObjects.Add (все аргументы явно)"
     assert r["way"]["ascii"] is False and r["way"]["visible"] is False
+
+
+def test_connect_adds_file_sheets(fake_excel, tmp_path):
+    """Листы файлов модели: запрос листа и «ячеек» → листы «ПБ_оценка» и «ПБ_оценка (ячейки)» с таблицами.
+    Лист пользователя с тем же именем не трогается — тогда «… (хаб)»."""
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL("ok")
+    sheets = [{"name": "ПБ_оценка", "cells": True}, {"name": "Модель", "cells": False}]
+    r = com_connect.connect_model(model_file(tmp_path), tmp_path / "М.csv", tmp_path / "bk", log=lambda m: None,
+                                  sheets=sheets)
+    wb = fake_excel["xl"].books[0]
+    assert not r["partial"]
+    names = [q.Name for q in wb.Queries]
+    assert "Хаб_Лист_ПБ_оценка" in names and "Хаб_Ячейки_ПБ_оценка" in names and "Хаб_Лист_Модель" in names
+    formula = next(q.Formula for q in wb.Queries if q.Name == "Хаб_Лист_ПБ_оценка")
+    assert " — лист ПБ_оценка.csv" in formula
+    by = {ws.Name: [lo.Name for lo in ws.ListObjects] for ws in wb.Worksheets}
+    assert by["ПБ_оценка"] == ["Лист_ПБ_оценка"] and by["ПБ_оценка (ячейки)"] == ["Ячейки_ПБ_оценка"]
+    assert by["Модель"] == [] and by["Модель (хаб)"] == ["Лист_Модель"]        # лист пользователя цел

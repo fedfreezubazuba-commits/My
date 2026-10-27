@@ -27,17 +27,45 @@ def render(template_file: str, packet_path) -> str:
 ASCII_NAMES = {"Хаб_Посылка": "Hub_Packet", "Хаб": "Hub", "Хаб_Ряды": "Hub_Series", "Хаб_Обновления": "Hub_Updates"}
 
 
-def query_names(ascii_names=False) -> dict:
-    """{русское имя: имя запроса в книге}."""
-    return dict(ASCII_NAMES) if ascii_names else {k: k for k in ASCII_NAMES}
+def query_names(ascii_names=False, sheets=()) -> dict:
+    """{русское имя: имя запроса в книге} (с запросами листов файлов модели)."""
+    out = dict(ASCII_NAMES) if ascii_names else {k: k for k in ASCII_NAMES}
+    for q in sheet_queries(sheets, ascii_names):
+        out[q["ru"]] = q["query"]
+    return out
+
+
+def sheet_queries(sheets, ascii_names=False) -> list[dict]:
+    """Запросы листов файлов («Листы файла в модель»): для каждого листа — запрос самого листа и, если нужен,
+    запрос «ячеек». [{ru, query, table, sheet, template, suffix}]. sheets — [{name, cells}]."""
+    from ..core.config import slug
+    from ..core.sheets import table_safe
+    out, used = [], set()
+    for sh in sheets or []:
+        name = sh["name"]
+        base = slug(name, 24) or "list"
+        k, a = 2, base
+        while a in used:
+            a, k = f"{base}_{k}", k + 1
+        used.add(a)
+        t = table_safe(name)
+        kinds = [("Лист", "Sheet", "Хаб_Лист.m", f" — лист {name}.csv", f"Лист_{t}", name)]
+        if sh.get("cells", True):
+            kinds.append(("Ячейки", "Cells", "Хаб_Ячейки.m", f" — лист {name} — ячейки.csv", f"Ячейки_{t}",
+                          f"{name} (ячейки)"))
+        for ru, en, tpl, suffix, table, ws in kinds:
+            q_ru = f"Хаб_{ru}_{t}"
+            out.append({"ru": q_ru, "query": f"Hub_{en}_{a}" if ascii_names else q_ru, "table": table,
+                        "sheet": ws, "template": tpl, "suffix": suffix})
+    return out
 
 
 # вид таблицы «Хаб»: long — строка на значение (по умолчанию), wide — ряд на столбец
 HUB_TEMPLATE = {"long": "Хаб_строки.m", "wide": "Хаб.m"}
 
 
-def queries(packet_path, ascii_names=False, layout="long") -> list[tuple[str, str]]:
-    """[(имя запроса, M-код)] для подключения модели."""
+def queries(packet_path, ascii_names=False, layout="long", sheets=()) -> list[tuple[str, str]]:
+    """[(имя запроса, M-код)] для подключения модели (с листами файлов, если модель их получает)."""
     names = query_names(ascii_names)
     out = []
     for name, f in QUERIES:
@@ -47,6 +75,11 @@ def queries(packet_path, ascii_names=False, layout="long") -> list[tuple[str, st
         if ascii_names:
             code = code.replace("Хаб_Посылка", names["Хаб_Посылка"])
         out.append((names[name], code))
+    for q in sheet_queries(sheets, ascii_names):
+        code = (TEMPLATES / q["template"]).read_text(encoding="utf-8").replace("{{SUFFIX}}", m_string(q["suffix"]))
+        if ascii_names:
+            code = code.replace("Хаб_Посылка", names["Хаб_Посылка"])
+        out.append((q["query"], code))
     return out
 
 

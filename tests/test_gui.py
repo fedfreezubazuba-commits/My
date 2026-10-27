@@ -994,3 +994,40 @@ def test_skipped_columns_are_deleted_from_hub(app, monkeypatch):
     assert [s["name"] for s in app.store.series_of_job(job["id"])] == ["Цена"]
     assert not app.store.q("SELECT 1 FROM observations WHERE code=?", (codes["Объём"],))
     assert codes["Объём"] not in (app.cfg.model("М").get("series") or [])
+
+
+def test_sheets_dialog_and_give_to_model(app, monkeypatch):
+    """«Файл» → «Листы в модель…»: лист, имя в модели, режим; «＋ В обновления»; «Отдать в модель» подписывает
+    модель на листы и предлагает добавить их в книгу."""
+    from tkinter import messagebox
+    from hub.gui.dialog_add import AddDialog, give_sheets
+    from hub.gui.dialog_sheets import SheetsDialog
+    data = (Path(__file__).parent.parent / "samples" / "web" / "cbr_bop_est_6.xlsx").read_bytes()
+    url = "https://www.cbr.ru/vfs/statistics/credit_statistics/bop/bop_est_6.xlsx"
+    d = SheetsDialog(app, {"url": url}, data, "xlsx", "cbr")
+    pump(app, 0.3)
+    assert d.rows[0][1].get() == "Оценка_ПБ" and "СУММЕСЛИМН(Ячейки_Оценка_ПБ[Значение]" in d.formula.cget("text")
+    d.rows[0][1].set("ПБ_оценка")
+    d.mode.set("append")
+    opened = []
+    orig = AddDialog.__init__
+    AddDialog.__init__ = lambda self, app_, src, params, name, **kw: opened.append((src, params, name))
+    try:
+        d.next()
+    finally:
+        AddDialog.__init__ = orig
+    src, params, name = opened[0]
+    assert src == "file_sheets" and params["mode"] == "append" and params["url"] == url
+    assert params["sheets"] == [{"title": "Оценка ПБ (15.10.2026)", "index": 0, "count": 1, "name": "ПБ_оценка",
+                                 "cells": True}]
+    job = app.cfg.add_job("file_sheets", name, params)
+    app.cfg.add_model("М", str(app.paths.root / "М.xlsx"))
+    connected = []
+    monkeypatch.setattr(app.models, "_run_connect", lambda n, p: connected.append(n))
+    monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
+    give_sheets(app, "М", job["id"])
+    assert app.cfg.model("М")["sheets"] == [job["id"]] and connected == ["М"]
+    app.models.refresh()
+    app.models.tree.selection_set("М")
+    app.models.show_series()
+    assert any(k == ("sheets", job["id"]) for k in app.models.groups.values())
