@@ -327,6 +327,15 @@ class Store:
             "SELECT o.code, MAX(o.period_end) AS e FROM observations o JOIN series s ON s.code=o.code "
             "WHERE s.job_id=? AND o.state='current' GROUP BY o.code", (job_id,))}
 
+    def first_seen(self, codes, period_end) -> str | None:
+        """Когда хаб впервые получил данные за этот период по любому из рядов (время загрузки)."""
+        codes = list(codes)[:200]
+        if not codes:
+            return None
+        r = self.q1(f"SELECT MIN(fetched_at) AS f FROM observations WHERE period_end=? AND code IN "
+                    f"({','.join('?' * len(codes))})", [period_end, *codes])
+        return r["f"] if r else None
+
     def new_period_lags(self, code, limit=12):
         """Сколько дней проходит от конца периода до появления данных (по реальным обновлениям)."""
         rows = self.q("SELECT period_end, MIN(fetched_at) AS f FROM observations WHERE code=? AND was_new=1"

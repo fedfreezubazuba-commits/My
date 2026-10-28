@@ -103,8 +103,7 @@ def planned_moment(store, job, state, when: dt.datetime) -> dt.datetime | None:
     for per, items in by_per.items():
         newest = max(e for e, _c in items)
         live = [c for e, c in items if e >= newest][:5]
-        lags = [x for c in live for x in store.new_period_lags(c)]
-        exp = dt.datetime.combine(newest + dt.timedelta(days=S.lag_days(job["source"], per, lags)),
+        exp = dt.datetime.combine(newest + dt.timedelta(days=S.job_lag(store, job["source"], per, newest, live)),
                                   dt.time(S.SLOT_HOUR))
         if best is None or exp < best:
             best = exp
@@ -132,7 +131,7 @@ def model_links(cfg, store) -> dict:
         if not m.get("active", True):
             continue
         try:
-            plan = set(packet.model_plan(cfg, store, m)[0])
+            plan = set(packet.model_plan(cfg, store, m, sync=False)[0])
         except Exception:  # noqa: BLE001 — модель с повреждёнными настройками не должна ломать список
             continue
         for job_id, codes in codes_of.items():

@@ -12,6 +12,7 @@ from tkinter import messagebox, ttk
 
 from .. import sources
 from ..core import errors as E
+from ..core import schedule as S
 from . import widgets as W
 from .schedule_box import ScheduleBox
 
@@ -186,12 +187,41 @@ class AddDialog(tk.Toplevel):
                 text += ("\n\nЧтобы листы появились в модели, нажмите «Отдать в модель …»." if self.source == "file_sheets"
                          else "\n\nЧтобы данные шли в модель, нажмите «Отдать в модель …» и отметьте, что именно "
                               "нужно (товар, регион, период…). Показатель целиком в модель не уходит.")
+            text += self._suggest_schedule()
             self.result.configure(text=text, style="green.TLabel")
         elif o:
             what = E.CATEGORIES.get(o.category or E.INTERNAL, E.CATEGORIES[E.INTERNAL])[1]
             self.result.configure(text=f"Показатель добавлен, но загрузить данные не удалось: {o.message}.\n{what}. "
                                        f"Хаб попробует снова сам; статус виден на «Обзоре».", style="red.TLabel")
         self._finish()
+
+    def _suggest_schedule(self) -> str:
+        """Оставлено «Автоматически» — после пробной загрузки ставится расписание под периодичность данных (недельные —
+        раз в неделю, месячные — раз в месяц…) на день, когда ждём следующие данные. Вернуть — кнопкой."""
+        self.auto_was = None
+        job = self.app.cfg.job(self.job["id"]) or self.job
+        if self.src.snapshot or (job.get("schedule") or "auto") != "auto":
+            return ""
+        try:
+            rule = S.suggest_schedule(self.app.store, job)
+        except Exception:  # noqa: BLE001 — подсказка не должна мешать добавлению
+            rule = None
+        if not rule:
+            return ""
+        self.app.cfg.update_job(job["id"], schedule=rule)
+        self.auto_was = rule
+        exp, _per = S.expected_next(self.app.store, job)
+        when = f" (следующие данные ждём около {exp:%d.%m.%Y})" if exp else ""
+        return (f"\n\nРасписание проверок — {S.human(rule)}: по периодичности загруженных данных{when}. Если данные "
+                "не придут в этот день, хаб будет проверять ещё, пока не придут. Поменять — ◷ в «Моих показателях».")
+
+    def _keep_auto(self, btn):
+        self.app.cfg.update_job(self.job["id"], schedule="auto")
+        self.auto_was = None
+        btn.destroy()
+        self.result.configure(text=self.result.cget("text").split("\n\nРасписание проверок")[0]
+                              + "\n\nРасписание проверок — автоматически (по мере выхода данных).")
+        self.app.refresh_all()
 
     def _select_for(self, model):
         if self.source == "file_sheets":
@@ -209,6 +239,10 @@ class AddDialog(tk.Toplevel):
         for w in self.bar.winfo_children():
             w.destroy()
         ttk.Button(self.bar, text="Готово", style="Accent.TButton", command=self.destroy).pack(side="right")
+        if getattr(self, "auto_was", None):
+            b = ttk.Button(self.bar, text="Проверять «автоматически»")
+            b.configure(command=lambda b=b: self._keep_auto(b))
+            b.pack(side="right", padx=8)
         models = [m["name"] for m in self.app.cfg.models() if m.get("active", True)]
         for m in models[:3] if getattr(self, "loaded", False) else []:
             ttk.Button(self.bar, text=f"Отдать в модель «{m[:30]}»…",

@@ -556,6 +556,20 @@ def lag_days(source, periodicity, observed_lags):
     return DEFAULT_LAG.get((source, periodicity), GENERIC_LAG.get(periodicity, 30))
 
 
+def job_lag(store, source, per, newest: dt.date, live_codes) -> int:
+    """Через сколько дней после конца периода выходят данные. По реальным приходам новых периодов; пока их меньше
+    двух (показатель только добавлен — вся история пришла одной загрузкой) — обычная задержка источника, но не
+    больше той, что уже видна: данные за последний период были у источника, когда хаб их получил. Так недельный
+    ряд, пришедший 24.10 за неделю по 25.10, ждём около 31.10, а не через «обычные» 4 дня после конца недели."""
+    lags = [x for c in live_codes[:20] for x in store.new_period_lags(c)]
+    lag = lag_days(source, per, lags)
+    if len(lags) < 2:
+        seen = _dt(store.first_seen(live_codes, newest.isoformat()))
+        if seen:
+            lag = min(lag, (seen.date() - newest).days)
+    return lag
+
+
 def expected_next(store, job) -> tuple[dt.datetime | None, str | None]:
     """(ожидаемая дата новых данных, периодичность самого частого ряда).
     Если есть график выхода — ближайшая дата из него после последних новых данных."""
@@ -570,8 +584,7 @@ def expected_next(store, job) -> tuple[dt.datetime | None, str | None]:
         # берём самый свежий период этой периодичности и опоздания нескольких «живых» рядов
         newest = max(e for e, _c in items)
         live = [c for e, c in items if e >= newest - dt.timedelta(days=P.typical_days(per))]
-        lags = [x for c in live[:20] for x in store.new_period_lags(c)]
-        lag = lag_days(job["source"], per, lags)
+        lag = job_lag(store, job["source"], per, newest, live)
         exp = dt.datetime.combine(P.next_period_end(per, newest) + dt.timedelta(days=lag), dt.time(SLOT_HOUR))
         if best is None or exp < best:
             best, best_per = exp, per
@@ -584,6 +597,31 @@ def expected_next(store, job) -> tuple[dt.datetime | None, str | None]:
     if planned:
         best = planned[0]
     return best, best_per
+
+
+def suggest_schedule(store, job) -> str | None:
+    """Расписание под периодичность загруженных данных: недельные — раз в неделю в день, когда ждём следующую
+    неделю; месячные — раз в месяц в такой день; квартальные — через столько же дней после конца квартала; годовые
+    — раз в год. Срок — expected_next (по тому, когда пришли текущие данные). None — подобрать нечего."""
+    exp, per = expected_next(store, job)
+    if not exp or not per:
+        return None
+    d = exp.date()
+    if per == P.DAY:
+        return "daily"
+    if per == P.WEEK:
+        return make("weekly", (d.weekday(),))
+    if per == P.MONTH:
+        return make("monthly", "last" if d.day > 28 else d.day)
+    if per == P.QUARTER:
+        y, q = d.year, (d.month - 1) // 3 + 1
+        if P.quarter_end(y, q) >= d:              # конец квартала, после которого выходят данные
+            y, q = (y - 1, 4) if q == 1 else (y, q - 1)
+        n = (d - P.quarter_end(y, q)).days
+        return make("quarterly", ("d", n)) if 1 <= n <= 90 else None
+    if per == P.YEAR:
+        return make("yearly", (d.month, min(d.day, 28)))
+    return None
 
 
 def delay_grace_days(periodicity) -> int:

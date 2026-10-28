@@ -113,8 +113,9 @@ def _merge_window(old, new):
     return (a, b)
 
 
-def model_plan(cfg, store, model):
-    """(ряды подписки в постоянном порядке столбцов, {код: (с, по) или None})."""
+def model_plan(cfg, store, model, sync=True):
+    """(ряды подписки в постоянном порядке столбцов, {код: (с, по) или None}).
+    sync=False — только посмотреть (для списков в окне): база не меняется, порядок рядов — порядок выборок."""
     jobs = {j["id"] for j in cfg.jobs()}
     wanted, windows = [], {}
 
@@ -132,13 +133,15 @@ def model_plan(cfg, store, model):
             add(selection_codes(store, sel), None if win == ("", "") else win)
     add([c for c in model.get("series", []) if store.series(c)], None)
     excl = set(model.get("exclude", []))
-    if excl and not model.get("fix_054"):
+    if excl and not model.get("fix_054") and sync:
         # в 0.5.3 «Убрать» у «Отдельных рядов» заносил ряды в исключения, и они пропадали из выборок
         chosen = {c for sel in model.get("selections", []) for c in selection_codes(store, sel)}
         cfg.unexclude(model["name"], chosen)
         cfg.update_model(model["name"], fix_054=True)
         excl -= chosen
     wanted = [c for c in dict.fromkeys(wanted) if c not in excl]
+    if not sync:
+        return wanted, windows
     return store.sync_subscriptions(model["name"], wanted), windows
 
 

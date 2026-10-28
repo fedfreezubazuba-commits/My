@@ -67,7 +67,7 @@ def affected_models(cfg, store, codes) -> list[tuple[str, int]]:
         if not m.get("active", True):
             continue
         try:
-            got = set(packet.model_plan(cfg, store, m)[0]) & want
+            got = set(packet.model_plan(cfg, store, m, sync=False)[0]) & want
         except Exception:  # noqa: BLE001 — модель с повреждёнными настройками не должна мешать
             continue
         if got:

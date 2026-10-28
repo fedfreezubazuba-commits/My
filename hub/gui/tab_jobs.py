@@ -64,11 +64,13 @@ class JobsTab(ttk.Frame):
         self.search = tk.StringVar()
         e = ttk.Entry(top, textvariable=self.search, width=30)
         e.pack(side="left", padx=4)
-        self.search.trace_add("write", lambda *_: self.refresh())
+        self._typing = None
+        self._rows = []             # посчитанные строки списка: поиск и фильтр их только отбирают
+        self.search.trace_add("write", lambda *_: self._search_later())
         self.flt = tk.StringVar(value=FILTERS[0])
         cb = ttk.Combobox(top, textvariable=self.flt, values=FILTERS, state="readonly", width=20)
         cb.pack(side="left", padx=8)
-        cb.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        cb.bind("<<ComboboxSelected>>", lambda e: self.show_rows())
         ttk.Button(top, text="Корзина…", command=self.trash).pack(side="right")
 
         bar = W.FlowBar(self)
@@ -117,6 +119,12 @@ class JobsTab(ttk.Frame):
             self.info.configure(text="")
             return
         st = self.app.store.state(job["id"])
+        try:                        # срок — по нынешнему расчёту (сохранённый обновится при следующей проверке)
+            exp, _per = S.expected_next(self.app.store, job)
+            if exp and st.get("expected_next"):
+                st["expected_next"] = exp.isoformat(timespec="seconds")
+        except Exception:  # noqa: BLE001
+            pass
         status = ST.effective(job, st)
         self.info.configure(text=f"{job['name']} — {ST.word(status)}. {ST.explain(job, st)} "
                                  f"{next_check_text(self.app, job, st)}".strip(),
@@ -144,25 +152,49 @@ class JobsTab(ttk.Frame):
             self.tree.selection_set(iid)
             self.ctx.tk_popup(e.x_root, e.y_root)
 
+    def _search_later(self):
+        """Поиск — после паузы в наборе, по уже посчитанным строкам (без обращения к базе)."""
+        if self._typing:
+            self.after_cancel(self._typing)
+        self._typing = self.after(150, self.show_rows)
+
     def refresh(self):
+        """Пересчитать строки (база, графики, модели) и показать их."""
         app = self.app
-        sel = set(self.tree.selection())
-        self.tree.delete(*self.tree.get_children())
         states = app.store.states()
-        text = self.search.get().strip().lower()
-        flt = self.flt.get()
         from ..core import joblist
         import datetime as dt
         now = dt.datetime.now()
         links = joblist.model_links(app.cfg, app.store)
+        rows = []
         for job in app.cfg.jobs():
             st = states.get(job["id"], {})
             status = ST.effective(job, st)
             try:
-                src_title = sources.get(job["source"]).title
+                src = sources.get(job["source"])
+                src_title, snap = src.title, src.snapshot
             except KeyError:
-                src_title = job["source"]
-            if text and text not in (job["name"] + " " + src_title + " " + job["id"]).lower():
+                src_title, snap = job["source"], False
+            try:
+                r = joblist.row(app.store, job, st, now, snapshot=snap)
+            except Exception:  # noqa: BLE001 — строка списка не должна ломать окно
+                r = dict.fromkeys(("count", "period", "history", "last", "lag", "delta", "freq", "next"), "—")
+            values = (job["name"], src_title, r["count"], r["period"], r["history"], r["last"], r["lag"],
+                      fmt_date(st.get("last_change") or st.get("last_success")), r["delta"], r["freq"], r["next"],
+                      links.get(job["id"], ""))
+            rows.append((job, status, (job["name"] + " " + src_title + " " + job["id"]).lower(), values))
+        self._rows = rows
+        self.show_rows()
+
+    def show_rows(self):
+        """Показать посчитанные строки с учётом поиска и фильтра."""
+        self._typing = None
+        sel = set(self.tree.selection())
+        self.tree.delete(*self.tree.get_children())
+        text = self.search.get().strip().lower()
+        flt = self.flt.get()
+        for job, status, hay, values in self._rows:
+            if text and text not in hay:
                 continue
             if flt == "Требуют внимания" and status not in ST.PROBLEM:
                 continue
@@ -172,18 +204,7 @@ class JobsTab(ttk.Frame):
                 continue
             if flt == "Сайты и файлы" and job["source"] in ("cbr", "fedstat"):
                 continue
-            try:
-                snap = sources.get(job["source"]).snapshot
-            except KeyError:
-                snap = False
-            try:
-                r = joblist.row(app.store, job, st, now, snapshot=snap)
-            except Exception:  # noqa: BLE001 — строка списка не должна ломать окно
-                r = dict.fromkeys(("count", "period", "history", "last", "lag", "delta", "freq", "next"), "—")
-            self.tree.insert("", "end", iid=job["id"], tags=(ST.color(status),), values=(
-                job["name"], src_title, r["count"], r["period"], r["history"], r["last"], r["lag"],
-                fmt_date(st.get("last_change") or st.get("last_success")), r["delta"], r["freq"], r["next"],
-                links.get(job["id"], "")))
+            self.tree.insert("", "end", iid=job["id"], tags=(ST.color(status),), values=values)
         W.resort(self.tree)
         for iid in sel:
             if self.tree.exists(iid):

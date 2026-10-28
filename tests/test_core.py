@@ -459,3 +459,47 @@ def test_dropped_series_cbr_by_ids():
     got = impact.dropped_series(Store(), job, {"indicators": [37], "m1": [2]})
     assert [r["code"] for r in got] == ["B", "C"]
     assert impact.dropped_series(Store(), job, {"indicators": [37, 38], "m1": []}) == []
+
+
+def test_expected_next_after_first_load_not_later_than_seen(tmp_path):
+    """Показатель только добавлен (вся история — одной загрузкой): недельный ряд за неделю по 25.10 пришёл 24.10 —
+    следующую неделю ждём около 31.10 (через неделю), а не через «обычные» 4 дня после конца недели (05.11)."""
+    import datetime as dt
+    from hub.core import schedule as S
+    from hub.core.store import Store
+    st = Store(tmp_path / "db.sqlite")
+    job = {"id": "j", "source": "file_link", "schedule": "auto", "params": {}}
+    with st.tx() as c:
+        c.execute("INSERT INTO series(code, job_id, ident, periodicity, created) VALUES('W','j','w','week','x')")
+        for end in ("2026-10-11", "2026-10-18", "2026-10-25"):
+            c.execute("INSERT INTO observations(code, period_end, value, fetched_at, state, was_new) "
+                      "VALUES('W', ?, 1, '2026-10-24T12:00:00', 'current', 0)", (end,))
+    exp, per = S.expected_next(st, job)
+    assert per == "week" and exp.date() == dt.date(2026, 10, 31)
+    # потом новые недели приходят по субботам (−1 день к концу недели) — срок по реальным приходам
+    with st.tx() as c:
+        for end, got in (("2026-11-01", "2026-10-31T12:00:00"), ("2026-11-08", "2026-11-07T12:00:00")):
+            c.execute("INSERT INTO observations(code, period_end, value, fetched_at, state, was_new) "
+                      "VALUES('W', ?, 1, ?, 'current', 1)", (end, got))
+    assert S.expected_next(st, job)[0].date() == dt.date(2026, 11, 14)
+
+
+def test_suggest_schedule_by_periodicity(tmp_path):
+    """Расписание под периодичность: недельный ряд, ждём следующую неделю 31.10 (суббота) — раз в неделю по субботам;
+    месячный ряд за сентябрь, пришедший 24.10, — раз в месяц 24-го; квартальный — N дней после конца квартала."""
+    from hub.core import schedule as S
+    from hub.core.store import Store
+    st = Store(tmp_path / "db.sqlite")
+    with st.tx() as c:
+        for job, per, ends in (("w", "week", ("2026-10-18", "2026-10-25")), ("m", "month", ("2026-08-31", "2026-09-30")),
+                               ("q", "quarter", ("2026-03-31", "2026-06-30"))):
+            c.execute("INSERT INTO series(code, job_id, ident, periodicity, created) VALUES(?,?,?,?, 'x')",
+                      (job.upper(), job, job, per))
+            for end in ends:
+                c.execute("INSERT INTO observations(code, period_end, value, fetched_at, state, was_new) "
+                          "VALUES(?, ?, 1, '2026-10-24T12:00:00', 'current', 0)", (job.upper(), end))
+    job = lambda i: {"id": i, "source": "file_link", "schedule": "auto", "params": {}}  # noqa: E731
+    assert S.suggest_schedule(st, job("w")) == "weekly:Sat"
+    assert S.suggest_schedule(st, job("m")) == "monthly:24"
+    assert S.suggest_schedule(st, job("q")) == "quarterly:d60"           # ждём ≤ 116 дн → обычные 60 после 30.09
+    assert S.human("weekly:Sat").startswith("раз в неделю, в субботу")

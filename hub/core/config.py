@@ -10,6 +10,7 @@
 """
 import datetime as dt
 import os
+import pickle
 import re
 import tempfile
 import threading
@@ -47,12 +48,29 @@ def slug(text, maxlen=30) -> str:
     return s[:maxlen].strip("_") or "x"
 
 
+_Loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)      # быстрый разбор, если есть libyaml
+_cache = {}          # путь → (время изменения, размер, данные в pickle): файл перечитывается, только если менялся
+
+
 def _read_yaml(path: Path, default):
+    """Содержимое YAML-файла (каждый раз новая копия — её можно менять). Разбор YAML медленный, а окна читают
+    jobs.yaml / models.yaml десятки раз подряд, поэтому разобранное хранится, пока файл не изменился."""
     try:
-        with open(path, encoding="utf-8-sig") as fh:
-            data = yaml.safe_load(fh)
+        st = os.stat(path)
     except FileNotFoundError:
+        _cache.pop(str(path), None)
         return default
+    key, sig = str(path), (st.st_mtime_ns, st.st_size)
+    hit = _cache.get(key)
+    if hit and hit[0] == sig:
+        data = pickle.loads(hit[1])
+    else:
+        try:
+            with open(path, encoding="utf-8-sig") as fh:
+                data = yaml.load(fh, Loader=_Loader)  # noqa: S506 — безопасный загрузчик (SafeLoader)
+        except FileNotFoundError:
+            return default
+        _cache[key] = (sig, pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL))
     return default if data is None else data
 
 
@@ -65,6 +83,7 @@ def _write_yaml(path: Path, data, header=""):
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     os.replace(tmp, path)
+    _cache.pop(str(path), None)
 
 
 JOBS_HEADER = ("# Показатели в обновлении. Файл можно править вручную, но проще — в программе.\n"
