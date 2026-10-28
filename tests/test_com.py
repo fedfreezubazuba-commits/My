@@ -275,3 +275,38 @@ def test_connect_adds_file_sheets(fake_excel, tmp_path):
     by = {ws.Name: [lo.Name for lo in ws.ListObjects] for ws in wb.Worksheets}
     assert by["ПБ_оценка"] == ["Лист_ПБ_оценка"] and by["ПБ_оценка (ячейки)"] == ["Ячейки_ПБ_оценка"]
     assert by["Модель"] == [] and by["Модель (хаб)"] == ["Лист_Модель"]        # лист пользователя цел
+
+
+def test_stale_lock_file_does_not_block(fake_excel, tmp_path):
+    """Брошенный «~$модель.xlsx» (Excel закрылся с ошибкой, файл пережил перезагрузку) не мешает подключению:
+    файл свободен (переименовывается) — замок удаляется."""
+    from hub.excel import com_connect
+    fake_excel["xl"] = FakeXL("ok")
+    m = model_file(tmp_path)
+    lock = m.with_name("~$" + m.name)
+    lock.write_bytes(b"owner")
+    said = []
+    r = com_connect.connect_model(m, tmp_path / "М.csv", tmp_path / "bk", log=said.append)
+    assert not r["partial"] and not lock.exists() and any("брошенный" in s for s in said)
+
+
+def test_really_busy_model_explains_why(fake_excel, tmp_path, monkeypatch):
+    """Файл держит программа (переименовать нельзя): с замком Excel — «открыта в Excel», без него — объяснение про
+    другие программы (Проводник, OneDrive, антивирус)."""
+    from pathlib import Path
+    from hub.core.errors import FileBusy
+    from hub.excel import com_connect
+    from hub.excel.models import connect_error_text
+    m = model_file(tmp_path)
+    real = Path.rename
+
+    def busy(self, target):
+        if self == m:
+            raise PermissionError(32, "used by another process")
+        return real(self, target)
+    monkeypatch.setattr(Path, "rename", busy)
+    assert com_connect.open_reason(m) == com_connect.BUSY_OTHER
+    m.with_name("~$" + m.name).write_bytes(b"owner")
+    with pytest.raises(FileBusy) as e:
+        com_connect.connect_model(m, tmp_path / "М.csv", tmp_path / "bk", log=lambda s: None)
+    assert connect_error_text(e.value) == com_connect.BUSY_EXCEL and m.with_name("~$" + m.name).exists()

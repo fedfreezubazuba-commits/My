@@ -183,7 +183,7 @@ def models_with_new_data(cfg, store) -> list[tuple[str, int]]:
 
 def connect_error_text(e) -> str:
     if isinstance(e, FileBusy):
-        return "Модель открыта в Excel. Закройте её и нажмите «Подключить модель» ещё раз."
+        return getattr(e, "detail", "") or "Модель открыта в Excel. Закройте её и нажмите «Подключить модель» ещё раз."
     if isinstance(e, HubError):
         return str(e)
     return human_message(e)

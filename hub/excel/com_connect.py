@@ -34,22 +34,72 @@ class ExcelUnavailable(HubError):
         super().__init__(INTERNAL, msg)
 
 
-def is_file_open(path: Path) -> bool:
-    """Открыт ли файл в Excel. Excel держит рядом файл-замок «~$имя» и не даёт переименовать файл."""
+def lock_files(path: Path) -> list[Path]:
+    """Файлы-замки Excel рядом с книгой: «~$Имя.xlsx» (у длинных имён «~$» заменяет первые две буквы)."""
     path = Path(path)
-    # Excel создаёт «~$Имя.xlsx», Word-подобные программы — «~$» вместо первых двух букв
-    locks = [path.with_name("~$" + path.name), path.with_name("~$" + path.name[2:])]
-    if any(lock.exists() for lock in locks):
-        return True
+    return [lock for lock in (path.with_name("~$" + path.name), path.with_name("~$" + path.name[2:]))
+            if lock.exists()]
+
+
+def _open_in_excel(path: Path) -> bool:
+    """Книга открыта в запущенном Excel (только Windows, если Excel запущен; иначе — False)."""
+    try:
+        import win32com.client  # noqa: F401
+        from win32com.client import GetActiveObject
+        xl = GetActiveObject("Excel.Application")
+    except Exception:  # noqa: BLE001 — Excel не запущен или нет pywin32
+        return False
+    want = str(Path(path).resolve()).lower()
+    try:
+        for i in range(1, xl.Workbooks.Count + 1):
+            try:
+                if str(Path(xl.Workbooks(i).FullName).resolve()).lower() == want:
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+BUSY_OTHER = ("Windows не даёт хабу работать с файлом — его держит открытым какая-то программа. Обычно это Excel "
+              "(в том числе другое окно Excel или коллега, открывший файл по сети), но бывает и «Область просмотра» "
+              "Проводника (файл выделен в папке с включённым просмотром), синхронизация OneDrive / Яндекс.Диска или "
+              "проверка антивирусом. Закройте файл везде, снимите с него выделение в Проводнике и повторите.")
+BUSY_EXCEL = "Модель открыта в Excel. Закройте её (файл, а не только окно с другой книгой) и повторите."
+
+
+def open_reason(path: Path, log=None) -> str | None:
+    """Почему с книгой сейчас нельзя работать (None — можно).
+
+    Главная проверка — переименовать файл туда и обратно: открытую книгу Windows переименовать не даёт. Файл-замок
+    «~$…» сам по себе не доказательство: Excel оставляет его, если закрылся с ошибкой или компьютер выключили, и
+    он переживает перезагрузку. Такой брошенный замок хаб удаляет (книга при этом не меняется)."""
+    path = Path(path)
+    if _open_in_excel(path):
+        return BUSY_EXCEL
     try:
         tmp = path.with_name(path.name + ".hubcheck")
         path.rename(tmp)
         tmp.rename(path)
-        return False
     except PermissionError:
-        return True
+        return BUSY_EXCEL if lock_files(path) else BUSY_OTHER
     except OSError:
-        return False
+        return None
+    for lock in lock_files(path):          # файл свободен, а замок остался — брошенный
+        try:
+            lock.chmod(0o666)
+            lock.unlink()
+            if log:
+                log(f"Удалён брошенный файл-замок Excel: {lock.name}")
+        except OSError:
+            pass
+    return None
+
+
+def is_file_open(path: Path) -> bool:
+    """Открыт ли файл (см. open_reason)."""
+    return open_reason(path) is not None
 
 
 def backup(path: Path, backups_dir: Path) -> Path:
@@ -464,8 +514,9 @@ def connect_model(model_path, packet_path, backups_dir, log=print, prefer=None, 
         raise HubError(INTERNAL, f"Файл модели не найден: {model_path}")
     if model_path.suffix.lower() not in (".xlsx", ".xlsm", ".xlsb"):
         raise HubError(INTERNAL, "Подключить можно книгу Excel .xlsx, .xlsm или .xlsb")
-    if is_file_open(model_path):
-        raise FileBusy(model_path, "Закройте модель в Excel и нажмите «Подключить модель» ещё раз.")
+    why = open_reason(model_path, say)
+    if why:
+        raise FileBusy(model_path, why)
     copy = backup(model_path, backups_dir)
     say(f"Резервная копия: {copy}")
     xl = _excel(say)
@@ -635,8 +686,9 @@ def make_connection_file(target: Path, packet_path, log=print, layout="long", sh
 def refresh_closed_model(model_path, backups_dir, log=print) -> None:
     """Ночное обновление закрытой модели: открыть → «Обновить всё» → сохранить (с копией)."""
     model_path = Path(model_path)
-    if is_file_open(model_path):
-        raise FileBusy(model_path)
+    why = open_reason(model_path, log)
+    if why:
+        raise FileBusy(model_path, why)
     backup(model_path, backups_dir)
     xl = _excel(log)
     wb = None

@@ -184,9 +184,10 @@ class ModelsTab(ttk.Frame):
         self._run_connect(name, path)
 
     def _run_connect(self, name, path):
-        from ..excel.com_connect import is_file_open
-        if is_file_open(Path(path)):
-            messagebox.showwarning("Модель открыта", "Закройте модель в Excel и повторите.", parent=self)
+        from ..excel.com_connect import open_reason
+        why = open_reason(Path(path))
+        if why:
+            messagebox.showwarning("Модель занята", f"{why}\n\nФайл: {path}", parent=self)
             return
 
         def work():
