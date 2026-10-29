@@ -131,16 +131,21 @@ def recent_updates(cfg, store, days=7, groups=None, limit=40):
     return _merge(update_events(cfg, store, since, groups=groups))[:limit]
 
 
-def update_text(u) -> str:
-    """«по август 2026, +16 000 записей (21.10.26 в 14:05)»."""
+def update_when(u, sep=" в ") -> str:
+    """Когда пришли данные: «21.10.26 в 14:05» (sep=" " — для столбца: «21.10.26 14:05»)."""
+    when = u.get("when") or ""
+    return f"{when[8:10]}.{when[5:7]}.{when[2:4]}{sep}{when[11:16]}" if len(when) >= 16 else when
+
+
+def update_text(u, stamp=True) -> str:
+    """«по август 2026, +16 000 записей (21.10.26 в 14:05)»; stamp=False — без времени (оно в своём столбце)."""
     parts = [P.upto_text(u["upto"])] if u.get("upto") else []
     if u["new"]:
         parts.append(f"+{fmt(u['new'])} {plural(u['new'], 'запись', 'записи', 'записей')}")
     if u["revisions"]:
         parts.append(f"пересмотрено {fmt(u['revisions'])}")
-    when = u["when"] or ""
-    stamp = f"{when[8:10]}.{when[5:7]}.{when[2:4]} в {when[11:16]}" if len(when) >= 16 else when
-    return ", ".join(parts) + (f" ({stamp})" if stamp else "")
+    when = update_when(u) if stamp else ""
+    return ", ".join(parts) + (f" ({when})" if when else "")
 
 
 def month_updates(cfg, store, year, month, groups=None) -> dict:

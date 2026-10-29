@@ -169,13 +169,20 @@ class OverviewTab(ttk.Frame):
         if not ups:
             ttk.Label(left, text="Пока нет." if not groups else "По выбранным источникам за неделю ничего нового.",
                       style="Muted.TLabel").pack(anchor="w")
-        left.columnconfigure(0, weight=2, minsize=140)
-        left.columnconfigure(1, weight=3, minsize=160)
-        for i, u in enumerate(ups):
+        left.columnconfigure(0, weight=0, minsize=100)       # когда — узкий столбец постоянной ширины
+        left.columnconfigure(1, weight=2, minsize=140)
+        left.columnconfigure(2, weight=3, minsize=160)
+        if ups:
+            for c, t in enumerate(("Обновлено", "Показатель", "Что пришло")):
+                ttk.Label(left, text=t, style="Hint.TLabel").grid(row=0, column=c, sticky="w",
+                                                                 padx=(0, 10) if c < 2 else 0)
+        for i, u in enumerate(ups, 1):
+            ttk.Label(left, text=overview.update_when(u, " "), font=("Consolas", 10)).grid(
+                row=i, column=0, sticky="nw", padx=(0, 10), pady=1)
             W.autowrap(ttk.Label(left, text=f"● {u['job']['name']}", style="green.TLabel", justify="left"),
-                       initial=300).grid(row=i, column=0, sticky="new", padx=(0, 10), pady=1)
-            W.autowrap(ttk.Label(left, text=overview.update_text(u), style="Muted.TLabel", justify="left"),
-                       initial=300).grid(row=i, column=1, sticky="new", pady=1)
+                       initial=300).grid(row=i, column=1, sticky="new", padx=(0, 10), pady=1)
+            W.autowrap(ttk.Label(left, text=overview.update_text(u, stamp=False), style="Muted.TLabel",
+                                 justify="left"), initial=300).grid(row=i, column=2, sticky="new", pady=1)
         self._fill_calendar()
 
     def _shift_month(self, step):

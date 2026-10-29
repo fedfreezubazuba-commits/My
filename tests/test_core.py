@@ -503,3 +503,10 @@ def test_suggest_schedule_by_periodicity(tmp_path):
     assert S.suggest_schedule(st, job("m")) == "monthly:24"
     assert S.suggest_schedule(st, job("q")) == "quarterly:d60"           # ждём ≤ 116 дн → обычные 60 после 30.09
     assert S.human("weekly:Sat").startswith("раз в неделю, в субботу")
+
+
+def test_update_when_column():
+    from hub.core import overview as O
+    u = {"upto": "2026-08", "new": 16000, "revisions": 0, "when": "2026-10-21T14:05:33"}
+    assert O.update_when(u, " ") == "21.10.26 14:05"
+    assert O.update_text(u, stamp=False) == "по август 2026, +16 000 записей"

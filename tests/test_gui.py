@@ -497,7 +497,9 @@ def test_overview_news_calendar_filters(app):
     pump(app, 0.3)
     texts = [w.cget("text") for w in _all_widgets(ov.news) if w.winfo_class() in ("TLabel", "Label")]
     line = next(t for t in texts if "запис" in t)
-    assert line.startswith("по ") and "+" in line and " в " in line
+    assert line.startswith("по ") and "+" in line and " в " not in line      # время — в своём столбце
+    import re
+    assert "Обновлено" in texts and any(re.fullmatch(r"\d\d\.\d\d\.\d\d \d\d:\d\d", t) for t in texts)
     today = dt.date.today()
     day = next(w for w in _all_widgets(ov.cal) if w.winfo_class() == "Label" and w.cget("text") == str(today.day))
     assert "Ставки по вкладам" in day.tooltip.text

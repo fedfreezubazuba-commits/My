@@ -446,6 +446,10 @@ legacy/            исходные навигаторы пользовател�
   значения показателя (JOIN + GROUP BY). Теперь `last_period_ends` — подзапрос MAX по индексу на ряд; `explain` —
   `after_idle` один раз, текст в `_explained` до `refresh`; `next_check_text(per=…)` не считает срок повторно.
 
+- **0.9.10**: «Обзор» → «Новые данные за неделю» — таблица из трёх столбцов с заголовками: «Обновлено»
+  (`overview.update_when(u, " ")` → «21.10.26 14:05»), «Показатель», «Что пришло» (`update_text(u, stamp=False)`);
+  в подсказках календаря и уведомлениях время по-прежнему в скобках.
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.
