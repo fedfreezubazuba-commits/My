@@ -441,6 +441,11 @@ legacy/            исходные навигаторы пользовател�
   (`joblist.model_links`, `impact.affected_models`); «Мои показатели» считают строки один раз (`_rows`), поиск и фильтр
   только отбирают (`show_rows`, пауза 150 мс).
 
+- **0.9.9 — поиск в «Моих показателях» всё ещё 3–4 с**: на каждую букву пояснение под списком (`explain`) считалось
+  до 3 раз (show_rows + события выделения), каждый раз `expected_next` дважды, а `store.last_period_ends` перебирал все
+  значения показателя (JOIN + GROUP BY). Теперь `last_period_ends` — подзапрос MAX по индексу на ряд; `explain` —
+  `after_idle` один раз, текст в `_explained` до `refresh`; `next_check_text(per=…)` не считает срок повторно.
+
 ## Категории ошибок
 
 `errors.py`: network, rate_limit, structure, login, bot, file_busy, check_failed, no_new_data, too_big, internal.

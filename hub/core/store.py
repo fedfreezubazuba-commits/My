@@ -323,9 +323,10 @@ class Store:
 
     def last_period_ends(self, job_id) -> dict:
         """{код: последний период} всех рядов показателя одним запросом."""
+        # по ряду — подзапрос: MAX по индексу (code, state, period_end) берётся сразу, без перебора всех значений
         return {r["code"]: r["e"] for r in self.q(
-            "SELECT o.code, MAX(o.period_end) AS e FROM observations o JOIN series s ON s.code=o.code "
-            "WHERE s.job_id=? AND o.state='current' GROUP BY o.code", (job_id,))}
+            "SELECT s.code, (SELECT MAX(o.period_end) FROM observations o WHERE o.code=s.code AND o.state='current')"
+            " AS e FROM series s WHERE s.job_id=?", (job_id,)) if r["e"]}
 
     def first_seen(self, codes, period_end) -> str | None:
         """Когда хаб впервые получил данные за этот период по любому из рядов (время загрузки)."""

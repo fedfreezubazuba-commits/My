@@ -32,12 +32,13 @@ HINT = ("Выделите показатель — здесь появится, 
 FILTERS = ["Все", "Требуют внимания", "На паузе", "Банк России", "ЕМИСС", "Сайты и файлы"]
 
 
-def next_check_text(app, job, st) -> str:
+def next_check_text(app, job, st, per=None) -> str:
     """Когда хаб проверит показатель в следующий раз и почему (повторы, пока нет новых данных)."""
     import datetime as dt
     try:
         src = sources.get(job["source"])
-        _exp, per = S.expected_next(app.store, job)
+        if per is None:
+            _exp, per = S.expected_next(app.store, job)
         return S.check_text(job, st, dt.datetime.now(), snapshot=src.snapshot, periodicity=per)
     except Exception:  # noqa: BLE001 — подсказка не должна ломать окно
         return ""
@@ -66,6 +67,8 @@ class JobsTab(ttk.Frame):
         e.pack(side="left", padx=4)
         self._typing = None
         self._rows = []             # посчитанные строки списка: поиск и фильтр их только отбирают
+        self._explained = {}        # пояснения под списком по показателям (до следующего refresh)
+        self._explain_job = None
         self.search.trace_add("write", lambda *_: self._search_later())
         self.flt = tk.StringVar(value=FILTERS[0])
         cb = ttk.Combobox(top, textvariable=self.flt, values=FILTERS, state="readonly", width=20)
@@ -112,23 +115,41 @@ class JobsTab(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.explain(), add="+")
 
     def explain(self):
-        """Под списком: что значит статус выделенного показателя и что делать."""
+        """Под списком: что значит статус выделенного показателя и что делать. Выделение меняется много раз подряд
+        (поиск, перезаполнение списка) — текст считается один раз, когда всё успокоилось, и хранится до refresh."""
+        if getattr(self, "_explain_job", None) is None:
+            self._explain_job = self.after_idle(self._explain_now)
+
+    def _explain_now(self):
+        self._explain_job = None
+        if not self.winfo_exists():
+            return
         sel = self.tree.selection()
-        job = self.app.cfg.job(sel[0]) if len(sel) == 1 else None
-        if not job:
+        jid = sel[0] if len(sel) == 1 else None
+        if not jid:
             self.info.configure(text="")
             return
-        st = self.app.store.state(job["id"])
+        if jid not in self._explained:
+            self._explained[jid] = self._explain_text(jid)
+        text, color = self._explained[jid]
+        self.info.configure(text=text, foreground=color)
+
+    def _explain_text(self, jid):
+        job = self.app.cfg.job(jid)
+        if not job:
+            return "", ""
+        st = self.app.store.state(jid)
+        per = None
         try:                        # срок — по нынешнему расчёту (сохранённый обновится при следующей проверке)
-            exp, _per = S.expected_next(self.app.store, job)
+            exp, per = S.expected_next(self.app.store, job)
             if exp and st.get("expected_next"):
                 st["expected_next"] = exp.isoformat(timespec="seconds")
         except Exception:  # noqa: BLE001
             pass
         status = ST.effective(job, st)
-        self.info.configure(text=f"{job['name']} — {ST.word(status)}. {ST.explain(job, st)} "
-                                 f"{next_check_text(self.app, job, st)}".strip(),
-                            foreground=ST.COLORS[ST.color(status)] if ST.color(status) != ST.GREEN else "")
+        return (f"{job['name']} — {ST.word(status)}. {ST.explain(job, st)} "
+                f"{next_check_text(self.app, job, st, per or '')}".strip(),
+                ST.COLORS[ST.color(status)] if ST.color(status) != ST.GREEN else "")
 
     def _head_tip(self, e):
         """Подсказка к заголовку столбца (что значит «Дельта», «Частота»…) — в строке под списком."""
@@ -184,6 +205,7 @@ class JobsTab(ttk.Frame):
                       links.get(job["id"], ""))
             rows.append((job, status, (job["name"] + " " + src_title + " " + job["id"]).lower(), values))
         self._rows = rows
+        self._explained = {}
         self.show_rows()
 
     def show_rows(self):
